@@ -1,0 +1,81 @@
+{
+  "name": "id.org.ai",
+  "version": "0.0.1",
+  "description": "Agent-first identity — Humans. Agents. Identity.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "import": "./dist/auth/index.js"
+    },
+    "./oauth": {
+      "types": "./dist/oauth/index.d.ts",
+      "import": "./dist/oauth/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
+    "./github": {
+      "types": "./dist/github/index.d.ts",
+      "import": "./dist/github/index.js"
+    },
+    "./claim": {
+      "types": "./dist/claim/index.d.ts",
+      "import": "./dist/claim/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "deploy": "cd worker && wrangler deploy",
+    "types": "cd worker && wrangler types"
+  },
+  "dependencies": {
+    "better-auth": "^1.2.0",
+    "drizzle-orm": "^0.38.0",
+    "hono": "^4.0.0",
+    "@workos-inc/node": "^7.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.31.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0",
+    "wrangler": "^4.0.0"
+  },
+  "homepage": "https://id.org.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dot-org-ai/id.org.ai"
+  },
+  "keywords": [
+    "identity",
+    "auth",
+    "agents",
+    "oauth",
+    "mcp",
+    "github",
+    "cloudflare",
+    "durable-objects"
+  ],
+  "license": "MIT"
+}

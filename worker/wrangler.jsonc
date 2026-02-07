@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "id-org-ai",
+  "main": "index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "routes": [
+    { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
+    { "pattern": "auth.org.ai/*", "zone_name": "workers.do" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "IDENTITY", "class_name": "IdentityDO" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["IdentityDO"] }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "id-org-ai",
+      "database_id": "placeholder"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "placeholder"
+    }
+  ]
+
+  // Secrets (set via wrangler secret):
+  // WORKOS_API_KEY
+  // WORKOS_CLIENT_ID
+  // AUTH_SECRET
+  // JWKS_SECRET
+  // GITHUB_APP_ID
+  // GITHUB_APP_PRIVATE_KEY
+  // GITHUB_WEBHOOK_SECRET
+}

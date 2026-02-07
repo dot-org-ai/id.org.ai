@@ -1,0 +1,16 @@
+name: 'id.org.ai'
+description: 'Claim your headless.ly tenant via GitHub identity'
+author: 'dot-org-ai'
+
+inputs:
+  tenant:
+    description: 'Claim token from anonymous tenant provisioning (clm_*)'
+    required: true
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
