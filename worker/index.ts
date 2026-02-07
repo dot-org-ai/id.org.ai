@@ -20,6 +20,7 @@ import { ClaimService } from '../src/claim/provision'
 import { verifyClaim } from '../src/claim/verify'
 import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
+import { OAuthProvider } from '../src/oauth/provider'
 
 export { IdentityDO }
 
@@ -56,6 +57,9 @@ app.use('*', cors({
 // Injects the IdentityDO stub into context for all downstream handlers.
 
 app.use('*', async (c, next) => {
+  // TODO: Single global DO is a scalability bottleneck — all requests funnel through
+  // one Durable Object instance. Should be sharded by tenant ID or identity ID
+  // (e.g., idFromName(tenantId)) once multi-tenancy routing is implemented.
   const id = c.env.IDENTITY.idFromName('global')
   const stub = c.env.IDENTITY.get(id)
   c.set('identityStub', stub)
@@ -73,23 +77,8 @@ app.get('/health', (c) => c.json({
 // ── OIDC Discovery (no auth required) ─────────────────────────────────────
 
 app.get('/.well-known/openid-configuration', (c) => {
-  const base = 'https://id.org.ai'
-  return c.json({
-    issuer: base,
-    authorization_endpoint: `${base}/oauth/authorize`,
-    token_endpoint: `${base}/oauth/token`,
-    userinfo_endpoint: `${base}/oauth/userinfo`,
-    jwks_uri: `${base}/.well-known/jwks.json`,
-    registration_endpoint: `${base}/oauth/register`,
-    device_authorization_endpoint: `${base}/oauth/device`,
-    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
-    response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials', 'urn:ietf:params:oauth:grant-type:device_code'],
-    code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
-    subject_types_supported: ['public'],
-    id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-  })
+  const provider = getOAuthProvider(c)
+  return provider.getOpenIDConfiguration()
 })
 
 // ── MCP Auth Middleware ───────────────────────────────────────────────────
@@ -113,6 +102,23 @@ app.use('/mcp', async (c, next) => {
 })
 
 app.use('/mcp/*', async (c, next) => {
+  const stub = c.get('identityStub')
+  const mcpAuth = new MCPAuth(stub)
+  const auth = await mcpAuth.authenticate(c.req.raw)
+  c.set('auth', auth)
+  await next()
+})
+
+// Auth middleware for OAuth endpoints that need identity context
+app.use('/oauth/authorize', async (c, next) => {
+  const stub = c.get('identityStub')
+  const mcpAuth = new MCPAuth(stub)
+  const auth = await mcpAuth.authenticate(c.req.raw)
+  c.set('auth', auth)
+  await next()
+})
+
+app.use('/device', async (c, next) => {
   const stub = c.get('identityStub')
   const mcpAuth = new MCPAuth(stub)
   const auth = await mcpAuth.authenticate(c.req.raw)
@@ -287,14 +293,160 @@ app.post('/api/freeze', async (c) => {
 })
 
 // ── Forward identity operations to IdentityDO ─────────────────────────────
+// Sensitive endpoints require authentication. The catch-all proxies to the
+// DO but injects an X-Worker-Auth header so the DO knows the request came
+// through the authenticated worker layer (not directly to the DO).
 
 app.all('/api/*', async (c) => {
+  const auth = c.get('auth')
   const stub = c.get('identityStub')
-  return stub.fetch(c.req.raw)
+
+  // Clone the request and add internal auth headers so the DO can verify
+  // the request was routed through the worker's auth middleware.
+  const headers = new Headers(c.req.raw.headers)
+  headers.set('X-Worker-Auth', c.env.AUTH_SECRET)
+  if (auth?.authenticated && auth.identityId) {
+    headers.set('X-Identity-Id', auth.identityId)
+    headers.set('X-Auth-Level', String(auth.level))
+  }
+
+  const proxiedRequest = new Request(c.req.raw.url, {
+    method: c.req.raw.method,
+    headers,
+    body: c.req.raw.body,
+  })
+  return stub.fetch(proxiedRequest)
 })
 
-// ── OAuth endpoints → IdentityDO ──────────────────────────────────────────
+// ── OAuth 2.1 Provider Endpoints ──────────────────────────────────────────
+// Wires the OAuthProvider class into the Hono router. The provider uses the
+// IdentityDO's storage (via stub.fetch) for client, token, and consent state.
 
+function getOAuthProvider(c: any): OAuthProvider {
+  const stub = c.get('identityStub')
+  const base = 'https://id.org.ai'
+  return new OAuthProvider({
+    storage: {
+      async get<T = unknown>(key: string): Promise<T | undefined> {
+        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: 'get', key }),
+        }))
+        if (!res.ok) return undefined
+        const data = await res.json() as { value?: T }
+        return data.value
+      },
+      async put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void> {
+        await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: 'put', key, value, options }),
+        }))
+      },
+      async delete(key: string): Promise<boolean> {
+        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: 'delete', key }),
+        }))
+        return res.ok
+      },
+      async list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>> {
+        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ op: 'list', options }),
+        }))
+        if (!res.ok) return new Map()
+        const data = await res.json() as { entries: Array<[string, T]> }
+        return new Map(data.entries)
+      },
+    },
+    config: {
+      issuer: base,
+      authorizationEndpoint: `${base}/oauth/authorize`,
+      tokenEndpoint: `${base}/oauth/token`,
+      userinfoEndpoint: `${base}/oauth/userinfo`,
+      registrationEndpoint: `${base}/oauth/register`,
+      deviceAuthorizationEndpoint: `${base}/oauth/device`,
+      revocationEndpoint: `${base}/oauth/revoke`,
+      introspectionEndpoint: `${base}/oauth/introspect`,
+      jwksUri: `${base}/.well-known/jwks.json`,
+    },
+    getIdentity: async (id: string) => {
+      const res = await stub.fetch(
+        new Request(`https://id.org.ai/api/identity/${id}`, { method: 'GET' })
+      )
+      if (!res.ok) return null
+      return await res.json() as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
+    },
+  })
+}
+
+// Dynamic Client Registration (RFC 7591)
+app.post('/oauth/register', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleRegister(c.req.raw)
+})
+
+// Authorization Endpoint
+app.get('/oauth/authorize', async (c) => {
+  const auth = c.get('auth')
+  const identityId = auth?.authenticated ? auth.identityId ?? null : null
+  const provider = getOAuthProvider(c)
+  return provider.handleAuthorize(c.req.raw, identityId)
+})
+
+// Authorization Consent Submission
+app.post('/oauth/authorize', async (c) => {
+  const auth = c.get('auth')
+  if (!auth?.authenticated || !auth.identityId) {
+    return c.json({ error: 'authentication_required' }, 401)
+  }
+  const provider = getOAuthProvider(c)
+  return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
+})
+
+// Token Endpoint
+app.post('/oauth/token', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleToken(c.req.raw)
+})
+
+// Device Authorization (RFC 8628)
+app.post('/oauth/device', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleDeviceAuthorization(c.req.raw)
+})
+
+// Device Verification (browser-side)
+app.all('/device', async (c) => {
+  const auth = c.get('auth')
+  const identityId = auth?.authenticated ? auth.identityId ?? null : null
+  const provider = getOAuthProvider(c)
+  return provider.handleDeviceVerification(c.req.raw, identityId)
+})
+
+// UserInfo Endpoint (OIDC Core)
+app.get('/oauth/userinfo', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleUserinfo(c.req.raw)
+})
+
+// Token Introspection (RFC 7662)
+app.post('/oauth/introspect', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleIntrospect(c.req.raw)
+})
+
+// Token Revocation (RFC 7009)
+app.post('/oauth/revoke', async (c) => {
+  const provider = getOAuthProvider(c)
+  return provider.handleRevoke(c.req.raw)
+})
+
+// Fallback for unhandled /oauth/* routes
 app.all('/oauth/*', async (c) => {
   const stub = c.get('identityStub')
   return stub.fetch(c.req.raw)

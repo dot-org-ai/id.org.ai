@@ -702,10 +702,39 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     return true
   }
 
+  // ─── Internal Auth Check ────────────────────────────────────────────
+  // Verifies that a request came through the worker's auth middleware by
+  // checking the X-Worker-Auth header against the AUTH_SECRET binding.
+  // This prevents direct-to-DO requests from bypassing authentication.
+
+  private isInternalRequest(request: Request): boolean {
+    const workerAuth = request.headers.get('X-Worker-Auth')
+    if (!workerAuth) return false
+    const expectedSecret = this.env.AUTH_SECRET
+    if (!expectedSecret) return false
+    // Constant-time-ish comparison
+    if (workerAuth.length !== expectedSecret.length) return false
+    let mismatch = 0
+    for (let i = 0; i < workerAuth.length; i++) {
+      mismatch |= workerAuth.charCodeAt(i) ^ expectedSecret.charCodeAt(i)
+    }
+    return mismatch === 0
+  }
+
+  private getCallerIdentityId(request: Request): string | null {
+    return request.headers.get('X-Identity-Id') ?? null
+  }
+
+  private getCallerAuthLevel(request: Request): number {
+    const level = request.headers.get('X-Auth-Level')
+    return level ? parseInt(level, 10) : -1
+  }
+
   // ─── HTTP Handler ─────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    const isInternal = this.isInternalRequest(request)
 
     if (url.pathname === '/health') {
       return Response.json({
@@ -715,53 +744,126 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       })
     }
 
+    // ── OAuth Storage (internal only — used by OAuthProvider via worker) ──
+
+    if (url.pathname === '/api/oauth-storage' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+
+      const body = await request.json() as {
+        op: string
+        key?: string
+        value?: unknown
+        options?: { expirationTtl?: number; prefix?: string; limit?: number }
+      }
+
+      if (body.op === 'get' && body.key) {
+        const value = await this.ctx.storage.get(body.key)
+        return Response.json({ value: value ?? undefined })
+      }
+
+      if (body.op === 'put' && body.key) {
+        await this.ctx.storage.put(body.key, body.value)
+        return Response.json({ ok: true })
+      }
+
+      if (body.op === 'delete' && body.key) {
+        const deleted = await this.ctx.storage.delete(body.key)
+        return Response.json({ deleted })
+      }
+
+      if (body.op === 'list') {
+        const opts: { prefix?: string; limit?: number } = {}
+        if (body.options?.prefix) opts.prefix = body.options.prefix
+        if (body.options?.limit) opts.limit = body.options.limit
+        const entries = await this.ctx.storage.list(opts)
+        return Response.json({ entries: Array.from(entries.entries()) })
+      }
+
+      return Response.json({ error: 'unknown_op' }, { status: 400 })
+    }
+
+    // ── Provision — intentionally open (creates anonymous tenants) ─────
+
     if (url.pathname === '/api/provision' && request.method === 'POST') {
       const result = await this.provisionAnonymous()
       return Response.json(result)
     }
 
+    // ── Claim — internal only (called from GitHub webhook handler) ─────
+
     if (url.pathname === '/api/claim' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized', message: 'Claim must be initiated via GitHub webhook' }, { status: 403 })
+      }
       const body = await request.json() as any
       const result = await this.claim(body)
       return Response.json(result, { status: result.success ? 200 : 400 })
     }
 
+    // ── Validate Key — internal only (called by MCPAuth) ──────────────
+
     if (url.pathname === '/api/validate-key' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const { key } = await request.json() as { key: string }
       const result = await this.validateApiKey(key)
       return Response.json(result)
     }
 
+    // ── Identity Lookup — internal only ────────────────────────────────
+
     if (url.pathname.startsWith('/api/identity/') && request.method === 'GET') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const id = url.pathname.slice('/api/identity/'.length)
       const identity = await this.getIdentity(id)
       if (!identity) return Response.json({ error: 'not_found' }, { status: 404 })
       return Response.json(identity)
     }
 
-    // ── Claim Token Verification ───────────────────────────────────────
+    // ── Claim Token Verification — internal only ──────────────────────
 
     if (url.pathname === '/api/verify-claim' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const { token } = await request.json() as { token: string }
       if (!token) return Response.json({ error: 'missing_token' }, { status: 400 })
       const result = await this.verifyClaimToken(token)
       return Response.json(result, { status: result.valid ? 200 : 404 })
     }
 
-    // ── Session Validation ─────────────────────────────────────────────
+    // ── Session Validation — internal only (called by MCPAuth) ────────
 
     if (url.pathname.startsWith('/api/session/') && request.method === 'GET') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const token = url.pathname.slice('/api/session/'.length)
       if (!token) return Response.json({ error: 'missing_token' }, { status: 400 })
       const result = await this.getSession(token)
       return Response.json(result, { status: result.valid ? 200 : 401 })
     }
 
-    // ── Freeze Identity ────────────────────────────────────────────────
+    // ── Freeze Identity — requires auth + own identity ────────────────
 
     if (url.pathname.startsWith('/api/freeze/') && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const id = url.pathname.slice('/api/freeze/'.length)
       if (!id) return Response.json({ error: 'missing_id' }, { status: 400 })
+
+      // Verify caller is freezing their own identity
+      const callerId = this.getCallerIdentityId(request)
+      if (callerId && callerId !== id) {
+        return Response.json({ error: 'forbidden', message: 'Can only freeze your own identity' }, { status: 403 })
+      }
+
       try {
         const result = await this.freezeIdentity(id)
         return Response.json(result)
@@ -770,9 +872,12 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       }
     }
 
-    // ── Rate Limit Check ───────────────────────────────────────────────
+    // ── Rate Limit Check — internal only (called by MCPAuth) ──────────
 
     if (url.pathname.startsWith('/api/rate-limit/') && request.method === 'GET') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const id = url.pathname.slice('/api/rate-limit/'.length)
       if (!id) return Response.json({ error: 'missing_id' }, { status: 400 })
 
@@ -783,19 +888,36 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return Response.json({ ...result, level: identity.level })
     }
 
-    // ── List Sessions ──────────────────────────────────────────────────
+    // ── List Sessions — requires auth + own identity ──────────────────
 
     if (url.pathname.startsWith('/api/sessions/') && request.method === 'GET') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const identityId = url.pathname.slice('/api/sessions/'.length)
       if (!identityId) return Response.json({ error: 'missing_id' }, { status: 400 })
+
+      // Only allow listing own sessions
+      const callerId = this.getCallerIdentityId(request)
+      if (callerId && callerId !== identityId) {
+        return Response.json({ error: 'forbidden', message: 'Can only list your own sessions' }, { status: 403 })
+      }
+
       const sessions = await this.listSessions(identityId)
       return Response.json({ sessions })
     }
 
     // ── Agent Key Management ──────────────────────────────────────────
 
-    // POST /api/agent-keys — Register a new agent key
+    // POST /api/agent-keys — Register a new agent key (requires auth)
     if (url.pathname === '/api/agent-keys' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+      const authLevel = this.getCallerAuthLevel(request)
+      if (authLevel < 1) {
+        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required to register agent keys' }, { status: 401 })
+      }
       try {
         const body = await request.json() as {
           identityId: string
@@ -807,6 +929,12 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
           return Response.json({ error: 'identityId and publicKey are required' }, { status: 400 })
         }
 
+        // Verify caller owns the identity they're registering a key for
+        const callerId = this.getCallerIdentityId(request)
+        if (callerId && callerId !== body.identityId) {
+          return Response.json({ error: 'forbidden', message: 'Can only register keys for your own identity' }, { status: 403 })
+        }
+
         const result = await this.registerAgentKey(body)
         return Response.json(result, { status: 201 })
       } catch (err: any) {
@@ -816,15 +944,31 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     // GET /api/agent-keys/:identityId — List agent keys for an identity
     if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'GET') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       const identityId = url.pathname.slice('/api/agent-keys/'.length)
       if (!identityId) return Response.json({ error: 'missing_identity_id' }, { status: 400 })
+
+      // Only allow listing own agent keys
+      const callerId = this.getCallerIdentityId(request)
+      if (callerId && callerId !== identityId) {
+        return Response.json({ error: 'forbidden', message: 'Can only list your own agent keys' }, { status: 403 })
+      }
 
       const keys = await this.listAgentKeys(identityId)
       return Response.json({ keys })
     }
 
-    // DELETE /api/agent-keys/:keyId — Revoke an agent key
+    // DELETE /api/agent-keys/:keyId — Revoke an agent key (requires auth)
     if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'DELETE') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+      const authLevel = this.getCallerAuthLevel(request)
+      if (authLevel < 1) {
+        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required to revoke agent keys' }, { status: 401 })
+      }
       const keyId = url.pathname.slice('/api/agent-keys/'.length)
       if (!keyId) return Response.json({ error: 'missing_key_id' }, { status: 400 })
 
@@ -836,8 +980,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return Response.json({ revoked: true, keyId })
     }
 
-    // POST /api/verify-signature — Verify a signed request from an agent
+    // POST /api/verify-signature — Verify a signed request from an agent (internal)
     if (url.pathname === '/api/verify-signature' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
       try {
         const body = await request.json() as {
           did: string
@@ -857,9 +1004,16 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     // ── MCP Do Handler ──────────────────────────────────────────────────
-    // Handles entity operations from the MCP do tool
+    // Handles entity operations from the MCP do tool (requires auth L1+)
 
     if (url.pathname === '/api/mcp-do' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+      const authLevel = this.getCallerAuthLevel(request)
+      if (authLevel < 1) {
+        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required for entity operations' }, { status: 401 })
+      }
       try {
         const body = await request.json() as {
           entity: string
