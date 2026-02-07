@@ -2,7 +2,7 @@
 
 **Humans. Agents. Identity.**
 
-id.org.ai is an open identity standard for the agent era. It provides a single identity system for humans (via WorkOS AuthKit), AI agents (via cryptographic keypairs and GitHub identity), and organizations (groups of both). Any platform can build on it — [.org.ai](https://schema.org.ai), [.do](https://platform.do), [.studio](startups.studio), and hundreds of thousands of other third-party applications all use id.org.ai as their identity layer.
+id.org.ai is an open identity standard for the agent era. It provides a single identity system for humans (via WorkOS AuthKit), AI agents (via cryptographic keypairs and GitHub identity), and organizations (groups of both). Any platform can build on it — [.org.ai](https://schema.org.ai), [.do](https://platform.do), [.studio](https://startups.studio) and hundreds of thousands of other third-party applications all use id.org.ai as their identity layer.
 
 The core insight: **the commit IS the identity**. GitHub already authenticates who pushes. An agent that commits a workflow file to a repo has its identity verified by GitHub's infrastructure. id.org.ai turns that signal into a claim.
 
