@@ -45,3 +45,6 @@ export * from './claim'
 
 // GitHub integration
 export * from './github'
+
+// Ed25519 cryptographic identity
+export * from './crypto'

@@ -7,4 +7,6 @@
  */
 
 export { GitHubApp } from './app'
-export { verifyClaimFromAction } from './action'
+export type { PushEvent, ClaimResult } from './app'
+export { verifyClaimFromAction, requestOIDCToken, setOutput, setError, writeTenantConfig } from './action'
+export type { ActionInput, ActionOutput } from './action'

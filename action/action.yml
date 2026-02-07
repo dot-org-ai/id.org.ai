@@ -1,11 +1,23 @@
 name: 'id.org.ai'
-description: 'Claim your headless.ly tenant via GitHub identity'
+description: 'Claim your headless.ly tenant via GitHub identity. Requires permissions: { id-token: write }'
 author: 'dot-org-ai'
 
 inputs:
   tenant:
     description: 'Claim token from anonymous tenant provisioning (clm_*)'
     required: true
+  sync-keys:
+    description: 'Sync agent public keys to .headless.ly/agents/*.pub'
+    required: false
+    default: 'false'
+
+outputs:
+  tenant-id:
+    description: 'The claimed tenant ID'
+  level:
+    description: 'The capability level after claiming (typically 2)'
+  claimed:
+    description: 'Whether the tenant was successfully claimed (true/false)'
 
 runs:
   using: 'node20'
