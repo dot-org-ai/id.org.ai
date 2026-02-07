@@ -149,7 +149,7 @@ Once installed, the GitHub Action runs on every push and can:
 
 ## Migration from org.ai
 
-Everything identity-related migrates from `.org.ai/org.ai/` into this repo. The `org.ai` npm package either becomes a thin re-export of `id.org.ai` or is deprecated. id.org.ai is the canonical identity standard — `org.ai` was a stepping stone.
+Everything identity-related migrates from `.org.ai/org.ai/` into this repo. The `org.ai` npm package continues to exist as the umbrella that re-exports `id.org.ai` alongside ~30 other `.org.ai` primitives (schema.org.ai, etc.).
 
 ### What Moves Here
 
@@ -170,7 +170,7 @@ Everything identity-related migrates from `.org.ai/org.ai/` into this repo. The 
 
 ### What Stays in org.ai
 
-The `org.ai` npm package (`.org.ai/org.ai/`) may still exist as a thin wrapper that re-exports from `id.org.ai`, or it may be deprecated entirely. The non-identity concerns (if any exist) stay there.
+The `org.ai` npm package (`.org.ai/org.ai/`) is NOT being deprecated. It is the umbrella package that re-exports `id.org.ai` alongside `schema.org.ai` and approximately 30 other key `.org.ai` primitives. org.ai is the composition layer — id.org.ai is the identity-specific standard within it.
 
 ### What's New (Not in Either Source)
 
