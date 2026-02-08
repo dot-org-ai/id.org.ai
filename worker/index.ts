@@ -29,6 +29,18 @@ import { verifyClaim } from '../src/claim/verify'
 import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
+import {
+  generateCSRFToken,
+  buildCSRFCookie,
+  encodeStateWithCSRF,
+  decodeStateWithCSRF,
+  extractCSRFFromCookie,
+  isAllowedOrigin,
+  validateOrigin,
+} from '../src/csrf'
+import { AuditLog, AUDIT_EVENTS } from '../src/audit'
+import type { AuditQueryOptions } from '../src/audit'
+import { errorResponse, ErrorCode } from '../src/errors'
 
 export { IdentityDO }
 
@@ -118,13 +130,29 @@ async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<s
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────────
+// Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
+// The origin callback dynamically checks against the allowlist.
 
 app.use('*', cors({
-  origin: '*',
+  origin: (origin) => {
+    if (!origin) return origin
+    return isAllowedOrigin(origin) ? origin : ''
+  },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
   credentials: true,
 }))
+
+// ── Origin Validation for Mutating Requests ──────────────────────────────
+// Validates Origin header on POST/PUT/DELETE to prevent cross-origin attacks
+// from unlisted origins. Requests without an Origin header are allowed
+// (same-origin, non-browser clients like curl/agents).
+
+app.use('*', async (c, next) => {
+  const error = validateOrigin(c.req.raw)
+  if (error) return error
+  await next()
+})
 
 // ── Identity Stub Middleware ──────────────────────────────────────────────
 // Resolves the shard key from auth credentials and injects the correct
@@ -215,6 +243,17 @@ app.post('/mcp', async (c) => {
 
   // Rate limit check
   if (auth.rateLimit && !auth.rateLimit.allowed) {
+    // Audit: rate limit exceeded
+    if (stub && auth.identityId) {
+      await logAuditEvent(stub, c.env.AUTH_SECRET, {
+        event: AUDIT_EVENTS.RATE_LIMIT_EXCEEDED,
+        actor: auth.identityId,
+        ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+        userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+        metadata: { level: auth.level, remaining: auth.rateLimit.remaining },
+      })
+    }
+
     return c.json({
       jsonrpc: '2.0',
       error: {
@@ -374,9 +413,19 @@ app.post('/api/provision', async (c) => {
       { expirationTtl: 2592000 },
     )
 
+    // Audit: identity provisioned
+    await logAuditEvent(stub, c.env.AUTH_SECRET, {
+      event: AUDIT_EVENTS.IDENTITY_CREATED,
+      actor: 'anonymous',
+      target: data.identity.id,
+      ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+      userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+      metadata: { tenantName: data.identity.name, level: 1 },
+    })
+
     return c.json(result, 201)
   } catch (err: any) {
-    return c.json({ error: 'provision_failed', message: err.message }, 500)
+    return errorResponse(c, 500, ErrorCode.ProvisionFailed, err.message)
   }
 })
 
@@ -388,7 +437,7 @@ app.get('/api/claim/:token', async (c) => {
   // Resolve shard from claim token via KV
   const identityId = await resolveIdentityFromClaim(token, c.env)
   if (!identityId) {
-    return c.json({ valid: false, error: 'Unknown claim token' }, 404)
+    return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'Unknown or expired claim token')
   }
   const stub = getStubForIdentity(c.env, identityId)
 
@@ -396,7 +445,7 @@ app.get('/api/claim/:token', async (c) => {
     const status = await verifyClaim(token, stub)
     return c.json(status, status.valid ? 200 : 404)
   } catch (err: any) {
-    return c.json({ error: 'verification_failed', message: err.message }, 500)
+    return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
   }
 })
 
@@ -406,25 +455,73 @@ app.get('/api/claim/:token', async (c) => {
 app.post('/api/freeze', async (c) => {
   const auth = c.get('auth')
   if (!auth.authenticated || !auth.identityId) {
-    return c.json({
-      error: 'unauthorized',
-      message: 'Session token required to freeze a tenant',
-      upgrade: auth.upgrade,
-    }, 401)
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Session token required to freeze a tenant')
   }
 
   // Stub is already set by middleware for authenticated requests
   const stub = c.get('identityStub')
   if (!stub) {
-    return c.json({ error: 'internal_error', message: 'Identity stub not resolved' }, 500)
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
   const claimService = new ClaimService(stub)
 
   try {
     const result = await claimService.freeze(auth.identityId)
+
+    // Audit: identity frozen
+    await logAuditEvent(stub, c.env.AUTH_SECRET, {
+      event: AUDIT_EVENTS.IDENTITY_FROZEN,
+      actor: auth.identityId,
+      target: auth.identityId,
+      ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+      userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+      metadata: { stats: result.stats },
+    })
+
     return c.json(result)
   } catch (err: any) {
-    return c.json({ error: 'freeze_failed', message: err.message }, 500)
+    return errorResponse(c, 500, ErrorCode.FreezeFailed, err.message)
+  }
+})
+
+// ── Audit Log Query Endpoint ─────────────────────────────────────────────
+// Requires L2+ auth. Queries the audit log for the caller's identity DO.
+
+app.get('/api/audit', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to query audit log')
+  }
+  if (auth.level < 2) {
+    return errorResponse(c, 403, ErrorCode.InsufficientLevel, 'L2+ authentication required to access audit logs')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  // Forward query parameters to the DO audit endpoint
+  const url = new URL(c.req.url)
+  const queryParams: AuditQueryOptions = {}
+  if (url.searchParams.has('eventPrefix')) queryParams.eventPrefix = url.searchParams.get('eventPrefix')!
+  if (url.searchParams.has('actor')) queryParams.actor = url.searchParams.get('actor')!
+  if (url.searchParams.has('after')) queryParams.after = url.searchParams.get('after')!
+  if (url.searchParams.has('before')) queryParams.before = url.searchParams.get('before')!
+  if (url.searchParams.has('limit')) queryParams.limit = parseInt(url.searchParams.get('limit')!, 10)
+  if (url.searchParams.has('cursor')) queryParams.cursor = url.searchParams.get('cursor')!
+
+  try {
+    const res = await stub.fetch(new Request('https://id.org.ai/api/audit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
+      body: JSON.stringify(queryParams),
+    }))
+
+    const data = await res.json()
+    return c.json(data, res.status as any)
+  } catch (err: any) {
+    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
   }
 })
 
@@ -438,16 +535,7 @@ app.all('/api/*', async (c) => {
   const stub = c.get('identityStub')
 
   if (!stub) {
-    return c.json({
-      error: 'unauthorized',
-      message: 'Authentication required for this endpoint',
-      upgrade: auth?.upgrade ?? {
-        nextLevel: 1,
-        action: 'provision',
-        description: 'POST to provision endpoint to get a session token',
-        url: 'https://id.org.ai/api/provision',
-      },
-    }, 401)
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required for this endpoint')
   }
 
   // Clone the request and add internal auth headers so the DO can verify
@@ -547,20 +635,127 @@ app.post('/oauth/register', async (c) => {
   return provider.handleRegister(c.req.raw)
 })
 
-// Authorization Endpoint
+// Authorization Endpoint — CSRF protected
+// On GET: generate a CSRF token, set it as a cookie, and embed it in the state parameter.
+// On POST (consent submission): validate the CSRF token from cookie + form body.
 app.get('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   const identityId = auth?.authenticated ? auth.identityId ?? null : null
+
+  // Generate CSRF token for the consent form
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const csrfToken = generateCSRFToken()
+  // Store the CSRF token in the oauth DO's storage via the existing storage bridge
+  const authSecret = c.env.AUTH_SECRET
+  await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
+    body: JSON.stringify({
+      op: 'put',
+      key: `csrf:${csrfToken}`,
+      value: { token: csrfToken, createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 },
+    }),
+  }))
+
+  // Inject the CSRF token into the state parameter
+  const url = new URL(c.req.url)
+  const originalState = url.searchParams.get('state') ?? undefined
+  const stateWithCSRF = encodeStateWithCSRF(csrfToken, originalState)
+  url.searchParams.set('state', stateWithCSRF)
+
+  // Create a modified request with the CSRF-enhanced state
+  const modifiedRequest = new Request(url.toString(), {
+    method: c.req.raw.method,
+    headers: c.req.raw.headers,
+  })
+
   const provider = getOAuthProvider(c)
-  return provider.handleAuthorize(c.req.raw, identityId)
+  const response = await provider.handleAuthorize(modifiedRequest, identityId)
+
+  // Set the CSRF cookie on the response
+  const isSecure = new URL(c.req.url).protocol === 'https:'
+  const newResponse = new Response(response.body, response)
+  newResponse.headers.append('Set-Cookie', buildCSRFCookie(csrfToken, isSecure))
+  return newResponse
 })
 
-// Authorization Consent Submission
+// Authorization Consent Submission — CSRF validated
 app.post('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
-    return c.json({ error: 'authentication_required' }, 401)
+    return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'Authentication required to submit authorization consent')
   }
+
+  // Extract CSRF token from cookie
+  const cookieCSRF = extractCSRFFromCookie(c.req.raw)
+
+  // Extract CSRF token from the state parameter in the form body
+  const clonedRequest = c.req.raw.clone()
+  const contentType = c.req.raw.headers.get('content-type') || ''
+  let formState: string | undefined
+  if (contentType.includes('application/json')) {
+    const body = await clonedRequest.json() as Record<string, string>
+    formState = body.state
+  } else {
+    const form = await clonedRequest.formData()
+    formState = form.get('state') as string | undefined
+  }
+
+  let formCSRF: string | null = null
+  if (formState) {
+    const decoded = decodeStateWithCSRF(formState)
+    if (decoded) {
+      formCSRF = decoded.csrf
+    }
+  }
+
+  // Validate CSRF double-submit: cookie token must match state-embedded token
+  if (!cookieCSRF || !formCSRF || cookieCSRF !== formCSRF) {
+    // Log the CSRF failure
+    const auditStub = getStubForIdentity(c.env, 'oauth')
+    await auditStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
+      body: JSON.stringify({
+        op: 'put',
+        key: `audit:${new Date().toISOString()}:csrf.validation.failed:${crypto.randomUUID().slice(0, 8)}`,
+        value: {
+          event: AUDIT_EVENTS.CSRF_VALIDATION_FAILED,
+          actor: auth.identityId,
+          ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+          userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+          timestamp: new Date().toISOString(),
+        },
+      }),
+    }))
+
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'CSRF token mismatch or missing')
+  }
+
+  // Validate the CSRF token server-side (check it exists and is not expired)
+  const authSecret = c.env.AUTH_SECRET
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const csrfRes = await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
+    body: JSON.stringify({ op: 'get', key: `csrf:${cookieCSRF}` }),
+  }))
+
+  if (csrfRes.ok) {
+    const csrfData = await csrfRes.json() as { value?: { expiresAt?: number } }
+    if (!csrfData.value || (csrfData.value.expiresAt && Date.now() > csrfData.value.expiresAt)) {
+      return errorResponse(c, 403, ErrorCode.Forbidden, 'CSRF token expired')
+    }
+    // Consume the token (one-time use)
+    await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
+      body: JSON.stringify({ op: 'delete', key: `csrf:${cookieCSRF}` }),
+    }))
+  } else {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Unknown CSRF token')
+  }
+
   const provider = getOAuthProvider(c)
   return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
 })
@@ -607,7 +802,7 @@ app.post('/oauth/revoke', async (c) => {
 app.all('/oauth/*', async (c) => {
   const stub = c.get('identityStub')
   if (!stub) {
-    return c.json({ error: 'authentication_required', message: 'OAuth endpoints require authentication' }, 401)
+    return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'OAuth endpoints require authentication')
   }
   return stub.fetch(c.req.raw)
 })
@@ -620,19 +815,13 @@ app.get('/claim/:token', async (c) => {
   // Resolve shard from claim token via KV
   const identityId = await resolveIdentityFromClaim(token, c.env)
   if (!identityId) {
-    return c.json({
-      error: 'invalid_claim_token',
-      message: 'This claim token is invalid or has expired.',
-    }, 404)
+    return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
   }
   const stub = getStubForIdentity(c.env, identityId)
   const status = await verifyClaim(token, stub)
 
   if (!status.valid) {
-    return c.json({
-      error: 'invalid_claim_token',
-      message: 'This claim token is invalid or has expired.',
-    }, 404)
+    return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
   }
 
   // Return claim info for the human-facing claim page
@@ -660,7 +849,7 @@ app.post('/webhook/github', async (c) => {
 
   // Validate required environment variables
   if (!c.env.GITHUB_WEBHOOK_SECRET || !c.env.GITHUB_APP_ID || !c.env.GITHUB_APP_PRIVATE_KEY) {
-    return c.json({ error: 'github_app_not_configured' }, 503)
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'GitHub App is not configured')
   }
 
   const githubApp = new GitHubApp({
@@ -671,7 +860,7 @@ app.post('/webhook/github', async (c) => {
 
   // Verify webhook signature
   if (!await githubApp.verifySignature(body, signature ?? '')) {
-    return c.json({ error: 'invalid_signature' }, 401)
+    return errorResponse(c, 401, ErrorCode.InvalidSignature, 'Webhook signature verification failed')
   }
 
   // Handle push events — the core claim-by-commit flow
@@ -721,11 +910,7 @@ app.post('/webhook/github', async (c) => {
 
 // ── Fallback ──────────────────────────────────────────────────────────────
 
-app.all('*', (c) => c.json({
-  error: 'not_found',
-  service: 'id.org.ai',
-  tagline: 'Humans. Agents. Identity.',
-}, 404))
+app.all('*', (c) => errorResponse(c, 404, ErrorCode.NotFound, 'The requested endpoint does not exist'))
 
 export default app
 
@@ -834,8 +1019,30 @@ async function handlePushWithSharding(
     }
 
     if (!result.success) {
+      // Audit: claim failed
+      await logAuditEvent(stub, env.AUTH_SECRET, {
+        event: AUDIT_EVENTS.CLAIM_FAILED,
+        actor: push.sender.login,
+        target: identityId,
+        metadata: { claimToken, repo: push.repository.full_name, branch, error: result.error },
+      })
+
       return { claimed: false, claimToken, branch, error: result.error ?? 'claim_failed' }
     }
+
+    // Audit: claim completed
+    await logAuditEvent(stub, env.AUTH_SECRET, {
+      event: AUDIT_EVENTS.CLAIM_COMPLETED,
+      actor: push.sender.login,
+      target: result.identity?.id ?? identityId,
+      metadata: {
+        claimToken,
+        repo: push.repository.full_name,
+        branch,
+        githubUserId: String(push.sender.id),
+        level: result.identity?.level,
+      },
+    })
 
     return {
       claimed: true,
@@ -846,6 +1053,45 @@ async function handlePushWithSharding(
     }
   } catch (err: any) {
     return { claimed: false, claimToken, branch, error: `claim_request_failed: ${err.message}` }
+  }
+}
+
+// ============================================================================
+// Audit Logging Helper
+// ============================================================================
+
+/**
+ * Fire-and-forget audit event logger.
+ *
+ * Writes an audit event to the identity's Durable Object storage via the
+ * internal `/api/audit-log` endpoint. This is intentionally fire-and-forget:
+ * audit logging MUST NEVER break the primary request flow.
+ *
+ * The event is stored with key format: `audit:{timestamp}:{event}:{randomSuffix}`
+ */
+async function logAuditEvent(
+  stub: { fetch(input: RequestInfo): Promise<Response> },
+  authSecret: string,
+  event: {
+    event: string
+    actor?: string
+    target?: string
+    ip?: string
+    userAgent?: string
+    metadata?: Record<string, unknown>
+  },
+): Promise<void> {
+  try {
+    const timestamp = new Date().toISOString()
+    const suffix = crypto.randomUUID().slice(0, 8)
+    const key = `audit:${timestamp}:${event.event}:${suffix}`
+    await stub.fetch(new Request('https://id.org.ai/api/audit-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
+      body: JSON.stringify({ key, event: { ...event, timestamp, key } }),
+    }))
+  } catch {
+    // Fire-and-forget: audit logging should never break the primary flow
   }
 }
 

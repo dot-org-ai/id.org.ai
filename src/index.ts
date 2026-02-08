@@ -48,3 +48,12 @@ export * from './github'
 
 // Ed25519 cryptographic identity
 export * from './crypto'
+
+// CSRF protection
+export * from './csrf'
+
+// Audit logging
+export * from './audit'
+
+// Standardized error responses
+export * from './errors'

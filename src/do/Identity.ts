@@ -22,6 +22,9 @@
 
 import { DurableObject } from 'cloudflare:workers'
 import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify, base64Decode, base64Encode, isValidDID } from '../crypto/keys'
+import { errorJson, ErrorCode } from '../errors'
+import { AuditLog } from '../audit'
+import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
 
 // ============================================================================
 // Types
@@ -743,7 +746,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/oauth-storage' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
 
       const body = await request.json() as {
@@ -776,7 +779,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         return Response.json({ entries: Array.from(entries.entries()) })
       }
 
-      return Response.json({ error: 'unknown_op' }, { status: 400 })
+      return errorJson(ErrorCode.InvalidRequest, `Unknown storage operation: ${body.op}`, 400)
     }
 
     // ── Provision — creates anonymous tenants ───────────────────────────
@@ -799,7 +802,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/claim' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized', message: 'Claim must be initiated via GitHub webhook' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Claim must be initiated via GitHub webhook', 403)
       }
       const body = await request.json() as any
       const result = await this.claim(body)
@@ -810,7 +813,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/validate-key' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const { key } = await request.json() as { key: string }
       const result = await this.validateApiKey(key)
@@ -821,11 +824,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname.startsWith('/api/identity/') && request.method === 'GET') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const id = url.pathname.slice('/api/identity/'.length)
       const identity = await this.getIdentity(id)
-      if (!identity) return Response.json({ error: 'not_found' }, { status: 404 })
+      if (!identity) return errorJson(ErrorCode.NotFound, `Identity not found: ${id}`, 404)
       return Response.json(identity)
     }
 
@@ -833,10 +836,10 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/verify-claim' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const { token } = await request.json() as { token: string }
-      if (!token) return Response.json({ error: 'missing_token' }, { status: 400 })
+      if (!token) return errorJson(ErrorCode.MissingParameter, 'token is required', 400)
       const result = await this.verifyClaimToken(token)
       return Response.json(result, { status: result.valid ? 200 : 404 })
     }
@@ -845,10 +848,10 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname.startsWith('/api/session/') && request.method === 'GET') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const token = url.pathname.slice('/api/session/'.length)
-      if (!token) return Response.json({ error: 'missing_token' }, { status: 400 })
+      if (!token) return errorJson(ErrorCode.MissingParameter, 'Session token is required', 400)
       const result = await this.getSession(token)
       return Response.json(result, { status: result.valid ? 200 : 401 })
     }
@@ -857,22 +860,22 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname.startsWith('/api/freeze/') && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const id = url.pathname.slice('/api/freeze/'.length)
-      if (!id) return Response.json({ error: 'missing_id' }, { status: 400 })
+      if (!id) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
 
       // Verify caller is freezing their own identity
       const callerId = this.getCallerIdentityId(request)
       if (callerId && callerId !== id) {
-        return Response.json({ error: 'forbidden', message: 'Can only freeze your own identity' }, { status: 403 })
+        return errorJson(ErrorCode.Forbidden, 'Can only freeze your own identity', 403)
       }
 
       try {
         const result = await this.freezeIdentity(id)
         return Response.json(result)
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 404 })
+        return errorJson(ErrorCode.NotFound, err.message, 404)
       }
     }
 
@@ -880,13 +883,13 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname.startsWith('/api/rate-limit/') && request.method === 'GET') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const id = url.pathname.slice('/api/rate-limit/'.length)
-      if (!id) return Response.json({ error: 'missing_id' }, { status: 400 })
+      if (!id) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
 
       const identity = await this.getIdentity(id)
-      if (!identity) return Response.json({ error: 'not_found' }, { status: 404 })
+      if (!identity) return errorJson(ErrorCode.NotFound, `Identity not found: ${id}`, 404)
 
       const result = await this.checkRateLimit(id, identity.level)
       return Response.json({ ...result, level: identity.level })
@@ -896,15 +899,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname.startsWith('/api/sessions/') && request.method === 'GET') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const identityId = url.pathname.slice('/api/sessions/'.length)
-      if (!identityId) return Response.json({ error: 'missing_id' }, { status: 400 })
+      if (!identityId) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
 
       // Only allow listing own sessions
       const callerId = this.getCallerIdentityId(request)
       if (callerId && callerId !== identityId) {
-        return Response.json({ error: 'forbidden', message: 'Can only list your own sessions' }, { status: 403 })
+        return errorJson(ErrorCode.Forbidden, 'Can only list your own sessions', 403)
       }
 
       const sessions = await this.listSessions(identityId)
@@ -916,11 +919,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     // POST /api/agent-keys — Register a new agent key (requires auth)
     if (url.pathname === '/api/agent-keys' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const authLevel = this.getCallerAuthLevel(request)
       if (authLevel < 1) {
-        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required to register agent keys' }, { status: 401 })
+        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required to register agent keys', 401)
       }
       try {
         const body = await request.json() as {
@@ -930,34 +933,34 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         }
 
         if (!body.identityId || !body.publicKey) {
-          return Response.json({ error: 'identityId and publicKey are required' }, { status: 400 })
+          return errorJson(ErrorCode.MissingParameter, 'identityId and publicKey are required', 400)
         }
 
         // Verify caller owns the identity they're registering a key for
         const callerId = this.getCallerIdentityId(request)
         if (callerId && callerId !== body.identityId) {
-          return Response.json({ error: 'forbidden', message: 'Can only register keys for your own identity' }, { status: 403 })
+          return errorJson(ErrorCode.Forbidden, 'Can only register keys for your own identity', 403)
         }
 
         const result = await this.registerAgentKey(body)
         return Response.json(result, { status: 201 })
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 400 })
+        return errorJson(ErrorCode.InvalidRequest, err.message, 400)
       }
     }
 
     // GET /api/agent-keys/:identityId — List agent keys for an identity
     if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'GET') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const identityId = url.pathname.slice('/api/agent-keys/'.length)
-      if (!identityId) return Response.json({ error: 'missing_identity_id' }, { status: 400 })
+      if (!identityId) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
 
       // Only allow listing own agent keys
       const callerId = this.getCallerIdentityId(request)
       if (callerId && callerId !== identityId) {
-        return Response.json({ error: 'forbidden', message: 'Can only list your own agent keys' }, { status: 403 })
+        return errorJson(ErrorCode.Forbidden, 'Can only list your own agent keys', 403)
       }
 
       const keys = await this.listAgentKeys(identityId)
@@ -967,18 +970,18 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     // DELETE /api/agent-keys/:keyId — Revoke an agent key (requires auth)
     if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'DELETE') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const authLevel = this.getCallerAuthLevel(request)
       if (authLevel < 1) {
-        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required to revoke agent keys' }, { status: 401 })
+        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required to revoke agent keys', 401)
       }
       const keyId = url.pathname.slice('/api/agent-keys/'.length)
-      if (!keyId) return Response.json({ error: 'missing_key_id' }, { status: 400 })
+      if (!keyId) return errorJson(ErrorCode.MissingParameter, 'Key ID is required', 400)
 
       const revoked = await this.revokeAgentKey(keyId)
       if (!revoked) {
-        return Response.json({ error: 'Key not found or already revoked' }, { status: 404 })
+        return errorJson(ErrorCode.NotFound, 'Key not found or already revoked', 404)
       }
 
       return Response.json({ revoked: true, keyId })
@@ -987,7 +990,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     // POST /api/verify-signature — Verify a signed request from an agent (internal)
     if (url.pathname === '/api/verify-signature' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       try {
         const body = await request.json() as {
@@ -997,13 +1000,51 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         }
 
         if (!body.did || !body.message || !body.signature) {
-          return Response.json({ error: 'did, message, and signature are required' }, { status: 400 })
+          return errorJson(ErrorCode.MissingParameter, 'did, message, and signature are required', 400)
         }
 
         const result = await this.verifyAgentSignature(body)
         return Response.json(result, { status: result.valid ? 200 : 401 })
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 400 })
+        return errorJson(ErrorCode.InvalidRequest, err.message, 400)
+      }
+    }
+
+    // ── Audit Log — Write (internal only) ──────────────────────────────
+    // Called by the worker's logAuditEvent helper to persist audit events
+    // into this DO's storage. Events are immutable once written.
+
+    if (url.pathname === '/api/audit-log' && request.method === 'POST') {
+      if (!isInternal) {
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
+      }
+      try {
+        const body = await request.json() as { key: string; event: StoredAuditEvent }
+        if (!body.key || !body.event) {
+          return errorJson(ErrorCode.MissingParameter, 'key and event are required', 400)
+        }
+        await this.ctx.storage.put(body.key, body.event)
+        return Response.json({ ok: true })
+      } catch (err: any) {
+        return errorJson(ErrorCode.ServerError, err.message, 500)
+      }
+    }
+
+    // ── Audit Log — Query (internal only) ────────────────────────────────
+    // Called by the worker's GET /api/audit endpoint to query audit events.
+    // Uses the AuditLog class for paginated, filterable queries.
+
+    if (url.pathname === '/api/audit' && request.method === 'POST') {
+      if (!isInternal) {
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
+      }
+      try {
+        const options = await request.json() as AuditQueryOptions
+        const auditLog = new AuditLog(this.ctx.storage)
+        const result = await auditLog.query(options)
+        return Response.json(result)
+      } catch (err: any) {
+        return errorJson(ErrorCode.ServerError, err.message, 500)
       }
     }
 
@@ -1012,11 +1053,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/mcp-do' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       const authLevel = this.getCallerAuthLevel(request)
       if (authLevel < 1) {
-        return Response.json({ error: 'authentication_required', message: 'L1+ authentication required for entity operations' }, { status: 401 })
+        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required for entity operations', 401)
       }
       try {
         const body = await request.json() as {
@@ -1067,7 +1108,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         if (body.verb === 'update') {
           const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
           if (!existing) {
-            return Response.json({ error: 'Entity not found' }, { status: 404 })
+            return errorJson(ErrorCode.NotFound, `${body.entity} not found: ${entityId}`, 404)
           }
 
           // Remove old indexes before updating
@@ -1136,7 +1177,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
           ],
         })
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 500 })
+        return errorJson(ErrorCode.ServerError, err.message, 500)
       }
     }
 
@@ -1145,7 +1186,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/mcp-search' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       try {
         const body = await request.json() as {
@@ -1249,7 +1290,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
         return Response.json({ results, total, limit, offset })
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 500 })
+        return errorJson(ErrorCode.ServerError, err.message, 500)
       }
     }
 
@@ -1258,7 +1299,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (url.pathname === '/api/mcp-fetch' && request.method === 'POST') {
       if (!isInternal) {
-        return Response.json({ error: 'unauthorized' }, { status: 403 })
+        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
       }
       try {
         const body = await request.json() as {
@@ -1304,11 +1345,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
         return Response.json({ type: body.type, items, total, limit, offset })
       } catch (err: any) {
-        return Response.json({ error: err.message }, { status: 500 })
+        return errorJson(ErrorCode.ServerError, err.message, 500)
       }
     }
 
-    return Response.json({ error: 'not_found', ns: this.ns }, { status: 404 })
+    return errorJson(ErrorCode.NotFound, `No handler for ${request.method} ${url.pathname}`, 404)
   }
 
   // ─── Entity Index Management ─────────────────────────────────────────
