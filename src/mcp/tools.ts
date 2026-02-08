@@ -1219,103 +1219,111 @@ export function handleTry(params: {
 // ============================================================================
 
 export async function handleSearch(
-  params: { query: string; type?: string; limit?: number },
+  params: { query: string; type?: string; filters?: Record<string, unknown>; limit?: number },
   identityStub: { fetch(input: string | Request): Promise<Response> },
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
   const limit = Math.min(params.limit ?? 10, 100)
   const query = params.query.toLowerCase().trim()
 
-  if (!query) {
+  if (!query && !params.type && !params.filters) {
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: 'query parameter is required' }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({ error: 'At least one of query, type, or filters is required' }, null, 2) }],
       isError: true,
     }
   }
 
   // Search schemas first — always available at L0
-  const schemaResults: Array<{ type: string; id: string; name: string; score: number; snippet: Record<string, unknown> }> = []
+  const schemaResults: Array<{ type: string; id: string; name?: string; score: number; snippet: Record<string, unknown> }> = []
 
-  for (const entity of ENTITY_SCHEMAS) {
-    if (params.type && entity.name.toLowerCase() !== params.type.toLowerCase() && entity.domain.toLowerCase() !== params.type.toLowerCase()) {
-      continue
-    }
+  if (query) {
+    for (const entity of ENTITY_SCHEMAS) {
+      if (params.type && entity.name.toLowerCase() !== params.type.toLowerCase() && entity.domain.toLowerCase() !== params.type.toLowerCase()) {
+        continue
+      }
 
-    let score = 0
+      let score = 0
 
-    // Name match
-    if (entity.name.toLowerCase().includes(query)) score += 10
-    if (entity.name.toLowerCase() === query) score += 20
+      // Name match
+      if (entity.name.toLowerCase().includes(query)) score += 10
+      if (entity.name.toLowerCase() === query) score += 20
 
-    // Domain match
-    if (entity.domain.toLowerCase().includes(query)) score += 5
+      // Domain match
+      if (entity.domain.toLowerCase().includes(query)) score += 5
 
-    // Description match
-    if (entity.description.toLowerCase().includes(query)) score += 3
+      // Description match
+      if (entity.description.toLowerCase().includes(query)) score += 3
 
-    // Verb match
-    for (const verb of entity.verbs) {
-      if (verb.name.toLowerCase().includes(query)) score += 2
-      if (verb.description.toLowerCase().includes(query)) score += 1
-    }
+      // Verb match
+      for (const verb of entity.verbs) {
+        if (verb.name.toLowerCase().includes(query)) score += 2
+        if (verb.description.toLowerCase().includes(query)) score += 1
+      }
 
-    // Field match
-    for (const fieldName of Object.keys(entity.fields)) {
-      if (fieldName.toLowerCase().includes(query)) score += 2
-    }
+      // Field match
+      for (const fieldName of Object.keys(entity.fields)) {
+        if (fieldName.toLowerCase().includes(query)) score += 2
+      }
 
-    if (score > 0) {
-      schemaResults.push({
-        type: 'schema',
-        id: entity.name,
-        name: entity.name,
-        score,
-        snippet: {
-          domain: entity.domain,
-          description: entity.description,
-          verbs: entity.verbs.map(v => v.name),
-        },
-      })
-    }
-  }
-
-  // If authenticated, also search identity data in the DO
-  const dataResults: Array<{ type: string; id: string; name: string; score: number; snippet: Record<string, unknown> }> = []
-
-  if (auth.authenticated && auth.identityId) {
-    // Search identities, organizations, and linked accounts
-    const searchTypes = params.type
-      ? [params.type.toLowerCase()]
-      : ['identity', 'organization']
-
-    for (const searchType of searchTypes) {
-      if (searchType === 'identity' || searchType === 'identities') {
-        try {
-          const res = await identityStub.fetch(
-            new Request(`https://id.org.ai/api/identity/${auth.identityId}`, { method: 'GET' })
-          )
-          if (res.ok) {
-            const identity = await res.json() as Record<string, unknown>
-            const name = String(identity.name ?? '')
-            if (name.toLowerCase().includes(query) || String(identity.email ?? '').toLowerCase().includes(query)) {
-              dataResults.push({
-                type: 'identity',
-                id: String(identity.id),
-                name,
-                score: 15,
-                snippet: { type: identity.type, email: identity.email, level: identity.level },
-              })
-            }
-          }
-        } catch {
-          // Silently skip data search errors
-        }
+      if (score > 0) {
+        schemaResults.push({
+          type: 'schema',
+          id: entity.name,
+          name: entity.name,
+          score,
+          snippet: {
+            domain: entity.domain,
+            description: entity.description,
+            verbs: entity.verbs.map(v => v.name),
+          },
+        })
       }
     }
   }
 
+  // If authenticated, search entity data in the DO via the mcp-search endpoint
+  const dataResults: Array<{ type: string; id: string; name?: string; score: number; snippet: Record<string, unknown> }> = []
+
+  if (auth.authenticated && auth.identityId) {
+    try {
+      const searchBody: Record<string, unknown> = {
+        identityId: auth.identityId,
+        limit,
+      }
+      if (query) searchBody.query = query
+      if (params.type) searchBody.type = params.type
+      if (params.filters) searchBody.filters = params.filters
+
+      const res = await identityStub.fetch(new Request('https://id.org.ai/api/mcp-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(searchBody),
+      }))
+
+      if (res.ok) {
+        const searchResult = await res.json() as {
+          results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }>
+          total: number
+        }
+
+        for (const item of searchResult.results) {
+          const name = String(item.data.name ?? item.data.title ?? item.data.subject ?? '')
+          dataResults.push({
+            type: item.type,
+            id: item.id,
+            name: name || undefined,
+            score: item.score,
+            snippet: item.data,
+          })
+        }
+      }
+    } catch {
+      // Silently skip data search errors — schema results still returned
+    }
+  }
+
   // Combine and sort by score
-  const allResults = [...schemaResults, ...dataResults]
+  const allResults = [...dataResults, ...schemaResults]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
 
@@ -1335,7 +1343,7 @@ export async function handleSearch(
 // ============================================================================
 
 export async function handleFetch(
-  params: { type: string; id?: string; fields?: string[] },
+  params: { type: string; id?: string; fields?: string[]; filters?: Record<string, unknown>; limit?: number; offset?: number },
   identityStub: { fetch(input: string | Request): Promise<Response> },
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
@@ -1445,11 +1453,88 @@ export async function handleFetch(
     }
   }
 
-  // Fetch entity schema by name
-  const entity = findEntity(params.type)
-  if (entity) {
+  // Check if this is a known entity type — fetch data from DO storage
+  const entitySchema = findEntity(params.type)
+  if (entitySchema) {
+    // If authenticated, try to fetch real entity data from the DO
+    if (auth.authenticated && auth.identityId) {
+      try {
+        const fetchBody: Record<string, unknown> = {
+          identityId: auth.identityId,
+          type: entitySchema.name,
+        }
+        if (params.id) fetchBody.id = params.id
+        if (params.filters) fetchBody.filters = params.filters
+        if (params.limit) fetchBody.limit = params.limit
+        if (params.offset) fetchBody.offset = params.offset
+
+        const res = await identityStub.fetch(new Request('https://id.org.ai/api/mcp-fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fetchBody),
+        }))
+
+        if (res.ok) {
+          const fetchResult = await res.json() as Record<string, unknown>
+
+          // Single entity fetch
+          if (params.id) {
+            let data = fetchResult.data as Record<string, unknown> | null
+            if (data && params.fields) {
+              data = Object.fromEntries(Object.entries(data).filter(([k]) => params.fields!.includes(k)))
+            }
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ type: entitySchema.name, id: params.id, data }, null, 2) }],
+              isError: data === null ? true : undefined,
+            }
+          }
+
+          // List fetch — apply field projection
+          let items = fetchResult.items as Array<Record<string, unknown>>
+          if (params.fields && items) {
+            items = items.map(item => Object.fromEntries(Object.entries(item).filter(([k]) => params.fields!.includes(k))))
+          }
+
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              type: entitySchema.name,
+              items,
+              total: fetchResult.total,
+              limit: fetchResult.limit,
+              offset: fetchResult.offset,
+            }, null, 2) }],
+          }
+        }
+
+        // If fetch endpoint returned 404 for a specific entity
+        if (res.status === 404 && params.id) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ type: entitySchema.name, id: params.id, data: null, error: 'Entity not found' }, null, 2) }],
+            isError: true,
+          }
+        }
+      } catch {
+        // Fall through to schema response if DO fetch fails
+      }
+    }
+
+    // Not authenticated or DO fetch failed — return the schema
+    if (params.id) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          type: entitySchema.name,
+          id: params.id,
+          data: null,
+          error: auth.authenticated ? 'Entity not found' : 'Authentication required to fetch entity data',
+          schema: entitySchema,
+          upgrade: auth.upgrade,
+        }, null, 2) }],
+        isError: true,
+      }
+    }
+
     return {
-      content: [{ type: 'text', text: JSON.stringify({ type: 'schema', id: entity.name, data: entity }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({ type: 'schema', id: entitySchema.name, data: entitySchema }, null, 2) }],
     }
   }
 
@@ -1646,14 +1731,14 @@ export async function dispatchTool(
 
     case 'search':
       return handleSearch(
-        args as { query: string; type?: string; limit?: number },
+        args as { query: string; type?: string; filters?: Record<string, unknown>; limit?: number },
         identityStub,
         auth,
       )
 
     case 'fetch':
       return handleFetch(
-        args as { type: string; id?: string; fields?: string[] },
+        args as { type: string; id?: string; fields?: string[]; filters?: Record<string, unknown>; limit?: number; offset?: number },
         identityStub,
         auth,
       )

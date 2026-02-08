@@ -1028,19 +1028,21 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         }
 
         const entityId = body.data.id as string ?? crypto.randomUUID()
-        const storageKey = `entity:${body.identityId ?? 'global'}:${body.entity}:${entityId}`
+        const owner = body.identityId ?? 'global'
+        const storageKey = `entity:${owner}:${body.entity}:${entityId}`
 
         if (body.verb === 'create') {
           const record = {
             ...body.data,
             id: entityId,
+            $type: body.entity,
             createdAt: body.timestamp,
             updatedAt: body.timestamp,
           }
-          await this.ctx.storage.put(storageKey, record)
+          await this.putEntityWithIndexes(owner, body.entity, entityId, record)
 
           // Store event
-          const eventKey = `event:${body.identityId ?? 'global'}:${crypto.randomUUID()}`
+          const eventKey = `event:${owner}:${crypto.randomUUID()}`
           await this.ctx.storage.put(eventKey, {
             type: `${body.entity}.${body.verb}ed`,
             entityType: body.entity,
@@ -1068,8 +1070,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
             return Response.json({ error: 'Entity not found' }, { status: 404 })
           }
 
-          const record = { ...existing, ...body.data, updatedAt: body.timestamp }
-          await this.ctx.storage.put(storageKey, record)
+          // Remove old indexes before updating
+          await this.deleteIndexesForEntity(owner, body.entity, entityId, existing)
+
+          const record = { ...existing, ...body.data, $type: body.entity, updatedAt: body.timestamp }
+          await this.putEntityWithIndexes(owner, body.entity, entityId, record)
 
           return Response.json({
             success: true,
@@ -1084,7 +1089,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         }
 
         if (body.verb === 'delete') {
-          await this.ctx.storage.delete(storageKey)
+          const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+          await this.deleteEntityWithIndexes(owner, body.entity, entityId, existing)
           return Response.json({
             success: true,
             entity: body.entity,
@@ -1099,11 +1105,17 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
         // For custom verbs (qualify, close, advance, etc.), treat as update with verb-specific event
         const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-        const record = { ...(existing ?? {}), ...body.data, id: entityId, updatedAt: body.timestamp }
-        await this.ctx.storage.put(storageKey, record)
+
+        // Remove old indexes if entity existed
+        if (existing) {
+          await this.deleteIndexesForEntity(owner, body.entity, entityId, existing)
+        }
+
+        const record = { ...(existing ?? {}), ...body.data, id: entityId, $type: body.entity, updatedAt: body.timestamp }
+        await this.putEntityWithIndexes(owner, body.entity, entityId, record)
 
         // Store event for the custom verb
-        const eventKey = `event:${body.identityId ?? 'global'}:${crypto.randomUUID()}`
+        const eventKey = `event:${owner}:${crypto.randomUUID()}`
         await this.ctx.storage.put(eventKey, {
           type: `${body.entity}.${body.verb}ed`,
           entityType: body.entity,
@@ -1128,6 +1140,304 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       }
     }
 
+    // ── MCP Search Handler ──────────────────────────────────────────────
+    // Searches entities in DO storage by type, field values, and text query
+
+    if (url.pathname === '/api/mcp-search' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+      try {
+        const body = await request.json() as {
+          identityId: string
+          query?: string
+          type?: string
+          filters?: Record<string, unknown>
+          limit?: number
+          offset?: number
+        }
+
+        const owner = body.identityId ?? 'global'
+        const limit = Math.min(body.limit ?? 20, 100)
+        const offset = body.offset ?? 0
+        const queryLower = body.query?.toLowerCase().trim() ?? ''
+
+        let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
+
+        // If specific type is requested, use prefix scan on that type
+        if (body.type) {
+          const prefix = `entity:${owner}:${body.type}:`
+          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+          for (const [, value] of entries) {
+            if (!value || typeof value !== 'object') continue
+            const entityData = value as Record<string, unknown>
+
+            // Apply field filters
+            if (body.filters && !this.matchesFilters(entityData, body.filters)) continue
+
+            // Calculate text relevance score
+            let score = 1
+            if (queryLower) {
+              score = this.calculateTextScore(entityData, queryLower)
+              if (score === 0) continue
+            }
+
+            results.push({
+              type: body.type,
+              id: String(entityData.id ?? ''),
+              data: entityData,
+              score,
+            })
+          }
+        } else if (body.filters && Object.keys(body.filters).length > 0) {
+          // No type specified but filters given — scan all entities for this owner
+          const prefix = `entity:${owner}:`
+          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+          for (const [key, value] of entries) {
+            if (!value || typeof value !== 'object') continue
+            const entityData = value as Record<string, unknown>
+
+            // Extract type from key: entity:{owner}:{type}:{id}
+            const parts = key.split(':')
+            const entityType = parts[2]
+
+            if (!this.matchesFilters(entityData, body.filters)) continue
+
+            let score = 1
+            if (queryLower) {
+              score = this.calculateTextScore(entityData, queryLower)
+              if (score === 0) continue
+            }
+
+            results.push({
+              type: entityType,
+              id: String(entityData.id ?? ''),
+              data: entityData,
+              score,
+            })
+          }
+        } else if (queryLower) {
+          // Text-only search across all entities for this owner
+          const prefix = `entity:${owner}:`
+          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+          for (const [key, value] of entries) {
+            if (!value || typeof value !== 'object') continue
+            const entityData = value as Record<string, unknown>
+
+            const parts = key.split(':')
+            const entityType = parts[2]
+
+            const score = this.calculateTextScore(entityData, queryLower)
+            if (score === 0) continue
+
+            results.push({
+              type: entityType,
+              id: String(entityData.id ?? ''),
+              data: entityData,
+              score,
+            })
+          }
+        }
+
+        // Sort by score descending, then apply pagination
+        results.sort((a, b) => b.score - a.score)
+        const total = results.length
+        results = results.slice(offset, offset + limit)
+
+        return Response.json({ results, total, limit, offset })
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500 })
+      }
+    }
+
+    // ── MCP Fetch Handler ───────────────────────────────────────────────
+    // Fetches a specific entity or lists entities by type from DO storage
+
+    if (url.pathname === '/api/mcp-fetch' && request.method === 'POST') {
+      if (!isInternal) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 })
+      }
+      try {
+        const body = await request.json() as {
+          identityId: string
+          type: string
+          id?: string
+          filters?: Record<string, unknown>
+          limit?: number
+          offset?: number
+        }
+
+        const owner = body.identityId ?? 'global'
+
+        // Fetch a single entity by type + id
+        if (body.id) {
+          const storageKey = `entity:${owner}:${body.type}:${body.id}`
+          const data = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+          if (!data) {
+            return Response.json({ type: body.type, id: body.id, data: null }, { status: 404 })
+          }
+          return Response.json({ type: body.type, id: body.id, data })
+        }
+
+        // List all entities of a type, with optional filters
+        const prefix = `entity:${owner}:${body.type}:`
+        const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+        const limit = Math.min(body.limit ?? 20, 100)
+        const offset = body.offset ?? 0
+
+        let items: Record<string, unknown>[] = []
+        for (const [, value] of entries) {
+          if (!value || typeof value !== 'object') continue
+          const entityData = value as Record<string, unknown>
+
+          // Apply field filters if provided
+          if (body.filters && !this.matchesFilters(entityData, body.filters)) continue
+
+          items.push(entityData)
+        }
+
+        const total = items.length
+        items = items.slice(offset, offset + limit)
+
+        return Response.json({ type: body.type, items, total, limit, offset })
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 500 })
+      }
+    }
+
     return Response.json({ error: 'not_found', ns: this.ns }, { status: 404 })
+  }
+
+  // ─── Entity Index Management ─────────────────────────────────────────
+  // Maintains secondary indexes for queryable entity storage.
+  //
+  // Storage layout:
+  //   entity:{owner}:{type}:{id}  → full JSON record
+  //   idx:{owner}:{type}:{field}:{value}:{id} → true
+  //
+  // Indexed fields: any string or enum field that is not 'id', 'metadata',
+  // or a JSON blob. This allows field-based lookups like
+  //   "all Contacts where stage = 'Lead'"
+
+  /** Fields that should not be indexed (JSON blobs, binary, internal) */
+  private static readonly NON_INDEXED_FIELDS = new Set([
+    'id', 'metadata', 'properties', 'config', 'targeting', 'variants',
+    'steps', 'trigger', 'filters', 'fields', '$type',
+  ])
+
+  /** Returns the index keys for a given entity record */
+  private indexKeysForEntity(
+    owner: string,
+    entityType: string,
+    entityId: string,
+    record: Record<string, unknown>,
+  ): Map<string, true> {
+    const keys = new Map<string, true>()
+    for (const [field, value] of Object.entries(record)) {
+      if (IdentityDO.NON_INDEXED_FIELDS.has(field)) continue
+      if (value === null || value === undefined) continue
+      if (typeof value === 'object') continue // skip arrays and nested objects
+      // Normalize index value: lowercase string, truncate to 128 chars
+      const normalized = String(value).toLowerCase().slice(0, 128)
+      keys.set(`idx:${owner}:${entityType}:${field}:${normalized}:${entityId}`, true)
+    }
+    return keys
+  }
+
+  /** Store an entity and its secondary indexes */
+  private async putEntityWithIndexes(
+    owner: string,
+    entityType: string,
+    entityId: string,
+    record: Record<string, unknown>,
+  ): Promise<void> {
+    const storageKey = `entity:${owner}:${entityType}:${entityId}`
+    const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
+
+    // Batch put: entity + all index entries
+    const batch = new Map<string, unknown>()
+    batch.set(storageKey, record)
+    for (const [key, val] of indexes) {
+      batch.set(key, val)
+    }
+    await this.ctx.storage.put(Object.fromEntries(batch))
+  }
+
+  /** Delete index entries for an entity record */
+  private async deleteIndexesForEntity(
+    owner: string,
+    entityType: string,
+    entityId: string,
+    record: Record<string, unknown>,
+  ): Promise<void> {
+    const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
+    if (indexes.size > 0) {
+      await this.ctx.storage.delete([...indexes.keys()])
+    }
+  }
+
+  /** Delete an entity and its secondary indexes */
+  private async deleteEntityWithIndexes(
+    owner: string,
+    entityType: string,
+    entityId: string,
+    record: Record<string, unknown> | null | undefined,
+  ): Promise<void> {
+    const storageKey = `entity:${owner}:${entityType}:${entityId}`
+    if (record) {
+      const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
+      const keysToDelete = [storageKey, ...indexes.keys()]
+      await this.ctx.storage.delete(keysToDelete)
+    } else {
+      await this.ctx.storage.delete(storageKey)
+    }
+  }
+
+  /** Check if an entity record matches a set of field filters */
+  private matchesFilters(
+    record: Record<string, unknown>,
+    filters: Record<string, unknown>,
+  ): boolean {
+    for (const [field, expected] of Object.entries(filters)) {
+      const actual = record[field]
+      if (actual === undefined || actual === null) return false
+      // Case-insensitive string comparison
+      if (typeof actual === 'string' && typeof expected === 'string') {
+        if (actual.toLowerCase() !== expected.toLowerCase()) return false
+      } else if (actual !== expected) {
+        return false
+      }
+    }
+    return true
+  }
+
+  /** Calculate a text relevance score for an entity against a query */
+  private calculateTextScore(
+    record: Record<string, unknown>,
+    queryLower: string,
+  ): number {
+    let score = 0
+    for (const [field, value] of Object.entries(record)) {
+      if (value === null || value === undefined || typeof value === 'object') continue
+      const strValue = String(value).toLowerCase()
+      if (!strValue.includes(queryLower)) continue
+
+      // Weight certain fields higher
+      if (field === 'name' || field === 'title' || field === 'subject') {
+        score += strValue === queryLower ? 20 : 10
+      } else if (field === 'email' || field === 'slug' || field === 'key') {
+        score += strValue === queryLower ? 15 : 8
+      } else if (field === 'description' || field === 'body') {
+        score += 3
+      } else if (field === '$type') {
+        score += 5
+      } else {
+        score += 2
+      }
+    }
+    return score
   }
 }
