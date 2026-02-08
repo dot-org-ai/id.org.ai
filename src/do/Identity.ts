@@ -69,15 +69,8 @@ export interface RateLimitEntry {
 }
 
 export interface IdentityEnv {
-  // D1 Database
-  DB: D1Database
-
   // KV for sessions
   SESSIONS: KVNamespace
-
-  // WorkOS (human auth)
-  WORKOS_API_KEY: string
-  WORKOS_CLIENT_ID: string
 
   // Signing secrets
   AUTH_SECRET: string
@@ -117,8 +110,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     capabilities?: string[]
     ownerId?: string
     level?: CapabilityLevel
+    id?: string
   }): Promise<Identity> {
-    const id = crypto.randomUUID()
+    const id = data.id ?? crypto.randomUUID()
     const claimToken = `clm_${crypto.randomUUID().replace(/-/g, '')}`
     const level = data.level ?? 0
 
@@ -169,7 +163,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── Anonymous Provisioning ───────────────────────────────────────────
 
-  async provisionAnonymous(): Promise<{
+  async provisionAnonymous(presetIdentityId?: string): Promise<{
     identity: Identity
     sessionToken: string
     claimToken: string
@@ -178,6 +172,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       type: 'agent',
       name: `anon_${crypto.randomUUID().slice(0, 8)}`,
       level: 1,
+      id: presetIdentityId,
     })
 
     const sessionToken = `ses_${crypto.randomUUID().replace(/-/g, '')}`
@@ -784,10 +779,19 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return Response.json({ error: 'unknown_op' }, { status: 400 })
     }
 
-    // ── Provision — intentionally open (creates anonymous tenants) ─────
+    // ── Provision — creates anonymous tenants ───────────────────────────
+    // Accepts optional identityId in the request body so the worker can
+    // pre-generate the ID (used as the DO shard key for consistent routing).
 
     if (url.pathname === '/api/provision' && request.method === 'POST') {
-      const result = await this.provisionAnonymous()
+      let presetId: string | undefined
+      try {
+        const body = await request.json() as { identityId?: string }
+        presetId = body.identityId
+      } catch {
+        // No body or invalid JSON — use auto-generated ID
+      }
+      const result = await this.provisionAnonymous(presetId)
       return Response.json(result)
     }
 

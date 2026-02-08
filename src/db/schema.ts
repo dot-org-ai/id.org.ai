@@ -3,6 +3,11 @@
  *
  * Drizzle ORM schema for D1/SQLite.
  * This is the canonical schema for all identity data.
+ *
+ * NOTE: This schema is not currently wired into the runtime. The IdentityDO
+ * uses Durable Object storage (ctx.storage) instead of D1. This file is
+ * retained to document the intended relational schema for a future D1
+ * migration. See wrangler.jsonc — the d1_databases binding has been removed.
  */
 
 import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core'

@@ -8,6 +8,14 @@
  *   L0: No auth — anonymous, read scopes, 30 req/min
  *   L1: ses_* token — session, read+write, 100 req/min
  *   L2+: oai_* key — API key, full scopes, 1000+ req/min
+ *
+ * Sharding: Each identity gets its own Durable Object instance.
+ * The shard key is derived from the request:
+ *   - API key (oai_*) → KV lookup: apikey:{key} → identityId
+ *   - Session token (ses_*) → KV lookup: session:{token} → identityId
+ *   - Claim token (clm_*) → KV lookup: claim:{token} → identityId
+ *   - Provision (POST /api/provision) → new UUID (creates new DO)
+ *   - Anonymous L0 → no DO needed (schema-only responses)
  */
 
 import { Hono } from 'hono'
@@ -26,10 +34,7 @@ export { IdentityDO }
 
 interface Env {
   IDENTITY: DurableObjectNamespace
-  DB: D1Database
   SESSIONS: KVNamespace
-  WORKOS_API_KEY: string
-  WORKOS_CLIENT_ID: string
   AUTH_SECRET: string
   JWKS_SECRET: string
   GITHUB_APP_ID?: string
@@ -44,6 +49,74 @@ type Variables = {
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
+// ── Shard Resolution ─────────────────────────────────────────────────────
+// Resolves the identity ID (shard key) from a request's auth credentials.
+// Uses KV for token → identityId lookups so each identity gets its own DO.
+
+/**
+ * Get a DO stub for a specific identity shard.
+ */
+function getStubForIdentity(env: Env, identityId: string): { fetch(input: RequestInfo): Promise<Response> } {
+  const id = env.IDENTITY.idFromName(identityId)
+  return env.IDENTITY.get(id)
+}
+
+/**
+ * Extract the API key from a request (oai_* prefix).
+ */
+function extractApiKey(request: Request): string | null {
+  const header = request.headers.get('x-api-key')
+  if (header?.startsWith('oai_')) return header
+  const auth = request.headers.get('authorization')
+  if (auth?.startsWith('Bearer oai_')) return auth.slice(7)
+  try {
+    const url = new URL(request.url)
+    const keyParam = url.searchParams.get('api_key')
+    if (keyParam?.startsWith('oai_')) return keyParam
+  } catch { /* ignore */ }
+  return null
+}
+
+/**
+ * Extract the session token from a request (ses_* prefix).
+ */
+function extractSessionToken(request: Request): string | null {
+  const auth = request.headers.get('authorization')
+  if (auth?.startsWith('Bearer ses_')) return auth.slice(7)
+  return null
+}
+
+/**
+ * Resolve the identity ID (shard key) from the request's auth credentials.
+ * Returns null for anonymous/L0 requests that don't need a DO.
+ */
+async function resolveIdentityId(request: Request, env: Env): Promise<string | null> {
+  // 1. API key → KV lookup
+  const apiKey = extractApiKey(request)
+  if (apiKey) {
+    const identityId = await env.SESSIONS.get(`apikey:${apiKey}`)
+    return identityId
+  }
+
+  // 2. Session token → KV lookup
+  const sessionToken = extractSessionToken(request)
+  if (sessionToken) {
+    const identityId = await env.SESSIONS.get(`session:${sessionToken}`)
+    return identityId
+  }
+
+  // 3. No credentials → anonymous (no DO needed)
+  return null
+}
+
+/**
+ * Resolve the identity ID from a claim token via KV.
+ */
+async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<string | null> {
+  if (!claimToken?.startsWith('clm_')) return null
+  return env.SESSIONS.get(`claim:${claimToken}`)
+}
+
 // ── CORS ──────────────────────────────────────────────────────────────────
 
 app.use('*', cors({
@@ -54,15 +127,20 @@ app.use('*', cors({
 }))
 
 // ── Identity Stub Middleware ──────────────────────────────────────────────
-// Injects the IdentityDO stub into context for all downstream handlers.
+// Resolves the shard key from auth credentials and injects the correct
+// IdentityDO stub into context. Each identity gets its own DO instance.
 
 app.use('*', async (c, next) => {
-  // TODO: Single global DO is a scalability bottleneck — all requests funnel through
-  // one Durable Object instance. Should be sharded by tenant ID or identity ID
-  // (e.g., idFromName(tenantId)) once multi-tenancy routing is implemented.
-  const id = c.env.IDENTITY.idFromName('global')
-  const stub = c.env.IDENTITY.get(id)
-  c.set('identityStub', stub)
+  const identityId = await resolveIdentityId(c.req.raw, c.env)
+
+  if (identityId) {
+    // Authenticated request — route to identity-specific DO
+    c.set('identityStub', getStubForIdentity(c.env, identityId))
+  }
+  // For anonymous/L0 requests, identityStub is NOT set.
+  // Routes that require a stub will handle this explicitly
+  // (e.g., provision creates a new identity, claim resolves via KV).
+
   await next()
 })
 
@@ -84,47 +162,26 @@ app.get('/.well-known/openid-configuration', (c) => {
 // ── MCP Auth Middleware ───────────────────────────────────────────────────
 // Authenticates every request below this point. The auth result is always
 // set in context — L0 (anonymous) is a valid result, not an error.
+// If no identityStub was resolved (anonymous), MCPAuth returns L0 result.
 
-app.use('/api/*', async (c, next) => {
+async function authenticateRequest(c: any, next: () => Promise<void>) {
   const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const auth = await mcpAuth.authenticate(c.req.raw)
-  c.set('auth', auth)
+  if (stub) {
+    const mcpAuth = new MCPAuth(stub)
+    const auth = await mcpAuth.authenticate(c.req.raw)
+    c.set('auth', auth)
+  } else {
+    // Anonymous L0 — no DO stub needed for read-only schema access
+    c.set('auth', MCPAuth.anonymousResult())
+  }
   await next()
-})
+}
 
-app.use('/mcp', async (c, next) => {
-  const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const auth = await mcpAuth.authenticate(c.req.raw)
-  c.set('auth', auth)
-  await next()
-})
-
-app.use('/mcp/*', async (c, next) => {
-  const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const auth = await mcpAuth.authenticate(c.req.raw)
-  c.set('auth', auth)
-  await next()
-})
-
-// Auth middleware for OAuth endpoints that need identity context
-app.use('/oauth/authorize', async (c, next) => {
-  const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const auth = await mcpAuth.authenticate(c.req.raw)
-  c.set('auth', auth)
-  await next()
-})
-
-app.use('/device', async (c, next) => {
-  const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const auth = await mcpAuth.authenticate(c.req.raw)
-  c.set('auth', auth)
-  await next()
-})
+app.use('/api/*', authenticateRequest)
+app.use('/mcp', authenticateRequest)
+app.use('/mcp/*', authenticateRequest)
+app.use('/oauth/authorize', authenticateRequest)
+app.use('/device', authenticateRequest)
 
 // ── MCP Endpoint ──────────────────────────────────────────────────────────
 // Returns capabilities based on auth level. This is the entry point for
@@ -132,9 +189,7 @@ app.use('/device', async (c, next) => {
 
 app.get('/mcp', async (c) => {
   const auth = c.get('auth')
-  const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const meta = mcpAuth.buildMeta(auth)
+  const meta = MCPAuth.buildMetaStatic(auth)
 
   return c.json({
     jsonrpc: '2.0',
@@ -156,8 +211,7 @@ app.get('/mcp', async (c) => {
 app.post('/mcp', async (c) => {
   const auth = c.get('auth')
   const stub = c.get('identityStub')
-  const mcpAuth = new MCPAuth(stub)
-  const meta = mcpAuth.buildMeta(auth)
+  const meta = MCPAuth.buildMetaStatic(auth)
 
   // Rate limit check
   if (auth.rateLimit && !auth.rateLimit.allowed) {
@@ -222,8 +276,25 @@ app.post('/mcp', async (c) => {
       }, 403)
     }
 
+    // L1+ tools require a DO stub (authenticated identity)
+    if (requiredLevel >= 1 && !stub) {
+      return c.json({
+        jsonrpc: '2.0',
+        id: body.id,
+        error: {
+          code: -32601,
+          message: `Tool "${toolName}" requires authentication`,
+          data: meta,
+        },
+      }, 401)
+    }
+
+    // For L0 tools without a stub, pass a null-safe stub that won't be called
+    // (explore, search schema-only, and fetch schema-only don't need the DO)
+    const effectiveStub = stub ?? { fetch: async () => new Response('{}', { status: 404 }) }
+
     // Dispatch to the tool handler
-    const toolResult = await dispatchTool(toolName, body.params?.arguments ?? {}, stub, auth)
+    const toolResult = await dispatchTool(toolName, body.params?.arguments ?? {}, effectiveStub, auth)
 
     return c.json({
       jsonrpc: '2.0',
@@ -241,13 +312,68 @@ app.post('/mcp', async (c) => {
 
 // ── Provision Endpoint ────────────────────────────────────────────────────
 // Auto-provisions an anonymous tenant. No auth required.
+// Creates a NEW identity with its own Durable Object instance (shard).
+// Writes token → identityId mappings to KV for future request routing.
 
 app.post('/api/provision', async (c) => {
-  const stub = c.get('identityStub')
-  const claimService = new ClaimService(stub)
+  // Generate a new identity ID to use as the shard key.
+  // We pass this to the DO so the identity ID matches the shard key.
+  const shardKey = crypto.randomUUID()
+  const stub = getStubForIdentity(c.env, shardKey)
 
   try {
-    const result = await claimService.provision()
+    // Call the DO's provision endpoint with the pre-generated identity ID
+    const res = await stub.fetch(new Request('https://id.org.ai/api/provision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
+      body: JSON.stringify({ identityId: shardKey }),
+    }))
+
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`Provision failed (${res.status}): ${body}`)
+    }
+
+    const data = await res.json() as {
+      identity: { id: string; name: string; level: number }
+      sessionToken: string
+      claimToken: string
+    }
+
+    // Build the provision result
+    const result = {
+      tenantId: data.identity.name,
+      identityId: data.identity.id,
+      sessionToken: data.sessionToken,
+      claimToken: data.claimToken,
+      level: 1 as const,
+      limits: {
+        maxEntities: 1000,
+        ttlHours: 24,
+        maxRequestsPerMinute: 100,
+      },
+      upgrade: {
+        nextLevel: 2 as const,
+        action: 'claim' as const,
+        description: 'Commit a GitHub Action workflow to claim this tenant',
+        url: `https://id.org.ai/claim/${data.claimToken}`,
+      },
+    }
+
+    // Write KV mappings so future requests can route to this shard.
+    // Session token → identityId (24h TTL matches session TTL)
+    await c.env.SESSIONS.put(
+      `session:${data.sessionToken}`,
+      data.identity.id,
+      { expirationTtl: 86400 },
+    )
+    // Claim token → identityId (30 days — claim window)
+    await c.env.SESSIONS.put(
+      `claim:${data.claimToken}`,
+      data.identity.id,
+      { expirationTtl: 2592000 },
+    )
+
     return c.json(result, 201)
   } catch (err: any) {
     return c.json({ error: 'provision_failed', message: err.message }, 500)
@@ -258,7 +384,13 @@ app.post('/api/provision', async (c) => {
 
 app.get('/api/claim/:token', async (c) => {
   const token = c.req.param('token')
-  const stub = c.get('identityStub')
+
+  // Resolve shard from claim token via KV
+  const identityId = await resolveIdentityFromClaim(token, c.env)
+  if (!identityId) {
+    return c.json({ valid: false, error: 'Unknown claim token' }, 404)
+  }
+  const stub = getStubForIdentity(c.env, identityId)
 
   try {
     const status = await verifyClaim(token, stub)
@@ -281,7 +413,11 @@ app.post('/api/freeze', async (c) => {
     }, 401)
   }
 
+  // Stub is already set by middleware for authenticated requests
   const stub = c.get('identityStub')
+  if (!stub) {
+    return c.json({ error: 'internal_error', message: 'Identity stub not resolved' }, 500)
+  }
   const claimService = new ClaimService(stub)
 
   try {
@@ -300,6 +436,19 @@ app.post('/api/freeze', async (c) => {
 app.all('/api/*', async (c) => {
   const auth = c.get('auth')
   const stub = c.get('identityStub')
+
+  if (!stub) {
+    return c.json({
+      error: 'unauthorized',
+      message: 'Authentication required for this endpoint',
+      upgrade: auth?.upgrade ?? {
+        nextLevel: 1,
+        action: 'provision',
+        description: 'POST to provision endpoint to get a session token',
+        url: 'https://id.org.ai/api/provision',
+      },
+    }, 401)
+  }
 
   // Clone the request and add internal auth headers so the DO can verify
   // the request was routed through the worker's auth middleware.
@@ -323,14 +472,17 @@ app.all('/api/*', async (c) => {
 // IdentityDO's storage (via stub.fetch) for client, token, and consent state.
 
 function getOAuthProvider(c: any): OAuthProvider {
-  const stub = c.get('identityStub')
+  // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
+  // This is separate from identity sharding — OAuth is a system-level concern.
+  const stub = getStubForIdentity(c.env, 'oauth')
+  const authSecret = c.env.AUTH_SECRET
   const base = 'https://id.org.ai'
   return new OAuthProvider({
     storage: {
       async get<T = unknown>(key: string): Promise<T | undefined> {
         const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
           body: JSON.stringify({ op: 'get', key }),
         }))
         if (!res.ok) return undefined
@@ -340,14 +492,14 @@ function getOAuthProvider(c: any): OAuthProvider {
       async put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void> {
         await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
           body: JSON.stringify({ op: 'put', key, value, options }),
         }))
       },
       async delete(key: string): Promise<boolean> {
         const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
           body: JSON.stringify({ op: 'delete', key }),
         }))
         return res.ok
@@ -355,7 +507,7 @@ function getOAuthProvider(c: any): OAuthProvider {
       async list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>> {
         const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
           body: JSON.stringify({ op: 'list', options }),
         }))
         if (!res.ok) return new Map()
@@ -375,8 +527,13 @@ function getOAuthProvider(c: any): OAuthProvider {
       jwksUri: `${base}/.well-known/jwks.json`,
     },
     getIdentity: async (id: string) => {
-      const res = await stub.fetch(
-        new Request(`https://id.org.ai/api/identity/${id}`, { method: 'GET' })
+      // Identity data lives in the identity's own shard, not in the oauth shard
+      const identityStub = getStubForIdentity(c.env, id)
+      const res = await identityStub.fetch(
+        new Request(`https://id.org.ai/api/identity/${id}`, {
+          method: 'GET',
+          headers: { 'X-Worker-Auth': authSecret },
+        })
       )
       if (!res.ok) return null
       return await res.json() as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
@@ -449,6 +606,9 @@ app.post('/oauth/revoke', async (c) => {
 // Fallback for unhandled /oauth/* routes
 app.all('/oauth/*', async (c) => {
   const stub = c.get('identityStub')
+  if (!stub) {
+    return c.json({ error: 'authentication_required', message: 'OAuth endpoints require authentication' }, 401)
+  }
   return stub.fetch(c.req.raw)
 })
 
@@ -456,7 +616,16 @@ app.all('/oauth/*', async (c) => {
 
 app.get('/claim/:token', async (c) => {
   const token = c.req.param('token')
-  const stub = c.get('identityStub')
+
+  // Resolve shard from claim token via KV
+  const identityId = await resolveIdentityFromClaim(token, c.env)
+  if (!identityId) {
+    return c.json({
+      error: 'invalid_claim_token',
+      message: 'This claim token is invalid or has expired.',
+    }, 404)
+  }
+  const stub = getStubForIdentity(c.env, identityId)
   const status = await verifyClaim(token, stub)
 
   if (!status.valid) {
@@ -508,8 +677,11 @@ app.post('/webhook/github', async (c) => {
   // Handle push events — the core claim-by-commit flow
   if (event === 'push') {
     const push = JSON.parse(body) as PushEvent
-    const stub = c.get('identityStub')
-    const result = await githubApp.handlePush(push, stub)
+
+    // The GitHubApp.handlePush needs to fetch the workflow file from GitHub,
+    // parse the claim token, then route to the correct DO shard.
+    // We use a sharded stub resolver that wraps handlePush.
+    const result = await handlePushWithSharding(githubApp, push, c.env)
 
     return c.json({
       event: 'push',
@@ -556,6 +728,126 @@ app.all('*', (c) => c.json({
 }, 404))
 
 export default app
+
+// ============================================================================
+// GitHub Push Sharding
+// ============================================================================
+
+/**
+ * Handle a GitHub push webhook with identity sharding.
+ *
+ * The GitHubApp.handlePush method needs a DO stub, but the webhook doesn't
+ * carry auth credentials — it carries a claim token embedded in the workflow
+ * YAML. We resolve the claim token to an identity via KV, then pass the
+ * correct shard's stub to handlePush.
+ *
+ * Flow:
+ *   1. Check if any commit touches the headlessly workflow file
+ *   2. If not, return early (no claim)
+ *   3. Fetch the workflow file from GitHub
+ *   4. Parse the claim token from the YAML
+ *   5. Resolve identity ID from claim token via KV
+ *   6. Get the correct DO stub for that identity
+ *   7. Call the claim endpoint on that specific DO
+ */
+async function handlePushWithSharding(
+  githubApp: GitHubApp,
+  push: PushEvent,
+  env: Env,
+): Promise<{
+  claimed: boolean
+  claimToken?: string
+  tenantId?: string
+  level?: number
+  branch?: string
+  error?: string
+}> {
+  // Check if any commit touches the headlessly workflow
+  const WORKFLOW_PATH = '.github/workflows/headlessly.yml'
+  const touchedWorkflow = push.commits.some(
+    (c) => c.added.includes(WORKFLOW_PATH) || c.modified.includes(WORKFLOW_PATH),
+  )
+
+  if (!touchedWorkflow) {
+    return { claimed: false }
+  }
+
+  const branch = push.ref.replace('refs/heads/', '')
+
+  if (!push.installation?.id) {
+    return { claimed: false, branch, error: 'missing_installation_id' }
+  }
+
+  // Fetch the workflow file to extract the claim token
+  let yamlContent: string | null = null
+  try {
+    yamlContent = await githubApp.fetchWorkflowContent(
+      push.repository.full_name,
+      push.ref,
+      push.installation.id,
+    )
+  } catch (err: any) {
+    return { claimed: false, branch, error: `fetch_workflow_failed: ${err.message}` }
+  }
+
+  if (!yamlContent) {
+    return { claimed: false, branch, error: 'workflow_file_not_found' }
+  }
+
+  const claimToken = githubApp.parseClaimToken(yamlContent)
+  if (!claimToken) {
+    return { claimed: false, branch, error: 'no_claim_token_in_workflow' }
+  }
+
+  // Resolve the identity shard from the claim token
+  const identityId = await resolveIdentityFromClaim(claimToken, env)
+  if (!identityId) {
+    return { claimed: false, claimToken, branch, error: 'unknown_claim_token' }
+  }
+
+  // Get the DO stub for this specific identity and execute the claim
+  const stub = getStubForIdentity(env, identityId)
+
+  try {
+    const res = await stub.fetch(
+      new Request('https://id.org.ai/api/claim', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Worker-Auth': env.AUTH_SECRET,
+        },
+        body: JSON.stringify({
+          claimToken,
+          githubUserId: String(push.sender.id),
+          githubUsername: push.sender.login,
+          githubEmail: push.sender.email,
+          repo: push.repository.full_name,
+          branch,
+        }),
+      }),
+    )
+
+    const result = await res.json() as {
+      success: boolean
+      identity?: { id: string; level: number }
+      error?: string
+    }
+
+    if (!result.success) {
+      return { claimed: false, claimToken, branch, error: result.error ?? 'claim_failed' }
+    }
+
+    return {
+      claimed: true,
+      claimToken,
+      tenantId: result.identity?.id,
+      level: result.identity?.level,
+      branch,
+    }
+  } catch (err: any) {
+    return { claimed: false, claimToken, branch, error: `claim_request_failed: ${err.message}` }
+  }
+}
 
 // ============================================================================
 // Helpers

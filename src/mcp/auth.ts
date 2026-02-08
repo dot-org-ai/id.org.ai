@@ -78,6 +78,31 @@ export class MCPAuth {
   }
 
   /**
+   * Return the L0 anonymous auth result.
+   * Used when no identity stub is available (no credentials provided).
+   */
+  static anonymousResult(): MCPAuthResult {
+    return {
+      authenticated: false,
+      level: 0,
+      scopes: LEVEL_SCOPES[0],
+      capabilities: LEVEL_CAPABILITIES[0],
+      rateLimit: {
+        allowed: true,
+        remaining: RATE_LIMITS[0],
+        resetAt: Date.now() + 60_000,
+        limit: RATE_LIMITS[0],
+      },
+      upgrade: {
+        nextLevel: 1,
+        action: 'provision',
+        description: 'POST to provision endpoint to get a session token with write access',
+        url: 'https://id.org.ai/api/provision',
+      },
+    }
+  }
+
+  /**
    * Authenticate an MCP request.
    *
    * Three-tier strategy:
@@ -102,24 +127,7 @@ export class MCPAuth {
     }
 
     // ── L0: No auth — anonymous access ─────────────────────────────────
-    return {
-      authenticated: false,
-      level: 0,
-      scopes: LEVEL_SCOPES[0],
-      capabilities: LEVEL_CAPABILITIES[0],
-      rateLimit: {
-        allowed: true,
-        remaining: RATE_LIMITS[0],
-        resetAt: Date.now() + 60_000,
-        limit: RATE_LIMITS[0],
-      },
-      upgrade: {
-        nextLevel: 1,
-        action: 'provision',
-        description: 'POST to provision endpoint to get a session token with write access',
-        url: 'https://id.org.ai/api/provision',
-      },
-    }
+    return MCPAuth.anonymousResult()
   }
 
   /**
@@ -309,7 +317,7 @@ export class MCPAuth {
    * and upgrade instructions. This is attached to every MCP response
    * so agents always know their current level and how to upgrade.
    */
-  buildMeta(auth: MCPAuthResult): Record<string, unknown> {
+  static buildMetaStatic(auth: MCPAuthResult): Record<string, unknown> {
     const meta: Record<string, unknown> = {
       auth: {
         level: auth.level,
@@ -340,6 +348,14 @@ export class MCPAuth {
     }
 
     return meta
+  }
+
+  /**
+   * Instance method that delegates to the static version.
+   * Kept for backward compatibility.
+   */
+  buildMeta(auth: MCPAuthResult): Record<string, unknown> {
+    return MCPAuth.buildMetaStatic(auth)
   }
 
   // ─── Token Extraction ─────────────────────────────────────────────────
