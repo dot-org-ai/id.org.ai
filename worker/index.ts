@@ -195,7 +195,7 @@ app.get('/.well-known/openid-configuration', (c) => {
 async function authenticateRequest(c: any, next: () => Promise<void>) {
   const stub = c.get('identityStub')
   if (stub) {
-    const mcpAuth = new MCPAuth(stub)
+    const mcpAuth = new MCPAuth(stub, c.env.AUTH_SECRET)
     const auth = await mcpAuth.authenticate(c.req.raw)
     c.set('auth', auth)
   } else {
@@ -442,7 +442,7 @@ app.get('/api/claim/:token', async (c) => {
   const stub = getStubForIdentity(c.env, identityId)
 
   try {
-    const status = await verifyClaim(token, stub)
+    const status = await verifyClaim(token, stub, c.env.AUTH_SECRET)
     return c.json(status, status.valid ? 200 : 404)
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
@@ -463,7 +463,7 @@ app.post('/api/freeze', async (c) => {
   if (!stub) {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
-  const claimService = new ClaimService(stub)
+  const claimService = new ClaimService(stub, c.env.AUTH_SECRET)
 
   try {
     const result = await claimService.freeze(auth.identityId)
@@ -818,7 +818,7 @@ app.get('/claim/:token', async (c) => {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
   }
   const stub = getStubForIdentity(c.env, identityId)
-  const status = await verifyClaim(token, stub)
+  const status = await verifyClaim(token, stub, c.env.AUTH_SECRET)
 
   if (!status.valid) {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')

@@ -72,9 +72,15 @@ const RATE_LIMITS: Record<CapabilityLevel, number> = {
 
 export class MCPAuth {
   private identityStub: { fetch(input: string | Request): Promise<Response> }
+  private authSecret: string
 
-  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }) {
+  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }, authSecret?: string) {
     this.identityStub = identityStub
+    this.authSecret = authSecret ?? ''
+  }
+
+  private internalHeaders(): Record<string, string> {
+    return this.authSecret ? { 'X-Worker-Auth': this.authSecret } : {}
   }
 
   /**
@@ -138,7 +144,7 @@ export class MCPAuth {
     const res = await this.identityStub.fetch(
       new Request('https://id.org.ai/api/validate-key', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.internalHeaders() },
         body: JSON.stringify({ key }),
       })
     )
@@ -212,7 +218,7 @@ export class MCPAuth {
    */
   private async authenticateSession(token: string): Promise<MCPAuthResult> {
     const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/session/${token}`, { method: 'GET' })
+      new Request(`https://id.org.ai/api/session/${token}`, { method: 'GET', headers: { ...this.internalHeaders() } })
     )
 
     const data = await res.json() as {
@@ -287,7 +293,7 @@ export class MCPAuth {
     }
 
     const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/rate-limit/${identityId}`, { method: 'GET' })
+      new Request(`https://id.org.ai/api/rate-limit/${identityId}`, { method: 'GET', headers: { ...this.internalHeaders() } })
     )
 
     if (!res.ok) {

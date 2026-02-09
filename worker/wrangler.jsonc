@@ -5,6 +5,8 @@
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  "workers_dev": true,
+
   "routes": [
     { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
     { "pattern": "auth.org.ai/*", "zone_name": "workers.do" }

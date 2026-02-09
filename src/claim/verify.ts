@@ -36,6 +36,7 @@ export interface ClaimStatus {
 export async function verifyClaim(
   claimToken: string,
   identityStub: { fetch(input: string | Request): Promise<Response> },
+  authSecret?: string,
 ): Promise<ClaimStatus> {
   // Validate token format
   if (!claimToken || !claimToken.startsWith('clm_')) {
@@ -48,10 +49,12 @@ export async function verifyClaim(
   }
 
   // Look up in IdentityDO via /api/verify-claim
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (authSecret) headers['X-Worker-Auth'] = authSecret
   const res = await identityStub.fetch(
     new Request('https://id.org.ai/api/verify-claim', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ token: claimToken }),
     })
   )

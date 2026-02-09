@@ -64,9 +64,15 @@ export interface TenantStatus {
 
 export class ClaimService {
   private identityStub: { fetch(input: string | Request): Promise<Response> }
+  private authSecret: string
 
-  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }) {
+  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }, authSecret?: string) {
     this.identityStub = identityStub
+    this.authSecret = authSecret ?? ''
+  }
+
+  private internalHeaders(): Record<string, string> {
+    return this.authSecret ? { 'X-Worker-Auth': this.authSecret } : {}
   }
 
   /**
@@ -78,7 +84,7 @@ export class ClaimService {
    */
   async provision(): Promise<ProvisionResult> {
     const res = await this.identityStub.fetch(
-      new Request('https://id.org.ai/api/provision', { method: 'POST' })
+      new Request('https://id.org.ai/api/provision', { method: 'POST', headers: { ...this.internalHeaders() } })
     )
 
     if (!res.ok) {
@@ -120,7 +126,7 @@ export class ClaimService {
    */
   async freeze(identityId: string): Promise<FreezeResult> {
     const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/freeze/${identityId}`, { method: 'POST' })
+      new Request(`https://id.org.ai/api/freeze/${identityId}`, { method: 'POST', headers: { ...this.internalHeaders() } })
     )
 
     if (!res.ok) {
@@ -153,7 +159,7 @@ export class ClaimService {
     const res = await this.identityStub.fetch(
       new Request('https://id.org.ai/api/verify-claim', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.internalHeaders() },
         body: JSON.stringify({ token: claimToken }),
       })
     )
