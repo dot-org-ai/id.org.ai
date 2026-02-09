@@ -21,6 +21,7 @@
  * no X-Worker-Auth headers, inherently trusted.
  */
 
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { IdentityDO } from '../src/do/Identity'
@@ -46,7 +47,7 @@ import { AUDIT_EVENTS } from '../src/audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
 import { errorResponse, ErrorCode } from '../src/errors'
 
-export { IdentityDO }
+export { IdentityDO, AuthService }
 
 interface Env {
   IDENTITY: DurableObjectNamespace
@@ -61,6 +62,64 @@ interface Env {
 type Variables = {
   auth: MCPAuthResult
   identityStub: IdentityStub
+}
+
+// ── Auth Service (RPC via Service Binding) ──────────────────────────────
+// Exposes verifyToken() as an RPC method for other Cloudflare Workers.
+// Other workers bind to this as `env.AUTH` and call `env.AUTH.verifyToken(token)`.
+
+export class AuthService extends WorkerEntrypoint<Env> {
+  async verifyToken(token: string): Promise<
+    | { valid: true; user: { id: string; email?: string; name?: string; organizationId?: string; roles?: string[]; permissions?: string[] }; cached?: boolean }
+    | { valid: false; error: string }
+  > {
+    // Session token (ses_*)
+    if (token.startsWith('ses_')) {
+      const identityId = await this.env.SESSIONS.get(`session:${token}`)
+      if (!identityId) return { valid: false, error: 'Invalid or expired session' }
+
+      const id = this.env.IDENTITY.idFromName(identityId)
+      const stub = this.env.IDENTITY.get(id) as unknown as IdentityStub
+      const session = await stub.getSession(token)
+      if (!session?.valid) return { valid: false, error: 'Invalid session' }
+
+      const identity = await stub.getIdentity(identityId)
+      return {
+        valid: true,
+        user: {
+          id: identityId,
+          name: identity?.name,
+          email: identity?.email,
+          permissions: ['read', 'write', 'search', 'fetch', 'do', 'try', 'claim'],
+        },
+      }
+    }
+
+    // API key (oai_*)
+    if (token.startsWith('oai_')) {
+      const identityId = await this.env.SESSIONS.get(`apikey:${token}`)
+      if (!identityId) return { valid: false, error: 'Invalid API key' }
+
+      const id = this.env.IDENTITY.idFromName(identityId)
+      const stub = this.env.IDENTITY.get(id) as unknown as IdentityStub
+      const result = await stub.validateApiKey(token)
+      if (!result?.valid) return { valid: false, error: 'Invalid or revoked API key' }
+
+      const identity = await stub.getIdentity(identityId)
+      return {
+        valid: true,
+        user: {
+          id: identityId,
+          name: identity?.name,
+          email: identity?.email,
+          permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
+        },
+      }
+    }
+
+    // Unrecognized token format
+    return { valid: false, error: 'Unrecognized token format. Use ses_* (session) or oai_* (API key).' }
+  }
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
