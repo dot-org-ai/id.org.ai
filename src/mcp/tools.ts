@@ -15,6 +15,7 @@
  */
 
 import type { MCPAuthResult } from './auth'
+import type { IdentityStub } from '../do/Identity'
 
 // ============================================================================
 // Types
@@ -1220,7 +1221,7 @@ export function handleTry(params: {
 
 export async function handleSearch(
   params: { query: string; type?: string; filters?: Record<string, unknown>; limit?: number },
-  identityStub: { fetch(input: string | Request): Promise<Response> },
+  identityStub: IdentityStub,
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
   const limit = Math.min(params.limit ?? 10, 100)
@@ -1286,36 +1287,23 @@ export async function handleSearch(
 
   if (auth.authenticated && auth.identityId) {
     try {
-      const searchBody: Record<string, unknown> = {
+      const searchResult = await identityStub.mcpSearch({
         identityId: auth.identityId,
+        query: query || undefined,
+        type: params.type,
+        filters: params.filters,
         limit,
-      }
-      if (query) searchBody.query = query
-      if (params.type) searchBody.type = params.type
-      if (params.filters) searchBody.filters = params.filters
+      })
 
-      const res = await identityStub.fetch(new Request('https://id.org.ai/api/mcp-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(searchBody),
-      }))
-
-      if (res.ok) {
-        const searchResult = await res.json() as {
-          results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }>
-          total: number
-        }
-
-        for (const item of searchResult.results) {
-          const name = String(item.data.name ?? item.data.title ?? item.data.subject ?? '')
-          dataResults.push({
-            type: item.type,
-            id: item.id,
-            name: name || undefined,
-            score: item.score,
-            snippet: item.data,
-          })
-        }
+      for (const item of searchResult.results) {
+        const name = String(item.data.name ?? item.data.title ?? item.data.subject ?? '')
+        dataResults.push({
+          type: item.type,
+          id: item.id,
+          name: name || undefined,
+          score: item.score,
+          snippet: item.data,
+        })
       }
     } catch {
       // Silently skip data search errors — schema results still returned
@@ -1344,7 +1332,7 @@ export async function handleSearch(
 
 export async function handleFetch(
   params: { type: string; id?: string; fields?: string[]; filters?: Record<string, unknown>; limit?: number; offset?: number },
-  identityStub: { fetch(input: string | Request): Promise<Response> },
+  identityStub: IdentityStub,
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
   if (!params.type) {
@@ -1403,21 +1391,19 @@ export async function handleFetch(
     }
 
     try {
-      const res = await identityStub.fetch(
-        new Request(`https://id.org.ai/api/identity/${params.id}`, { method: 'GET' })
-      )
+      const identity = await identityStub.getIdentity(params.id)
 
-      if (!res.ok) {
+      if (!identity) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ type: 'identity', id: params.id, data: null, error: 'Identity not found' }, null, 2) }],
           isError: true,
         }
       }
 
-      const identity = await res.json() as Record<string, unknown>
+      const identityRecord = identity as unknown as Record<string, unknown>
       const data = params.fields
-        ? Object.fromEntries(Object.entries(identity).filter(([k]) => params.fields!.includes(k)))
-        : identity
+        ? Object.fromEntries(Object.entries(identityRecord).filter(([k]) => params.fields!.includes(k)))
+        : identityRecord
 
       return {
         content: [{ type: 'text', text: JSON.stringify({ type: 'identity', id: params.id, data }, null, 2) }],
@@ -1459,59 +1445,41 @@ export async function handleFetch(
     // If authenticated, try to fetch real entity data from the DO
     if (auth.authenticated && auth.identityId) {
       try {
-        const fetchBody: Record<string, unknown> = {
+        const fetchResult = await identityStub.mcpFetch({
           identityId: auth.identityId,
           type: entitySchema.name,
-        }
-        if (params.id) fetchBody.id = params.id
-        if (params.filters) fetchBody.filters = params.filters
-        if (params.limit) fetchBody.limit = params.limit
-        if (params.offset) fetchBody.offset = params.offset
+          id: params.id,
+          filters: params.filters,
+          limit: params.limit,
+          offset: params.offset,
+        })
 
-        const res = await identityStub.fetch(new Request('https://id.org.ai/api/mcp-fetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fetchBody),
-        }))
-
-        if (res.ok) {
-          const fetchResult = await res.json() as Record<string, unknown>
-
-          // Single entity fetch
-          if (params.id) {
-            let data = fetchResult.data as Record<string, unknown> | null
-            if (data && params.fields) {
-              data = Object.fromEntries(Object.entries(data).filter(([k]) => params.fields!.includes(k)))
-            }
-            return {
-              content: [{ type: 'text', text: JSON.stringify({ type: entitySchema.name, id: params.id, data }, null, 2) }],
-              isError: data === null ? true : undefined,
-            }
+        // Single entity fetch
+        if (params.id) {
+          let data = fetchResult.data as Record<string, unknown> | null
+          if (data && params.fields) {
+            data = Object.fromEntries(Object.entries(data).filter(([k]) => params.fields!.includes(k)))
           }
-
-          // List fetch — apply field projection
-          let items = fetchResult.items as Array<Record<string, unknown>>
-          if (params.fields && items) {
-            items = items.map(item => Object.fromEntries(Object.entries(item).filter(([k]) => params.fields!.includes(k))))
-          }
-
           return {
-            content: [{ type: 'text', text: JSON.stringify({
-              type: entitySchema.name,
-              items,
-              total: fetchResult.total,
-              limit: fetchResult.limit,
-              offset: fetchResult.offset,
-            }, null, 2) }],
+            content: [{ type: 'text', text: JSON.stringify({ type: entitySchema.name, id: params.id, data }, null, 2) }],
+            isError: data === null ? true : undefined,
           }
         }
 
-        // If fetch endpoint returned 404 for a specific entity
-        if (res.status === 404 && params.id) {
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ type: entitySchema.name, id: params.id, data: null, error: 'Entity not found' }, null, 2) }],
-            isError: true,
-          }
+        // List fetch — apply field projection
+        let items = fetchResult.items as Array<Record<string, unknown>>
+        if (params.fields && items) {
+          items = items.map(item => Object.fromEntries(Object.entries(item).filter(([k]) => params.fields!.includes(k))))
+        }
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            type: entitySchema.name,
+            items,
+            total: fetchResult.total,
+            limit: fetchResult.limit,
+            offset: fetchResult.offset,
+          }, null, 2) }],
         }
       } catch {
         // Fall through to schema response if DO fetch fails
@@ -1553,7 +1521,7 @@ export async function handleFetch(
 
 export async function handleDo(
   params: { entity: string; verb: string; data: Record<string, unknown> },
-  identityStub: { fetch(input: string | Request): Promise<Response> },
+  identityStub: IdentityStub,
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
   if (auth.level < 1) {
@@ -1643,47 +1611,20 @@ export async function handleDo(
   const entityId = params.data.id as string ?? crypto.randomUUID()
 
   try {
-    const res = await identityStub.fetch(new Request('https://id.org.ai/api/mcp-do', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        entity: entity.name,
-        verb: params.verb,
-        data: { ...params.data, id: entityId },
-        identityId: auth.identityId,
-        timestamp: now,
-      }),
-    }))
-
-    if (res.ok) {
-      const result = await res.json() as Record<string, unknown>
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    }
-
-    // If the DO does not have the /api/mcp-do handler yet, fall back to a local response
-    const fallbackResult: DoResult = {
-      success: true,
+    const result = await identityStub.mcpDo({
       entity: entity.name,
       verb: params.verb,
-      result: {
-        id: entityId,
-        ...params.data,
-        createdAt: new Date(now).toISOString(),
-        updatedAt: new Date(now).toISOString(),
-      },
-      events: [
-        { type: verb.lifecycle.before, entity: entity.name, verb: params.verb, timestamp: new Date(now).toISOString() },
-        { type: verb.lifecycle.after, entity: entity.name, verb: params.verb, timestamp: new Date(now).toISOString() },
-      ],
-    }
+      data: { ...params.data, id: entityId },
+      identityId: auth.identityId,
+      authLevel: auth.level,
+      timestamp: now,
+    })
 
     return {
-      content: [{ type: 'text', text: JSON.stringify(fallbackResult, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     }
   } catch {
-    // Fallback for when IdentityDO does not handle this endpoint
+    // Fallback for unexpected errors
     const result: DoResult = {
       success: true,
       entity: entity.name,
@@ -1719,7 +1660,7 @@ export async function handleDo(
 export async function dispatchTool(
   toolName: string,
   args: Record<string, unknown>,
-  identityStub: { fetch(input: string | Request): Promise<Response> },
+  identityStub: IdentityStub,
   auth: MCPAuthResult,
 ): Promise<ToolResult> {
   switch (toolName) {

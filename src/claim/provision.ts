@@ -12,6 +12,8 @@
  * The freeze response shows what the agent built — driving the claim conversion.
  */
 
+import type { IdentityStub } from '../do/Identity'
+
 export interface ProvisionResult {
   tenantId: string
   identityId: string
@@ -63,40 +65,17 @@ export interface TenantStatus {
 }
 
 export class ClaimService {
-  private identityStub: { fetch(input: string | Request): Promise<Response> }
-  private authSecret: string
+  private identityStub: IdentityStub
 
-  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }, authSecret?: string) {
+  constructor(identityStub: IdentityStub) {
     this.identityStub = identityStub
-    this.authSecret = authSecret ?? ''
-  }
-
-  private internalHeaders(): Record<string, string> {
-    return this.authSecret ? { 'X-Worker-Auth': this.authSecret } : {}
   }
 
   /**
-   * Provision an anonymous sandbox tenant.
-   *
-   * Calls IdentityDO.provisionAnonymous() via its HTTP interface.
-   * Returns a session token (for ongoing requests) and a claim token
-   * (for later claiming via GitHub commit).
+   * Provision an anonymous sandbox tenant via direct RPC.
    */
   async provision(): Promise<ProvisionResult> {
-    const res = await this.identityStub.fetch(
-      new Request('https://id.org.ai/api/provision', { method: 'POST', headers: { ...this.internalHeaders() } })
-    )
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Provision failed (${res.status}): ${body}`)
-    }
-
-    const data = await res.json() as {
-      identity: { id: string; name: string; level: number }
-      sessionToken: string
-      claimToken: string
-    }
+    const data = await this.identityStub.provisionAnonymous()
 
     return {
       tenantId: data.identity.name,
@@ -119,26 +98,10 @@ export class ClaimService {
   }
 
   /**
-   * Freeze an expired anonymous tenant.
-   *
-   * Data is preserved in the Durable Object for 30 days.
-   * The freeze response shows what the agent built to drive claiming.
+   * Freeze an expired anonymous tenant via direct RPC.
    */
   async freeze(identityId: string): Promise<FreezeResult> {
-    const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/freeze/${identityId}`, { method: 'POST', headers: { ...this.internalHeaders() } })
-    )
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Freeze failed (${res.status}): ${body}`)
-    }
-
-    const data = await res.json() as {
-      frozen: boolean
-      stats: { entities: number; events: number; sessions: number }
-      expiresAt: number
-    }
+    const data = await this.identityStub.freezeIdentity(identityId)
 
     return {
       frozen: data.frozen,
@@ -153,24 +116,10 @@ export class ClaimService {
   }
 
   /**
-   * Get the current status of a tenant by claim token.
+   * Get the current status of a tenant by claim token via direct RPC.
    */
   async getStatus(claimToken: string): Promise<TenantStatus> {
-    const res = await this.identityStub.fetch(
-      new Request('https://id.org.ai/api/verify-claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.internalHeaders() },
-        body: JSON.stringify({ token: claimToken }),
-      })
-    )
-
-    const data = await res.json() as {
-      valid: boolean
-      identityId?: string
-      status?: string
-      level?: number
-      stats?: { entities: number; events: number; createdAt: number; expiresAt?: number }
-    }
+    const data = await this.identityStub.verifyClaimToken(claimToken)
 
     if (!data.valid || !data.identityId) {
       throw new Error('Invalid or expired claim token')

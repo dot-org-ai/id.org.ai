@@ -15,7 +15,7 @@
  *   - Freeze, don't delete: expired tenants freeze with 30-day data preservation
  */
 
-import type { CapabilityLevel } from '../do/Identity'
+import type { CapabilityLevel, IdentityStub } from '../do/Identity'
 
 // ============================================================================
 // Types
@@ -71,16 +71,10 @@ const RATE_LIMITS: Record<CapabilityLevel, number> = {
 // ============================================================================
 
 export class MCPAuth {
-  private identityStub: { fetch(input: string | Request): Promise<Response> }
-  private authSecret: string
+  private identityStub: IdentityStub
 
-  constructor(identityStub: { fetch(input: string | Request): Promise<Response> }, authSecret?: string) {
+  constructor(identityStub: IdentityStub) {
     this.identityStub = identityStub
-    this.authSecret = authSecret ?? ''
-  }
-
-  private internalHeaders(): Record<string, string> {
-    return this.authSecret ? { 'X-Worker-Auth': this.authSecret } : {}
   }
 
   /**
@@ -141,20 +135,7 @@ export class MCPAuth {
    * Returns L2 or L3 auth result based on the identity level.
    */
   private async authenticateApiKey(key: string): Promise<MCPAuthResult> {
-    const res = await this.identityStub.fetch(
-      new Request('https://id.org.ai/api/validate-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.internalHeaders() },
-        body: JSON.stringify({ key }),
-      })
-    )
-
-    const data = await res.json() as {
-      valid: boolean
-      identityId?: string
-      scopes?: string[]
-      level?: CapabilityLevel
-    }
+    const data = await this.identityStub.validateApiKey(key)
 
     if (!data.valid || !data.identityId) {
       return {
@@ -217,16 +198,7 @@ export class MCPAuth {
    * Returns L1 auth result with write scopes and claim upgrade hint.
    */
   private async authenticateSession(token: string): Promise<MCPAuthResult> {
-    const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/session/${token}`, { method: 'GET', headers: { ...this.internalHeaders() } })
-    )
-
-    const data = await res.json() as {
-      valid: boolean
-      identityId?: string
-      level?: CapabilityLevel
-      expiresAt?: number
-    }
+    const data = await this.identityStub.getSession(token)
 
     if (!data.valid || !data.identityId) {
       return {
@@ -292,27 +264,17 @@ export class MCPAuth {
       return { allowed: true, remaining: Infinity, resetAt: 0, limit: Infinity }
     }
 
-    const res = await this.identityStub.fetch(
-      new Request(`https://id.org.ai/api/rate-limit/${identityId}`, { method: 'GET', headers: { ...this.internalHeaders() } })
-    )
-
-    if (!res.ok) {
+    try {
+      const data = await this.identityStub.checkRateLimit(identityId, level)
+      return {
+        allowed: data.allowed,
+        remaining: data.remaining,
+        resetAt: data.resetAt,
+        limit,
+      }
+    } catch {
       // If rate limit check fails, allow the request but with conservative limits
       return { allowed: true, remaining: 1, resetAt: Date.now() + 60_000, limit }
-    }
-
-    const data = await res.json() as {
-      allowed: boolean
-      remaining: number
-      resetAt: number
-      level: CapabilityLevel
-    }
-
-    return {
-      allowed: data.allowed,
-      remaining: data.remaining,
-      resetAt: data.resetAt,
-      limit,
     }
   }
 

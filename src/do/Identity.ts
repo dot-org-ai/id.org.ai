@@ -22,13 +22,46 @@
 
 import { DurableObject } from 'cloudflare:workers'
 import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify, base64Decode, base64Encode, isValidDID } from '../crypto/keys'
-import { errorJson, ErrorCode } from '../errors'
+// errorJson/ErrorCode no longer needed — fetch() is health-check only, all routes are RPC
 import { AuditLog } from '../audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
 
 // ============================================================================
 // Types
 // ============================================================================
+
+/**
+ * IdentityStub — the RPC interface for IdentityDO.
+ *
+ * All consumers use this type instead of the concrete class or `{ fetch() }`.
+ * Workers RPC calls these methods directly on the DO stub — no HTTP overhead,
+ * no X-Worker-Auth headers, no JSON serialization/deserialization.
+ */
+export interface IdentityStub {
+  // Identity
+  getIdentity(id: string): Promise<Identity | null>
+  provisionAnonymous(presetIdentityId?: string): Promise<{ identity: Identity; sessionToken: string; claimToken: string }>
+  claim(data: { claimToken: string; githubUserId: string; githubUsername: string; githubEmail?: string; repo?: string; branch?: string }): Promise<{ success: boolean; identity?: Identity; error?: string }>
+
+  // Auth
+  getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>
+  validateApiKey(key: string): Promise<{ valid: boolean; identityId?: string; scopes?: string[]; level?: CapabilityLevel }>
+  checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{ allowed: boolean; remaining: number; resetAt: number }>
+  verifyClaimToken(token: string): Promise<{ valid: boolean; identityId?: string; status?: ClaimStatus; level?: CapabilityLevel; stats?: { entities: number; events: number; createdAt: number; expiresAt?: number } }>
+  freezeIdentity(id: string): Promise<{ frozen: boolean; stats: { entities: number; events: number; sessions: number }; expiresAt: number }>
+
+  // MCP
+  mcpSearch(params: { identityId: string; query?: string; type?: string; filters?: Record<string, unknown>; limit?: number; offset?: number }): Promise<{ results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }>; total: number; limit: number; offset: number }>
+  mcpFetch(params: { identityId: string; type: string; id?: string; filters?: Record<string, unknown>; limit?: number; offset?: number }): Promise<Record<string, unknown>>
+  mcpDo(params: { entity: string; verb: string; data: Record<string, unknown>; identityId?: string; authLevel: number; timestamp: number }): Promise<{ success: boolean; entity: string; verb: string; result?: Record<string, unknown>; events?: unknown[]; error?: string }>
+
+  // OAuth Storage
+  oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
+
+  // Audit
+  writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void>
+  queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }>
+}
 
 export type IdentityType = 'human' | 'agent' | 'service'
 
@@ -700,39 +733,281 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     return true
   }
 
-  // ─── Internal Auth Check ────────────────────────────────────────────
-  // Verifies that a request came through the worker's auth middleware by
-  // checking the X-Worker-Auth header against the AUTH_SECRET binding.
-  // This prevents direct-to-DO requests from bypassing authentication.
+  // ─── OAuth Storage (RPC) ───────────────────────────────────────────
 
-  private isInternalRequest(request: Request): boolean {
-    const workerAuth = request.headers.get('X-Worker-Auth')
-    if (!workerAuth) return false
-    const expectedSecret = this.env.AUTH_SECRET
-    if (!expectedSecret) return false
-    // Constant-time-ish comparison
-    if (workerAuth.length !== expectedSecret.length) return false
-    let mismatch = 0
-    for (let i = 0; i < workerAuth.length; i++) {
-      mismatch |= workerAuth.charCodeAt(i) ^ expectedSecret.charCodeAt(i)
+  async oauthStorageOp(op: {
+    op: 'get' | 'put' | 'delete' | 'list'
+    key?: string
+    value?: unknown
+    options?: { expirationTtl?: number; prefix?: string; limit?: number }
+  }): Promise<Record<string, unknown>> {
+    if (op.op === 'get' && op.key) {
+      const value = await this.ctx.storage.get(op.key)
+      return { value: value ?? undefined }
     }
-    return mismatch === 0
+
+    if (op.op === 'put' && op.key) {
+      await this.ctx.storage.put(op.key, op.value)
+      return { ok: true }
+    }
+
+    if (op.op === 'delete' && op.key) {
+      const deleted = await this.ctx.storage.delete(op.key)
+      return { deleted }
+    }
+
+    if (op.op === 'list') {
+      const opts: { prefix?: string; limit?: number } = {}
+      if (op.options?.prefix) opts.prefix = op.options.prefix
+      if (op.options?.limit) opts.limit = op.options.limit
+      const entries = await this.ctx.storage.list(opts)
+      return { entries: Array.from(entries.entries()) }
+    }
+
+    throw new Error(`Unknown storage operation: ${op.op}`)
   }
 
-  private getCallerIdentityId(request: Request): string | null {
-    return request.headers.get('X-Identity-Id') ?? null
+  // ─── Audit Log (RPC) ────────────────────────────────────────────────
+
+  async writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void> {
+    await this.ctx.storage.put(key, event)
   }
 
-  private getCallerAuthLevel(request: Request): number {
-    const level = request.headers.get('X-Auth-Level')
-    return level ? parseInt(level, 10) : -1
+  async queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }> {
+    const auditLog = new AuditLog(this.ctx.storage)
+    return auditLog.query(options)
   }
 
-  // ─── HTTP Handler ─────────────────────────────────────────────────────
+  // ─── MCP Do (RPC) ──────────────────────────────────────────────────
+
+  async mcpDo(params: {
+    entity: string
+    verb: string
+    data: Record<string, unknown>
+    identityId?: string
+    authLevel: number
+    timestamp: number
+  }): Promise<{ success: boolean; entity: string; verb: string; result?: Record<string, unknown>; events?: unknown[]; error?: string }> {
+    if (params.authLevel < 1) {
+      return { success: false, entity: params.entity, verb: params.verb, error: 'L1+ authentication required for entity operations' }
+    }
+
+    const entityId = params.data.id as string ?? crypto.randomUUID()
+    const owner = params.identityId ?? 'global'
+    const storageKey = `entity:${owner}:${params.entity}:${entityId}`
+
+    if (params.verb === 'create') {
+      const record = {
+        ...params.data,
+        id: entityId,
+        $type: params.entity,
+        createdAt: params.timestamp,
+        updatedAt: params.timestamp,
+      }
+      await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+
+      const eventKey = `event:${owner}:${crypto.randomUUID()}`
+      await this.ctx.storage.put(eventKey, {
+        type: `${params.entity}.${params.verb}ed`,
+        entityType: params.entity,
+        entityId,
+        verb: params.verb,
+        data: record,
+        timestamp: params.timestamp,
+      })
+
+      return {
+        success: true,
+        entity: params.entity,
+        verb: params.verb,
+        result: record,
+        events: [
+          { type: `${params.verb}ing`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          { type: `${params.verb}ed`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+        ],
+      }
+    }
+
+    if (params.verb === 'update') {
+      const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+      if (!existing) {
+        return { success: false, entity: params.entity, verb: params.verb, error: `${params.entity} not found: ${entityId}` }
+      }
+
+      await this.deleteIndexesForEntity(owner, params.entity, entityId, existing)
+      const record = { ...existing, ...params.data, $type: params.entity, updatedAt: params.timestamp }
+      await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+
+      return {
+        success: true,
+        entity: params.entity,
+        verb: params.verb,
+        result: record,
+        events: [
+          { type: 'updating', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          { type: 'updated', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+        ],
+      }
+    }
+
+    if (params.verb === 'delete') {
+      const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+      await this.deleteEntityWithIndexes(owner, params.entity, entityId, existing)
+      return {
+        success: true,
+        entity: params.entity,
+        verb: params.verb,
+        result: { id: entityId, deleted: true },
+        events: [
+          { type: 'deleting', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          { type: 'deleted', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+        ],
+      }
+    }
+
+    // Custom verbs (qualify, close, advance, etc.)
+    const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+    if (existing) {
+      await this.deleteIndexesForEntity(owner, params.entity, entityId, existing)
+    }
+
+    const record = { ...(existing ?? {}), ...params.data, id: entityId, $type: params.entity, updatedAt: params.timestamp }
+    await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+
+    const eventKey = `event:${owner}:${crypto.randomUUID()}`
+    await this.ctx.storage.put(eventKey, {
+      type: `${params.entity}.${params.verb}ed`,
+      entityType: params.entity,
+      entityId,
+      verb: params.verb,
+      data: record,
+      timestamp: params.timestamp,
+    })
+
+    return {
+      success: true,
+      entity: params.entity,
+      verb: params.verb,
+      result: record,
+      events: [
+        { type: `${params.verb}ing`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+        { type: `${params.verb}ed`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+      ],
+    }
+  }
+
+  // ─── MCP Search (RPC) ────────────────────────────────────────────────
+
+  async mcpSearch(params: {
+    identityId: string
+    query?: string
+    type?: string
+    filters?: Record<string, unknown>
+    limit?: number
+    offset?: number
+  }): Promise<{ results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }>; total: number; limit: number; offset: number }> {
+    const owner = params.identityId ?? 'global'
+    const limit = Math.min(params.limit ?? 20, 100)
+    const offset = params.offset ?? 0
+    const queryLower = params.query?.toLowerCase().trim() ?? ''
+
+    let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
+
+    if (params.type) {
+      const prefix = `entity:${owner}:${params.type}:`
+      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+      for (const [, value] of entries) {
+        if (!value || typeof value !== 'object') continue
+        const entityData = value as Record<string, unknown>
+        if (params.filters && !this.matchesFilters(entityData, params.filters)) continue
+        let score = 1
+        if (queryLower) {
+          score = this.calculateTextScore(entityData, queryLower)
+          if (score === 0) continue
+        }
+        results.push({ type: params.type, id: String(entityData.id ?? ''), data: entityData, score })
+      }
+    } else if (params.filters && Object.keys(params.filters).length > 0) {
+      const prefix = `entity:${owner}:`
+      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+      for (const [key, value] of entries) {
+        if (!value || typeof value !== 'object') continue
+        const entityData = value as Record<string, unknown>
+        const parts = key.split(':')
+        const entityType = parts[2]
+        if (!this.matchesFilters(entityData, params.filters)) continue
+        let score = 1
+        if (queryLower) {
+          score = this.calculateTextScore(entityData, queryLower)
+          if (score === 0) continue
+        }
+        results.push({ type: entityType, id: String(entityData.id ?? ''), data: entityData, score })
+      }
+    } else if (queryLower) {
+      const prefix = `entity:${owner}:`
+      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+
+      for (const [key, value] of entries) {
+        if (!value || typeof value !== 'object') continue
+        const entityData = value as Record<string, unknown>
+        const parts = key.split(':')
+        const entityType = parts[2]
+        const score = this.calculateTextScore(entityData, queryLower)
+        if (score === 0) continue
+        results.push({ type: entityType, id: String(entityData.id ?? ''), data: entityData, score })
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score)
+    const total = results.length
+    results = results.slice(offset, offset + limit)
+
+    return { results, total, limit, offset }
+  }
+
+  // ─── MCP Fetch (RPC) ─────────────────────────────────────────────────
+
+  async mcpFetch(params: {
+    identityId: string
+    type: string
+    id?: string
+    filters?: Record<string, unknown>
+    limit?: number
+    offset?: number
+  }): Promise<Record<string, unknown>> {
+    const owner = params.identityId ?? 'global'
+
+    if (params.id) {
+      const storageKey = `entity:${owner}:${params.type}:${params.id}`
+      const data = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+      return { type: params.type, id: params.id, data: data ?? null }
+    }
+
+    const prefix = `entity:${owner}:${params.type}:`
+    const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
+    const limit = Math.min(params.limit ?? 20, 100)
+    const offset = params.offset ?? 0
+
+    let items: Record<string, unknown>[] = []
+    for (const [, value] of entries) {
+      if (!value || typeof value !== 'object') continue
+      const entityData = value as Record<string, unknown>
+      if (params.filters && !this.matchesFilters(entityData, params.filters)) continue
+      items.push(entityData)
+    }
+
+    const total = items.length
+    items = items.slice(offset, offset + limit)
+
+    return { type: params.type, items, total, limit, offset }
+  }
+
+  // ─── HTTP Handler (health check only) ─────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
-    const isInternal = this.isInternalRequest(request)
 
     if (url.pathname === '/health') {
       return Response.json({
@@ -742,614 +1017,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       })
     }
 
-    // ── OAuth Storage (internal only — used by OAuthProvider via worker) ──
-
-    if (url.pathname === '/api/oauth-storage' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-
-      const body = await request.json() as {
-        op: string
-        key?: string
-        value?: unknown
-        options?: { expirationTtl?: number; prefix?: string; limit?: number }
-      }
-
-      if (body.op === 'get' && body.key) {
-        const value = await this.ctx.storage.get(body.key)
-        return Response.json({ value: value ?? undefined })
-      }
-
-      if (body.op === 'put' && body.key) {
-        await this.ctx.storage.put(body.key, body.value)
-        return Response.json({ ok: true })
-      }
-
-      if (body.op === 'delete' && body.key) {
-        const deleted = await this.ctx.storage.delete(body.key)
-        return Response.json({ deleted })
-      }
-
-      if (body.op === 'list') {
-        const opts: { prefix?: string; limit?: number } = {}
-        if (body.options?.prefix) opts.prefix = body.options.prefix
-        if (body.options?.limit) opts.limit = body.options.limit
-        const entries = await this.ctx.storage.list(opts)
-        return Response.json({ entries: Array.from(entries.entries()) })
-      }
-
-      return errorJson(ErrorCode.InvalidRequest, `Unknown storage operation: ${body.op}`, 400)
-    }
-
-    // ── Provision — creates anonymous tenants ───────────────────────────
-    // Accepts optional identityId in the request body so the worker can
-    // pre-generate the ID (used as the DO shard key for consistent routing).
-
-    if (url.pathname === '/api/provision' && request.method === 'POST') {
-      let presetId: string | undefined
-      try {
-        const body = await request.json() as { identityId?: string }
-        presetId = body.identityId
-      } catch {
-        // No body or invalid JSON — use auto-generated ID
-      }
-      const result = await this.provisionAnonymous(presetId)
-      return Response.json(result)
-    }
-
-    // ── Claim — internal only (called from GitHub webhook handler) ─────
-
-    if (url.pathname === '/api/claim' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Claim must be initiated via GitHub webhook', 403)
-      }
-      const body = await request.json() as any
-      const result = await this.claim(body)
-      return Response.json(result, { status: result.success ? 200 : 400 })
-    }
-
-    // ── Validate Key — internal only (called by MCPAuth) ──────────────
-
-    if (url.pathname === '/api/validate-key' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const { key } = await request.json() as { key: string }
-      const result = await this.validateApiKey(key)
-      return Response.json(result)
-    }
-
-    // ── Identity Lookup — internal only ────────────────────────────────
-
-    if (url.pathname.startsWith('/api/identity/') && request.method === 'GET') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const id = url.pathname.slice('/api/identity/'.length)
-      const identity = await this.getIdentity(id)
-      if (!identity) return errorJson(ErrorCode.NotFound, `Identity not found: ${id}`, 404)
-      return Response.json(identity)
-    }
-
-    // ── Claim Token Verification — internal only ──────────────────────
-
-    if (url.pathname === '/api/verify-claim' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const { token } = await request.json() as { token: string }
-      if (!token) return errorJson(ErrorCode.MissingParameter, 'token is required', 400)
-      const result = await this.verifyClaimToken(token)
-      return Response.json(result, { status: result.valid ? 200 : 404 })
-    }
-
-    // ── Session Validation — internal only (called by MCPAuth) ────────
-
-    if (url.pathname.startsWith('/api/session/') && request.method === 'GET') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const token = url.pathname.slice('/api/session/'.length)
-      if (!token) return errorJson(ErrorCode.MissingParameter, 'Session token is required', 400)
-      const result = await this.getSession(token)
-      return Response.json(result, { status: result.valid ? 200 : 401 })
-    }
-
-    // ── Freeze Identity — requires auth + own identity ────────────────
-
-    if (url.pathname.startsWith('/api/freeze/') && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const id = url.pathname.slice('/api/freeze/'.length)
-      if (!id) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
-
-      // Verify caller is freezing their own identity
-      const callerId = this.getCallerIdentityId(request)
-      if (callerId && callerId !== id) {
-        return errorJson(ErrorCode.Forbidden, 'Can only freeze your own identity', 403)
-      }
-
-      try {
-        const result = await this.freezeIdentity(id)
-        return Response.json(result)
-      } catch (err: any) {
-        return errorJson(ErrorCode.NotFound, err.message, 404)
-      }
-    }
-
-    // ── Rate Limit Check — internal only (called by MCPAuth) ──────────
-
-    if (url.pathname.startsWith('/api/rate-limit/') && request.method === 'GET') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const id = url.pathname.slice('/api/rate-limit/'.length)
-      if (!id) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
-
-      const identity = await this.getIdentity(id)
-      if (!identity) return errorJson(ErrorCode.NotFound, `Identity not found: ${id}`, 404)
-
-      const result = await this.checkRateLimit(id, identity.level)
-      return Response.json({ ...result, level: identity.level })
-    }
-
-    // ── List Sessions — requires auth + own identity ──────────────────
-
-    if (url.pathname.startsWith('/api/sessions/') && request.method === 'GET') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const identityId = url.pathname.slice('/api/sessions/'.length)
-      if (!identityId) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
-
-      // Only allow listing own sessions
-      const callerId = this.getCallerIdentityId(request)
-      if (callerId && callerId !== identityId) {
-        return errorJson(ErrorCode.Forbidden, 'Can only list your own sessions', 403)
-      }
-
-      const sessions = await this.listSessions(identityId)
-      return Response.json({ sessions })
-    }
-
-    // ── Agent Key Management ──────────────────────────────────────────
-
-    // POST /api/agent-keys — Register a new agent key (requires auth)
-    if (url.pathname === '/api/agent-keys' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const authLevel = this.getCallerAuthLevel(request)
-      if (authLevel < 1) {
-        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required to register agent keys', 401)
-      }
-      try {
-        const body = await request.json() as {
-          identityId: string
-          publicKey: string
-          label?: string
-        }
-
-        if (!body.identityId || !body.publicKey) {
-          return errorJson(ErrorCode.MissingParameter, 'identityId and publicKey are required', 400)
-        }
-
-        // Verify caller owns the identity they're registering a key for
-        const callerId = this.getCallerIdentityId(request)
-        if (callerId && callerId !== body.identityId) {
-          return errorJson(ErrorCode.Forbidden, 'Can only register keys for your own identity', 403)
-        }
-
-        const result = await this.registerAgentKey(body)
-        return Response.json(result, { status: 201 })
-      } catch (err: any) {
-        return errorJson(ErrorCode.InvalidRequest, err.message, 400)
-      }
-    }
-
-    // GET /api/agent-keys/:identityId — List agent keys for an identity
-    if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'GET') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const identityId = url.pathname.slice('/api/agent-keys/'.length)
-      if (!identityId) return errorJson(ErrorCode.MissingParameter, 'Identity ID is required', 400)
-
-      // Only allow listing own agent keys
-      const callerId = this.getCallerIdentityId(request)
-      if (callerId && callerId !== identityId) {
-        return errorJson(ErrorCode.Forbidden, 'Can only list your own agent keys', 403)
-      }
-
-      const keys = await this.listAgentKeys(identityId)
-      return Response.json({ keys })
-    }
-
-    // DELETE /api/agent-keys/:keyId — Revoke an agent key (requires auth)
-    if (url.pathname.startsWith('/api/agent-keys/') && request.method === 'DELETE') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const authLevel = this.getCallerAuthLevel(request)
-      if (authLevel < 1) {
-        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required to revoke agent keys', 401)
-      }
-      const keyId = url.pathname.slice('/api/agent-keys/'.length)
-      if (!keyId) return errorJson(ErrorCode.MissingParameter, 'Key ID is required', 400)
-
-      const revoked = await this.revokeAgentKey(keyId)
-      if (!revoked) {
-        return errorJson(ErrorCode.NotFound, 'Key not found or already revoked', 404)
-      }
-
-      return Response.json({ revoked: true, keyId })
-    }
-
-    // POST /api/verify-signature — Verify a signed request from an agent (internal)
-    if (url.pathname === '/api/verify-signature' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      try {
-        const body = await request.json() as {
-          did: string
-          message: string
-          signature: string
-        }
-
-        if (!body.did || !body.message || !body.signature) {
-          return errorJson(ErrorCode.MissingParameter, 'did, message, and signature are required', 400)
-        }
-
-        const result = await this.verifyAgentSignature(body)
-        return Response.json(result, { status: result.valid ? 200 : 401 })
-      } catch (err: any) {
-        return errorJson(ErrorCode.InvalidRequest, err.message, 400)
-      }
-    }
-
-    // ── Audit Log — Write (internal only) ──────────────────────────────
-    // Called by the worker's logAuditEvent helper to persist audit events
-    // into this DO's storage. Events are immutable once written.
-
-    if (url.pathname === '/api/audit-log' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      try {
-        const body = await request.json() as { key: string; event: StoredAuditEvent }
-        if (!body.key || !body.event) {
-          return errorJson(ErrorCode.MissingParameter, 'key and event are required', 400)
-        }
-        await this.ctx.storage.put(body.key, body.event)
-        return Response.json({ ok: true })
-      } catch (err: any) {
-        return errorJson(ErrorCode.ServerError, err.message, 500)
-      }
-    }
-
-    // ── Audit Log — Query (internal only) ────────────────────────────────
-    // Called by the worker's GET /api/audit endpoint to query audit events.
-    // Uses the AuditLog class for paginated, filterable queries.
-
-    if (url.pathname === '/api/audit' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      try {
-        const options = await request.json() as AuditQueryOptions
-        const auditLog = new AuditLog(this.ctx.storage)
-        const result = await auditLog.query(options)
-        return Response.json(result)
-      } catch (err: any) {
-        return errorJson(ErrorCode.ServerError, err.message, 500)
-      }
-    }
-
-    // ── MCP Do Handler ──────────────────────────────────────────────────
-    // Handles entity operations from the MCP do tool (requires auth L1+)
-
-    if (url.pathname === '/api/mcp-do' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      const authLevel = this.getCallerAuthLevel(request)
-      if (authLevel < 1) {
-        return errorJson(ErrorCode.AuthenticationRequired, 'L1+ authentication required for entity operations', 401)
-      }
-      try {
-        const body = await request.json() as {
-          entity: string
-          verb: string
-          data: Record<string, unknown>
-          identityId?: string
-          timestamp: number
-        }
-
-        const entityId = body.data.id as string ?? crypto.randomUUID()
-        const owner = body.identityId ?? 'global'
-        const storageKey = `entity:${owner}:${body.entity}:${entityId}`
-
-        if (body.verb === 'create') {
-          const record = {
-            ...body.data,
-            id: entityId,
-            $type: body.entity,
-            createdAt: body.timestamp,
-            updatedAt: body.timestamp,
-          }
-          await this.putEntityWithIndexes(owner, body.entity, entityId, record)
-
-          // Store event
-          const eventKey = `event:${owner}:${crypto.randomUUID()}`
-          await this.ctx.storage.put(eventKey, {
-            type: `${body.entity}.${body.verb}ed`,
-            entityType: body.entity,
-            entityId,
-            verb: body.verb,
-            data: record,
-            timestamp: body.timestamp,
-          })
-
-          return Response.json({
-            success: true,
-            entity: body.entity,
-            verb: body.verb,
-            result: record,
-            events: [
-              { type: `${body.verb}ing`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-              { type: `${body.verb}ed`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-            ],
-          })
-        }
-
-        if (body.verb === 'update') {
-          const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-          if (!existing) {
-            return errorJson(ErrorCode.NotFound, `${body.entity} not found: ${entityId}`, 404)
-          }
-
-          // Remove old indexes before updating
-          await this.deleteIndexesForEntity(owner, body.entity, entityId, existing)
-
-          const record = { ...existing, ...body.data, $type: body.entity, updatedAt: body.timestamp }
-          await this.putEntityWithIndexes(owner, body.entity, entityId, record)
-
-          return Response.json({
-            success: true,
-            entity: body.entity,
-            verb: body.verb,
-            result: record,
-            events: [
-              { type: 'updating', entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-              { type: 'updated', entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-            ],
-          })
-        }
-
-        if (body.verb === 'delete') {
-          const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-          await this.deleteEntityWithIndexes(owner, body.entity, entityId, existing)
-          return Response.json({
-            success: true,
-            entity: body.entity,
-            verb: body.verb,
-            result: { id: entityId, deleted: true },
-            events: [
-              { type: 'deleting', entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-              { type: 'deleted', entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-            ],
-          })
-        }
-
-        // For custom verbs (qualify, close, advance, etc.), treat as update with verb-specific event
-        const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-
-        // Remove old indexes if entity existed
-        if (existing) {
-          await this.deleteIndexesForEntity(owner, body.entity, entityId, existing)
-        }
-
-        const record = { ...(existing ?? {}), ...body.data, id: entityId, $type: body.entity, updatedAt: body.timestamp }
-        await this.putEntityWithIndexes(owner, body.entity, entityId, record)
-
-        // Store event for the custom verb
-        const eventKey = `event:${owner}:${crypto.randomUUID()}`
-        await this.ctx.storage.put(eventKey, {
-          type: `${body.entity}.${body.verb}ed`,
-          entityType: body.entity,
-          entityId,
-          verb: body.verb,
-          data: record,
-          timestamp: body.timestamp,
-        })
-
-        return Response.json({
-          success: true,
-          entity: body.entity,
-          verb: body.verb,
-          result: record,
-          events: [
-            { type: `${body.verb}ing`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-            { type: `${body.verb}ed`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-          ],
-        })
-      } catch (err: any) {
-        return errorJson(ErrorCode.ServerError, err.message, 500)
-      }
-    }
-
-    // ── MCP Search Handler ──────────────────────────────────────────────
-    // Searches entities in DO storage by type, field values, and text query
-
-    if (url.pathname === '/api/mcp-search' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      try {
-        const body = await request.json() as {
-          identityId: string
-          query?: string
-          type?: string
-          filters?: Record<string, unknown>
-          limit?: number
-          offset?: number
-        }
-
-        const owner = body.identityId ?? 'global'
-        const limit = Math.min(body.limit ?? 20, 100)
-        const offset = body.offset ?? 0
-        const queryLower = body.query?.toLowerCase().trim() ?? ''
-
-        let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
-
-        // If specific type is requested, use prefix scan on that type
-        if (body.type) {
-          const prefix = `entity:${owner}:${body.type}:`
-          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-          for (const [, value] of entries) {
-            if (!value || typeof value !== 'object') continue
-            const entityData = value as Record<string, unknown>
-
-            // Apply field filters
-            if (body.filters && !this.matchesFilters(entityData, body.filters)) continue
-
-            // Calculate text relevance score
-            let score = 1
-            if (queryLower) {
-              score = this.calculateTextScore(entityData, queryLower)
-              if (score === 0) continue
-            }
-
-            results.push({
-              type: body.type,
-              id: String(entityData.id ?? ''),
-              data: entityData,
-              score,
-            })
-          }
-        } else if (body.filters && Object.keys(body.filters).length > 0) {
-          // No type specified but filters given — scan all entities for this owner
-          const prefix = `entity:${owner}:`
-          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-          for (const [key, value] of entries) {
-            if (!value || typeof value !== 'object') continue
-            const entityData = value as Record<string, unknown>
-
-            // Extract type from key: entity:{owner}:{type}:{id}
-            const parts = key.split(':')
-            const entityType = parts[2]
-
-            if (!this.matchesFilters(entityData, body.filters)) continue
-
-            let score = 1
-            if (queryLower) {
-              score = this.calculateTextScore(entityData, queryLower)
-              if (score === 0) continue
-            }
-
-            results.push({
-              type: entityType,
-              id: String(entityData.id ?? ''),
-              data: entityData,
-              score,
-            })
-          }
-        } else if (queryLower) {
-          // Text-only search across all entities for this owner
-          const prefix = `entity:${owner}:`
-          const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-          for (const [key, value] of entries) {
-            if (!value || typeof value !== 'object') continue
-            const entityData = value as Record<string, unknown>
-
-            const parts = key.split(':')
-            const entityType = parts[2]
-
-            const score = this.calculateTextScore(entityData, queryLower)
-            if (score === 0) continue
-
-            results.push({
-              type: entityType,
-              id: String(entityData.id ?? ''),
-              data: entityData,
-              score,
-            })
-          }
-        }
-
-        // Sort by score descending, then apply pagination
-        results.sort((a, b) => b.score - a.score)
-        const total = results.length
-        results = results.slice(offset, offset + limit)
-
-        return Response.json({ results, total, limit, offset })
-      } catch (err: any) {
-        return errorJson(ErrorCode.ServerError, err.message, 500)
-      }
-    }
-
-    // ── MCP Fetch Handler ───────────────────────────────────────────────
-    // Fetches a specific entity or lists entities by type from DO storage
-
-    if (url.pathname === '/api/mcp-fetch' && request.method === 'POST') {
-      if (!isInternal) {
-        return errorJson(ErrorCode.Unauthorized, 'Internal endpoint requires worker auth', 403)
-      }
-      try {
-        const body = await request.json() as {
-          identityId: string
-          type: string
-          id?: string
-          filters?: Record<string, unknown>
-          limit?: number
-          offset?: number
-        }
-
-        const owner = body.identityId ?? 'global'
-
-        // Fetch a single entity by type + id
-        if (body.id) {
-          const storageKey = `entity:${owner}:${body.type}:${body.id}`
-          const data = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-          if (!data) {
-            return Response.json({ type: body.type, id: body.id, data: null }, { status: 404 })
-          }
-          return Response.json({ type: body.type, id: body.id, data })
-        }
-
-        // List all entities of a type, with optional filters
-        const prefix = `entity:${owner}:${body.type}:`
-        const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-        const limit = Math.min(body.limit ?? 20, 100)
-        const offset = body.offset ?? 0
-
-        let items: Record<string, unknown>[] = []
-        for (const [, value] of entries) {
-          if (!value || typeof value !== 'object') continue
-          const entityData = value as Record<string, unknown>
-
-          // Apply field filters if provided
-          if (body.filters && !this.matchesFilters(entityData, body.filters)) continue
-
-          items.push(entityData)
-        }
-
-        const total = items.length
-        items = items.slice(offset, offset + limit)
-
-        return Response.json({ type: body.type, items, total, limit, offset })
-      } catch (err: any) {
-        return errorJson(ErrorCode.ServerError, err.message, 500)
-      }
-    }
-
-    return errorJson(ErrorCode.NotFound, `No handler for ${request.method} ${url.pathname}`, 404)
+    return Response.json({ error: 'Not found', message: 'Use Workers RPC to call IdentityDO methods directly' }, { status: 404 })
   }
 
   // ─── Entity Index Management ─────────────────────────────────────────

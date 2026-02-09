@@ -8,6 +8,8 @@
  * Statuses: unclaimed | pending | claimed | frozen | expired
  */
 
+import type { IdentityStub } from '../do/Identity'
+
 export interface ClaimStatus {
   valid: boolean
   identityId?: string
@@ -27,16 +29,15 @@ export interface ClaimStatus {
 }
 
 /**
- * Verify a claim token against the IdentityDO.
+ * Verify a claim token against the IdentityDO via RPC.
  *
  * @param claimToken - The claim token to verify (must start with clm_)
- * @param identityStub - DurableObject stub for the IdentityDO
+ * @param identityStub - IdentityDO stub (Workers RPC)
  * @returns Full claim status with stats and upgrade path
  */
 export async function verifyClaim(
   claimToken: string,
-  identityStub: { fetch(input: string | Request): Promise<Response> },
-  authSecret?: string,
+  identityStub: IdentityStub,
 ): Promise<ClaimStatus> {
   // Validate token format
   if (!claimToken || !claimToken.startsWith('clm_')) {
@@ -48,33 +49,8 @@ export async function verifyClaim(
     return { valid: false }
   }
 
-  // Look up in IdentityDO via /api/verify-claim
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (authSecret) headers['X-Worker-Auth'] = authSecret
-  const res = await identityStub.fetch(
-    new Request('https://id.org.ai/api/verify-claim', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ token: claimToken }),
-    })
-  )
-
-  if (!res.ok) {
-    return { valid: false }
-  }
-
-  const data = await res.json() as {
-    valid: boolean
-    identityId?: string
-    status?: 'unclaimed' | 'pending' | 'claimed' | 'frozen' | 'expired'
-    level?: number
-    stats?: {
-      entities: number
-      events: number
-      createdAt: number
-      expiresAt?: number
-    }
-  }
+  // Look up via direct RPC call
+  const data = await identityStub.verifyClaimToken(claimToken)
 
   if (!data.valid) {
     return { valid: false }

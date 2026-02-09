@@ -16,11 +16,15 @@
  *   - Claim token (clm_*) → KV lookup: claim:{token} → identityId
  *   - Provision (POST /api/provision) → new UUID (creates new DO)
  *   - Anonymous L0 → no DO needed (schema-only responses)
+ *
+ * Internal communication: Workers RPC (stub.method()) — no HTTP overhead,
+ * no X-Worker-Auth headers, inherently trusted.
  */
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { IdentityDO } from '../src/do/Identity'
+import type { IdentityStub } from '../src/do/Identity'
 import { MCPAuth } from '../src/mcp/auth'
 import type { MCPAuthResult } from '../src/mcp/auth'
 import { dispatchTool } from '../src/mcp/tools'
@@ -38,8 +42,8 @@ import {
   isAllowedOrigin,
   validateOrigin,
 } from '../src/csrf'
-import { AuditLog, AUDIT_EVENTS } from '../src/audit'
-import type { AuditQueryOptions } from '../src/audit'
+import { AUDIT_EVENTS } from '../src/audit'
+import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
 import { errorResponse, ErrorCode } from '../src/errors'
 
 export { IdentityDO }
@@ -56,7 +60,7 @@ interface Env {
 
 type Variables = {
   auth: MCPAuthResult
-  identityStub: { fetch(input: RequestInfo): Promise<Response> }
+  identityStub: IdentityStub
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -67,10 +71,11 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /**
  * Get a DO stub for a specific identity shard.
+ * Returns a typed IdentityStub for direct RPC calls.
  */
-function getStubForIdentity(env: Env, identityId: string): { fetch(input: RequestInfo): Promise<Response> } {
+function getStubForIdentity(env: Env, identityId: string): IdentityStub {
   const id = env.IDENTITY.idFromName(identityId)
-  return env.IDENTITY.get(id)
+  return env.IDENTITY.get(id) as unknown as IdentityStub
 }
 
 /**
@@ -195,7 +200,7 @@ app.get('/.well-known/openid-configuration', (c) => {
 async function authenticateRequest(c: any, next: () => Promise<void>) {
   const stub = c.get('identityStub')
   if (stub) {
-    const mcpAuth = new MCPAuth(stub, c.env.AUTH_SECRET)
+    const mcpAuth = new MCPAuth(stub)
     const auth = await mcpAuth.authenticate(c.req.raw)
     c.set('auth', auth)
   } else {
@@ -245,7 +250,7 @@ app.post('/mcp', async (c) => {
   if (auth.rateLimit && !auth.rateLimit.allowed) {
     // Audit: rate limit exceeded
     if (stub && auth.identityId) {
-      await logAuditEvent(stub, c.env.AUTH_SECRET, {
+      await logAuditEvent(stub, {
         event: AUDIT_EVENTS.RATE_LIMIT_EXCEEDED,
         actor: auth.identityId,
         ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
@@ -328,9 +333,9 @@ app.post('/mcp', async (c) => {
       }, 401)
     }
 
-    // For L0 tools without a stub, pass a null-safe stub that won't be called
+    // For L0 tools without a stub, pass a null-safe stub
     // (explore, search schema-only, and fetch schema-only don't need the DO)
-    const effectiveStub = stub ?? { fetch: async () => new Response('{}', { status: 404 }) }
+    const effectiveStub = stub ?? nullStub
 
     // Dispatch to the tool handler
     const toolResult = await dispatchTool(toolName, body.params?.arguments ?? {}, effectiveStub, auth)
@@ -361,23 +366,7 @@ app.post('/api/provision', async (c) => {
   const stub = getStubForIdentity(c.env, shardKey)
 
   try {
-    // Call the DO's provision endpoint with the pre-generated identity ID
-    const res = await stub.fetch(new Request('https://id.org.ai/api/provision', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
-      body: JSON.stringify({ identityId: shardKey }),
-    }))
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Provision failed (${res.status}): ${body}`)
-    }
-
-    const data = await res.json() as {
-      identity: { id: string; name: string; level: number }
-      sessionToken: string
-      claimToken: string
-    }
+    const data = await stub.provisionAnonymous(shardKey)
 
     // Build the provision result
     const result = {
@@ -414,7 +403,7 @@ app.post('/api/provision', async (c) => {
     )
 
     // Audit: identity provisioned
-    await logAuditEvent(stub, c.env.AUTH_SECRET, {
+    await logAuditEvent(stub, {
       event: AUDIT_EVENTS.IDENTITY_CREATED,
       actor: 'anonymous',
       target: data.identity.id,
@@ -442,7 +431,7 @@ app.get('/api/claim/:token', async (c) => {
   const stub = getStubForIdentity(c.env, identityId)
 
   try {
-    const status = await verifyClaim(token, stub, c.env.AUTH_SECRET)
+    const status = await verifyClaim(token, stub)
     return c.json(status, status.valid ? 200 : 404)
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
@@ -463,13 +452,13 @@ app.post('/api/freeze', async (c) => {
   if (!stub) {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
-  const claimService = new ClaimService(stub, c.env.AUTH_SECRET)
+  const claimService = new ClaimService(stub)
 
   try {
     const result = await claimService.freeze(auth.identityId)
 
     // Audit: identity frozen
-    await logAuditEvent(stub, c.env.AUTH_SECRET, {
+    await logAuditEvent(stub, {
       event: AUDIT_EVENTS.IDENTITY_FROZEN,
       actor: auth.identityId,
       target: auth.identityId,
@@ -501,7 +490,7 @@ app.get('/api/audit', async (c) => {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
 
-  // Forward query parameters to the DO audit endpoint
+  // Build query options from URL params
   const url = new URL(c.req.url)
   const queryParams: AuditQueryOptions = {}
   if (url.searchParams.has('eventPrefix')) queryParams.eventPrefix = url.searchParams.get('eventPrefix')!
@@ -512,95 +501,38 @@ app.get('/api/audit', async (c) => {
   if (url.searchParams.has('cursor')) queryParams.cursor = url.searchParams.get('cursor')!
 
   try {
-    const res = await stub.fetch(new Request('https://id.org.ai/api/audit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
-      body: JSON.stringify(queryParams),
-    }))
-
-    const data = await res.json()
-    return c.json(data, res.status as any)
+    const data = await stub.queryAuditLog(queryParams)
+    return c.json(data)
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.ServerError, err.message)
   }
 })
 
-// ── Forward identity operations to IdentityDO ─────────────────────────────
-// Sensitive endpoints require authentication. The catch-all proxies to the
-// DO but injects an X-Worker-Auth header so the DO knows the request came
-// through the authenticated worker layer (not directly to the DO).
-
-app.all('/api/*', async (c) => {
-  const auth = c.get('auth')
-  const stub = c.get('identityStub')
-
-  if (!stub) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required for this endpoint')
-  }
-
-  // Clone the request and add internal auth headers so the DO can verify
-  // the request was routed through the worker's auth middleware.
-  const headers = new Headers(c.req.raw.headers)
-  headers.set('X-Worker-Auth', c.env.AUTH_SECRET)
-  if (auth?.authenticated && auth.identityId) {
-    headers.set('X-Identity-Id', auth.identityId)
-    headers.set('X-Auth-Level', String(auth.level))
-  }
-
-  const proxiedRequest = new Request(c.req.raw.url, {
-    method: c.req.raw.method,
-    headers,
-    body: c.req.raw.body,
-  })
-  return stub.fetch(proxiedRequest)
-})
-
 // ── OAuth 2.1 Provider Endpoints ──────────────────────────────────────────
 // Wires the OAuthProvider class into the Hono router. The provider uses the
-// IdentityDO's storage (via stub.fetch) for client, token, and consent state.
+// IdentityDO's storage (via RPC) for client, token, and consent state.
 
 function getOAuthProvider(c: any): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(c.env, 'oauth')
-  const authSecret = c.env.AUTH_SECRET
   const base = 'https://id.org.ai'
   return new OAuthProvider({
     storage: {
       async get<T = unknown>(key: string): Promise<T | undefined> {
-        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-          body: JSON.stringify({ op: 'get', key }),
-        }))
-        if (!res.ok) return undefined
-        const data = await res.json() as { value?: T }
-        return data.value
+        const result = await stub.oauthStorageOp({ op: 'get', key })
+        return result.value as T | undefined
       },
       async put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void> {
-        await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-          body: JSON.stringify({ op: 'put', key, value, options }),
-        }))
+        await stub.oauthStorageOp({ op: 'put', key, value, options })
       },
       async delete(key: string): Promise<boolean> {
-        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-          body: JSON.stringify({ op: 'delete', key }),
-        }))
-        return res.ok
+        const result = await stub.oauthStorageOp({ op: 'delete', key })
+        return !!result.deleted
       },
       async list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>> {
-        const res = await stub.fetch(new Request(`https://id.org.ai/api/oauth-storage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-          body: JSON.stringify({ op: 'list', options }),
-        }))
-        if (!res.ok) return new Map()
-        const data = await res.json() as { entries: Array<[string, T]> }
-        return new Map(data.entries)
+        const result = await stub.oauthStorageOp({ op: 'list', options })
+        return new Map(result.entries as Array<[string, T]>)
       },
     },
     config: {
@@ -617,14 +549,9 @@ function getOAuthProvider(c: any): OAuthProvider {
     getIdentity: async (id: string) => {
       // Identity data lives in the identity's own shard, not in the oauth shard
       const identityStub = getStubForIdentity(c.env, id)
-      const res = await identityStub.fetch(
-        new Request(`https://id.org.ai/api/identity/${id}`, {
-          method: 'GET',
-          headers: { 'X-Worker-Auth': authSecret },
-        })
-      )
-      if (!res.ok) return null
-      return await res.json() as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
+      const identity = await identityStub.getIdentity(id)
+      if (!identity) return null
+      return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
     },
   })
 }
@@ -645,17 +572,12 @@ app.get('/oauth/authorize', async (c) => {
   // Generate CSRF token for the consent form
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const csrfToken = generateCSRFToken()
-  // Store the CSRF token in the oauth DO's storage via the existing storage bridge
-  const authSecret = c.env.AUTH_SECRET
-  await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-    body: JSON.stringify({
-      op: 'put',
-      key: `csrf:${csrfToken}`,
-      value: { token: csrfToken, createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 },
-    }),
-  }))
+  // Store the CSRF token in the oauth DO's storage via RPC
+  await oauthStub.oauthStorageOp({
+    op: 'put',
+    key: `csrf:${csrfToken}`,
+    value: { token: csrfToken, createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 },
+  })
 
   // Inject the CSRF token into the state parameter
   const url = new URL(c.req.url)
@@ -713,48 +635,31 @@ app.post('/oauth/authorize', async (c) => {
   if (!cookieCSRF || !formCSRF || cookieCSRF !== formCSRF) {
     // Log the CSRF failure
     const auditStub = getStubForIdentity(c.env, 'oauth')
-    await auditStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': c.env.AUTH_SECRET },
-      body: JSON.stringify({
-        op: 'put',
-        key: `audit:${new Date().toISOString()}:csrf.validation.failed:${crypto.randomUUID().slice(0, 8)}`,
-        value: {
-          event: AUDIT_EVENTS.CSRF_VALIDATION_FAILED,
-          actor: auth.identityId,
-          ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
-          userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
-          timestamp: new Date().toISOString(),
-        },
-      }),
-    }))
+    await auditStub.oauthStorageOp({
+      op: 'put',
+      key: `audit:${new Date().toISOString()}:csrf.validation.failed:${crypto.randomUUID().slice(0, 8)}`,
+      value: {
+        event: AUDIT_EVENTS.CSRF_VALIDATION_FAILED,
+        actor: auth.identityId,
+        ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+        userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+        timestamp: new Date().toISOString(),
+      },
+    })
 
     return errorResponse(c, 403, ErrorCode.Forbidden, 'CSRF token mismatch or missing')
   }
 
   // Validate the CSRF token server-side (check it exists and is not expired)
-  const authSecret = c.env.AUTH_SECRET
   const oauthStub = getStubForIdentity(c.env, 'oauth')
-  const csrfRes = await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-    body: JSON.stringify({ op: 'get', key: `csrf:${cookieCSRF}` }),
-  }))
+  const csrfData = await oauthStub.oauthStorageOp({ op: 'get', key: `csrf:${cookieCSRF}` })
 
-  if (csrfRes.ok) {
-    const csrfData = await csrfRes.json() as { value?: { expiresAt?: number } }
-    if (!csrfData.value || (csrfData.value.expiresAt && Date.now() > csrfData.value.expiresAt)) {
-      return errorResponse(c, 403, ErrorCode.Forbidden, 'CSRF token expired')
-    }
-    // Consume the token (one-time use)
-    await oauthStub.fetch(new Request('https://id.org.ai/api/oauth-storage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-      body: JSON.stringify({ op: 'delete', key: `csrf:${cookieCSRF}` }),
-    }))
-  } else {
-    return errorResponse(c, 403, ErrorCode.Forbidden, 'Unknown CSRF token')
+  const csrfValue = csrfData.value as { expiresAt?: number } | undefined
+  if (!csrfValue || (csrfValue.expiresAt && Date.now() > csrfValue.expiresAt)) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, csrfValue ? 'CSRF token expired' : 'Unknown CSRF token')
   }
+  // Consume the token (one-time use)
+  await oauthStub.oauthStorageOp({ op: 'delete', key: `csrf:${cookieCSRF}` })
 
   const provider = getOAuthProvider(c)
   return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
@@ -800,11 +705,7 @@ app.post('/oauth/revoke', async (c) => {
 
 // Fallback for unhandled /oauth/* routes
 app.all('/oauth/*', async (c) => {
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'OAuth endpoints require authentication')
-  }
-  return stub.fetch(c.req.raw)
+  return errorResponse(c, 404, ErrorCode.NotFound, 'OAuth endpoint not found')
 })
 
 // ── Claim page (human-facing) ─────────────────────────────────────────────
@@ -818,7 +719,7 @@ app.get('/claim/:token', async (c) => {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
   }
   const stub = getStubForIdentity(c.env, identityId)
-  const status = await verifyClaim(token, stub, c.env.AUTH_SECRET)
+  const status = await verifyClaim(token, stub)
 
   if (!status.valid) {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
@@ -933,7 +834,7 @@ export default app
  *   4. Parse the claim token from the YAML
  *   5. Resolve identity ID from claim token via KV
  *   6. Get the correct DO stub for that identity
- *   7. Call the claim endpoint on that specific DO
+ *   7. Call the claim method on that specific DO via RPC
  */
 async function handlePushWithSharding(
   githubApp: GitHubApp,
@@ -990,37 +891,22 @@ async function handlePushWithSharding(
     return { claimed: false, claimToken, branch, error: 'unknown_claim_token' }
   }
 
-  // Get the DO stub for this specific identity and execute the claim
+  // Get the DO stub for this specific identity and execute the claim via RPC
   const stub = getStubForIdentity(env, identityId)
 
   try {
-    const res = await stub.fetch(
-      new Request('https://id.org.ai/api/claim', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Worker-Auth': env.AUTH_SECRET,
-        },
-        body: JSON.stringify({
-          claimToken,
-          githubUserId: String(push.sender.id),
-          githubUsername: push.sender.login,
-          githubEmail: push.sender.email,
-          repo: push.repository.full_name,
-          branch,
-        }),
-      }),
-    )
-
-    const result = await res.json() as {
-      success: boolean
-      identity?: { id: string; level: number }
-      error?: string
-    }
+    const result = await stub.claim({
+      claimToken,
+      githubUserId: String(push.sender.id),
+      githubUsername: push.sender.login,
+      githubEmail: push.sender.email,
+      repo: push.repository.full_name,
+      branch,
+    })
 
     if (!result.success) {
       // Audit: claim failed
-      await logAuditEvent(stub, env.AUTH_SECRET, {
+      await logAuditEvent(stub, {
         event: AUDIT_EVENTS.CLAIM_FAILED,
         actor: push.sender.login,
         target: identityId,
@@ -1031,7 +917,7 @@ async function handlePushWithSharding(
     }
 
     // Audit: claim completed
-    await logAuditEvent(stub, env.AUTH_SECRET, {
+    await logAuditEvent(stub, {
       event: AUDIT_EVENTS.CLAIM_COMPLETED,
       actor: push.sender.login,
       target: result.identity?.id ?? identityId,
@@ -1063,15 +949,14 @@ async function handlePushWithSharding(
 /**
  * Fire-and-forget audit event logger.
  *
- * Writes an audit event to the identity's Durable Object storage via the
- * internal `/api/audit-log` endpoint. This is intentionally fire-and-forget:
- * audit logging MUST NEVER break the primary request flow.
+ * Writes an audit event to the identity's Durable Object storage via RPC.
+ * This is intentionally fire-and-forget: audit logging MUST NEVER break
+ * the primary request flow.
  *
  * The event is stored with key format: `audit:{timestamp}:{event}:{randomSuffix}`
  */
 async function logAuditEvent(
-  stub: { fetch(input: RequestInfo): Promise<Response> },
-  authSecret: string,
+  stub: IdentityStub,
   event: {
     event: string
     actor?: string
@@ -1085,14 +970,37 @@ async function logAuditEvent(
     const timestamp = new Date().toISOString()
     const suffix = crypto.randomUUID().slice(0, 8)
     const key = `audit:${timestamp}:${event.event}:${suffix}`
-    await stub.fetch(new Request('https://id.org.ai/api/audit-log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Worker-Auth': authSecret },
-      body: JSON.stringify({ key, event: { ...event, timestamp, key } }),
-    }))
+    await stub.writeAuditEvent(key, { ...event, timestamp, key } as StoredAuditEvent)
   } catch {
     // Fire-and-forget: audit logging should never break the primary flow
   }
+}
+
+// ============================================================================
+// Null-safe Stub for L0 (Anonymous) Requests
+// ============================================================================
+
+/**
+ * A no-op IdentityStub for L0 requests that don't have a real DO.
+ * All methods return empty/null results. Only used for schema-only tools
+ * (explore, search schema, fetch schema) at L0 that technically receive
+ * a stub but never call write methods.
+ */
+const nullStub: IdentityStub = {
+  async getIdentity() { return null },
+  async provisionAnonymous() { throw new Error('Not available at L0') },
+  async claim() { return { success: false, error: 'Not available at L0' } },
+  async getSession() { return { valid: false } },
+  async validateApiKey() { return { valid: false } },
+  async checkRateLimit() { return { allowed: true, remaining: 30, resetAt: Date.now() + 60_000 } },
+  async verifyClaimToken() { return { valid: false } },
+  async freezeIdentity() { throw new Error('Not available at L0') },
+  async mcpSearch() { return { results: [], total: 0, limit: 20, offset: 0 } },
+  async mcpFetch() { return { type: '', data: null } },
+  async mcpDo() { return { success: false, entity: '', verb: '', error: 'Not available at L0' } },
+  async oauthStorageOp() { return {} },
+  async writeAuditEvent() {},
+  async queryAuditLog() { return { events: [], hasMore: false } },
 }
 
 // ============================================================================
