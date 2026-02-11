@@ -90,7 +90,8 @@ export class AuthService extends WorkerEntrypoint<Env> {
           id: identityId,
           name: identity?.name,
           email: identity?.email,
-          permissions: ['read', 'write', 'search', 'fetch', 'do', 'try', 'claim'],
+          organizationId: identity?.name,
+          permissions: ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim'],
         },
       }
     }
@@ -112,6 +113,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
           id: identityId,
           name: identity?.name,
           email: identity?.email,
+          organizationId: identity?.name,
           permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
         },
       }
