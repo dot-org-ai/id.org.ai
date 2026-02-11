@@ -47,7 +47,7 @@ import { AUDIT_EVENTS } from '../src/audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
 import { errorResponse, ErrorCode } from '../src/errors'
 
-export { IdentityDO, AuthService }
+export { IdentityDO }
 
 interface Env {
   IDENTITY: DurableObjectNamespace

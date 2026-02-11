@@ -9,6 +9,7 @@
 
   "routes": [
     { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
+    { "pattern": "api.id.org.ai/*", "zone_name": "workers.do" },
     { "pattern": "auth.org.ai/*", "zone_name": "workers.do" }
   ],
 
