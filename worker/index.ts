@@ -24,6 +24,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import * as jose from 'jose'
 import { IdentityDO } from '../src/do/Identity'
 import type { IdentityStub } from '../src/do/Identity'
 import { MCPAuth } from '../src/mcp/auth'
@@ -54,6 +55,7 @@ interface Env {
   SESSIONS: KVNamespace
   AUTH_SECRET: string
   JWKS_SECRET: string
+  WORKOS_CLIENT_ID?: string
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
@@ -68,11 +70,128 @@ type Variables = {
 // Exposes verifyToken() as an RPC method for other Cloudflare Workers.
 // Other workers bind to this as `env.AUTH` and call `env.AUTH.verifyToken(token)`.
 
+// AuthUser type matching oauth.do's canonical AuthUser interface
+type AuthUser = {
+  id: string
+  email?: string
+  name?: string
+  image?: string
+  organizationId?: string
+  roles?: string[]
+  permissions?: string[]
+  metadata?: Record<string, unknown>
+}
+
+type VerifyResult =
+  | { valid: true; user: AuthUser; cached?: boolean }
+  | { valid: false; error: string }
+
+type AuthRPCResult =
+  | { ok: true; user: AuthUser }
+  | { ok: false; status: number; error: string }
+
+// ── Token Cache Helpers ─────────────────────────────────────────────────
+// Uses Cloudflare Cache API to cache verified tokens for 5 minutes.
+// Avoids repeated KV lookups and JWT verification on hot paths.
+
+const TOKEN_CACHE_TTL = 5 * 60 // 5 minutes
+const CACHE_URL_PREFIX = 'https://id.org.ai/_cache/token/'
+
+async function hashToken(token: string): Promise<string> {
+  const data = new TextEncoder().encode(token)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+async function getCachedUser(token: string): Promise<AuthUser | null> {
+  try {
+    const hash = await hashToken(token)
+    const cacheKey = new Request(`${CACHE_URL_PREFIX}${hash}`)
+    const cached = await caches.default.match(cacheKey)
+    if (!cached) return null
+    const data = (await cached.json()) as { user: AuthUser; expiresAt: number }
+    if (data.expiresAt < Date.now()) return null
+    return data.user
+  } catch {
+    return null
+  }
+}
+
+async function cacheUser(token: string, user: AuthUser): Promise<void> {
+  try {
+    const hash = await hashToken(token)
+    const cacheKey = new Request(`${CACHE_URL_PREFIX}${hash}`)
+    const data = { user, expiresAt: Date.now() + TOKEN_CACHE_TTL * 1000 }
+    const response = new Response(JSON.stringify(data), {
+      headers: { 'Cache-Control': `max-age=${TOKEN_CACHE_TTL}` },
+    })
+    await caches.default.put(cacheKey, response)
+  } catch {
+    // Cache failures are non-fatal
+  }
+}
+
+async function invalidateCachedToken(token: string): Promise<boolean> {
+  try {
+    const hash = await hashToken(token)
+    const cacheKey = new Request(`${CACHE_URL_PREFIX}${hash}`)
+    return caches.default.delete(cacheKey)
+  } catch {
+    return false
+  }
+}
+
+// ── Cookie Parsing ──────────────────────────────────────────────────────
+// Simple cookie parser for extracting auth tokens from cookie headers.
+// Used by authenticate() when called with a raw cookie header string.
+
+function parseCookieValue(cookieHeader: string, name: string): string | null {
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`))
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+// ── JWKS Cache ──────────────────────────────────────────────────────────
+// Module-level cache for the WorkOS JWKS verifier (persists across requests)
+
+let jwksVerifier: jose.JWTVerifyGetKey | null = null
+let jwksVerifierUri: string | null = null
+let jwksExpiry = 0
+
+function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
+  const now = Date.now()
+  if (jwksVerifier && jwksVerifierUri === jwksUri && jwksExpiry > now) {
+    return jwksVerifier
+  }
+  jwksVerifier = jose.createRemoteJWKSet(new URL(jwksUri))
+  jwksVerifierUri = jwksUri
+  jwksExpiry = now + 3600 * 1000 // 1 hour
+  return jwksVerifier
+}
+
+// ── AuthService (RPC via Service Binding) ────────────────────────────────
+// Implements the full AuthRPC interface from oauth.do/rpc.
+// Other workers bind to this as `env.AUTH` and call methods like:
+//   env.AUTH.verifyToken(token)
+//   env.AUTH.authenticate(authorization, cookie)
+//   env.AUTH.hasRoles(token, ['admin'])
+//
+// Supports three token types:
+//   1. ses_* session tokens → KV + IdentityDO validation
+//   2. oai_*/hly_sk_* API keys → KV + IdentityDO validation
+//   3. WorkOS JWTs → jose verification against WorkOS JWKS (human auth)
+
 export class AuthService extends WorkerEntrypoint<Env> {
-  async verifyToken(token: string): Promise<
-    | { valid: true; user: { id: string; email?: string; name?: string; organizationId?: string; roles?: string[]; permissions?: string[] }; cached?: boolean }
-    | { valid: false; error: string }
-  > {
+  // ── verifyToken ─────────────────────────────────────────────────────
+  // Verify any token type (session, API key, or WorkOS JWT).
+  // Results are cached for 5 minutes via Cache API.
+
+  async verifyToken(token: string): Promise<VerifyResult> {
+    // Check cache first
+    const cached = await getCachedUser(token)
+    if (cached) return { valid: true, user: cached, cached: true }
+
     // Session token (ses_*)
     if (token.startsWith('ses_')) {
       const identityId = await this.env.SESSIONS.get(`session:${token}`)
@@ -84,16 +203,15 @@ export class AuthService extends WorkerEntrypoint<Env> {
       if (!session?.valid) return { valid: false, error: 'Invalid session' }
 
       const identity = await stub.getIdentity(identityId)
-      return {
-        valid: true,
-        user: {
-          id: identityId,
-          name: identity?.name,
-          email: identity?.email,
-          organizationId: identity?.name,
-          permissions: ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim'],
-        },
+      const user: AuthUser = {
+        id: identityId,
+        name: identity?.name,
+        email: identity?.email,
+        organizationId: identity?.name,
+        permissions: ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim'],
       }
+      await cacheUser(token, user)
+      return { valid: true, user }
     }
 
     // API key (oai_* or hly_sk_*)
@@ -107,20 +225,147 @@ export class AuthService extends WorkerEntrypoint<Env> {
       if (!result?.valid) return { valid: false, error: 'Invalid or revoked API key' }
 
       const identity = await stub.getIdentity(identityId)
-      return {
-        valid: true,
-        user: {
-          id: identityId,
-          name: identity?.name,
-          email: identity?.email,
-          organizationId: identity?.name,
-          permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
-        },
+      const user: AuthUser = {
+        id: identityId,
+        name: identity?.name,
+        email: identity?.email,
+        organizationId: identity?.name,
+        permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
       }
+      await cacheUser(token, user)
+      return { valid: true, user }
     }
 
-    // Unrecognized token format
-    return { valid: false, error: 'Unrecognized token format. Use ses_* (session) or oai_* (API key).' }
+    // WorkOS JWT — human auth via SSO, social login, MFA
+    const workosUser = await this.verifyWorkOSJWT(token)
+    if (workosUser) {
+      await cacheUser(token, workosUser)
+      return { valid: true, user: workosUser }
+    }
+
+    return { valid: false, error: 'Unrecognized token format. Use ses_* (session), oai_*/hly_sk_* (API key), or a WorkOS JWT.' }
+  }
+
+  // ── getUser ─────────────────────────────────────────────────────────
+  // Get user from token. Returns null if invalid.
+
+  async getUser(token: string): Promise<AuthUser | null> {
+    const result = await this.verifyToken(token)
+    return result.valid ? result.user : null
+  }
+
+  // ── authenticate ────────────────────────────────────────────────────
+  // Authenticate from Authorization header and/or cookie.
+  // Designed for middleware use — returns structured result.
+  // Supports: Bearer tokens (ses_*, oai_*, hly_sk_*, WorkOS JWT) and cookies.
+
+  async authenticate(authorization?: string | null, cookie?: string | null): Promise<AuthRPCResult> {
+    let token: string | null = null
+
+    // Try Bearer header first
+    if (authorization?.startsWith('Bearer ')) {
+      token = authorization.slice(7)
+    }
+
+    // Try cookie if no bearer token
+    if (!token && cookie) {
+      // Try 'auth' cookie (oauth.do convention), then 'wos-session' (WorkOS AuthKit)
+      token = parseCookieValue(cookie, 'auth') ?? parseCookieValue(cookie, 'wos-session') ?? null
+    }
+
+    if (!token) {
+      return { ok: false, status: 401, error: 'No credentials provided' }
+    }
+
+    const result = await this.verifyToken(token)
+    if (result.valid) {
+      return { ok: true, user: result.user }
+    }
+    return { ok: false, status: 401, error: result.error }
+  }
+
+  // ── hasRoles ────────────────────────────────────────────────────────
+  // Check if token has any of the specified roles.
+
+  async hasRoles(token: string, roles: string[]): Promise<boolean> {
+    const user = await this.getUser(token)
+    if (!user) return false
+    const userRoles = user.roles || []
+    return roles.some((r) => userRoles.includes(r))
+  }
+
+  // ── hasPermissions ──────────────────────────────────────────────────
+  // Check if token has all of the specified permissions.
+
+  async hasPermissions(token: string, permissions: string[]): Promise<boolean> {
+    const user = await this.getUser(token)
+    if (!user) return false
+    const userPerms = user.permissions || []
+    return permissions.every((p) => userPerms.includes(p))
+  }
+
+  // ── isAdmin ─────────────────────────────────────────────────────────
+  // Check if token belongs to an admin user.
+
+  async isAdmin(token: string): Promise<boolean> {
+    return this.hasRoles(token, ['admin', 'superadmin'])
+  }
+
+  // ── invalidate ──────────────────────────────────────────────────────
+  // Invalidate cached result for a token.
+  // Use when user permissions change or token is revoked.
+
+  async invalidate(token: string): Promise<boolean> {
+    // Always clear from Cache API
+    await invalidateCachedToken(token)
+
+    // For session tokens: also delete the KV routing entry
+    if (token.startsWith('ses_')) {
+      await this.env.SESSIONS.delete(`session:${token}`)
+      return true
+    }
+
+    // For API keys: also delete the KV routing entry
+    if (token.startsWith('oai_') || token.startsWith('hly_sk_')) {
+      await this.env.SESSIONS.delete(`apikey:${token}`)
+      return true
+    }
+
+    // For JWTs: cache was already cleared above
+    return true
+  }
+
+  // ── WorkOS JWT Verification (private) ──────────────────────────────
+  // Verifies a WorkOS JWT against the WorkOS JWKS endpoint.
+  // This is the human authentication path — SSO, social login, MFA.
+  // Uses jose library (same as oauth.do/hono) — no heavy WorkOS SDK.
+
+  private async verifyWorkOSJWT(token: string): Promise<AuthUser | null> {
+    const clientId = this.env.WORKOS_CLIENT_ID
+    if (!clientId) return null
+
+    // WorkOS JWKS endpoint
+    const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
+
+    try {
+      const jwks = getJwksVerifier(jwksUri)
+      const { payload } = await jose.jwtVerify(token, jwks, {
+        audience: clientId,
+      })
+
+      return {
+        id: payload.sub || '',
+        email: payload.email as string | undefined,
+        name: payload.name as string | undefined,
+        image: payload.picture as string | undefined,
+        organizationId: payload.org_id as string | undefined,
+        roles: payload.roles as string[] | undefined,
+        permissions: payload.permissions as string[] | undefined,
+        metadata: payload.metadata as Record<string, unknown> | undefined,
+      }
+    } catch {
+      return null
+    }
   }
 }
 
