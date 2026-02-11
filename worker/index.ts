@@ -95,8 +95,8 @@ export class AuthService extends WorkerEntrypoint<Env> {
       }
     }
 
-    // API key (oai_*)
-    if (token.startsWith('oai_')) {
+    // API key (oai_* or hly_sk_*)
+    if (token.startsWith('oai_') || token.startsWith('hly_sk_')) {
       const identityId = await this.env.SESSIONS.get(`apikey:${token}`)
       if (!identityId) return { valid: false, error: 'Invalid API key' }
 
@@ -140,15 +140,22 @@ function getStubForIdentity(env: Env, identityId: string): IdentityStub {
 /**
  * Extract the API key from a request (oai_* prefix).
  */
+function isApiKeyPrefix(s: string): boolean {
+  return s.startsWith('oai_') || s.startsWith('hly_sk_')
+}
+
 function extractApiKey(request: Request): string | null {
   const header = request.headers.get('x-api-key')
-  if (header?.startsWith('oai_')) return header
+  if (header && isApiKeyPrefix(header)) return header
   const auth = request.headers.get('authorization')
-  if (auth?.startsWith('Bearer oai_')) return auth.slice(7)
+  if (auth?.startsWith('Bearer ')) {
+    const token = auth.slice(7)
+    if (isApiKeyPrefix(token)) return token
+  }
   try {
     const url = new URL(request.url)
     const keyParam = url.searchParams.get('api_key')
-    if (keyParam?.startsWith('oai_')) return keyParam
+    if (keyParam && isApiKeyPrefix(keyParam)) return keyParam
   } catch { /* ignore */ }
   return null
 }
@@ -258,12 +265,26 @@ app.get('/.well-known/openid-configuration', (c) => {
 
 async function authenticateRequest(c: any, next: () => Promise<void>) {
   const stub = c.get('identityStub')
+
+  // Detect explicit credentials in the request
+  const hasExplicitApiKey = !!extractApiKey(c.req.raw)
+  const hasExplicitSession = !!extractSessionToken(c.req.raw)
+
   if (stub) {
     const mcpAuth = new MCPAuth(stub)
     const auth = await mcpAuth.authenticate(c.req.raw)
+
+    // Explicit credentials provided but auth failed → reject (don't silently downgrade to L0)
+    if ((hasExplicitApiKey || hasExplicitSession) && !auth.authenticated) {
+      return errorResponse(c, 401, ErrorCode.Unauthorized, auth.error || 'Invalid credentials')
+    }
+
     c.set('auth', auth)
+  } else if (hasExplicitApiKey || hasExplicitSession) {
+    // Credentials provided but couldn't resolve identity from KV → invalid/expired
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired credentials')
   } else {
-    // Anonymous L0 — no DO stub needed for read-only schema access
+    // True anonymous L0 — no credentials provided
     c.set('auth', MCPAuth.anonymousResult())
   }
   await next()
@@ -529,6 +550,101 @@ app.post('/api/freeze', async (c) => {
     return c.json(result)
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.FreezeFailed, err.message)
+  }
+})
+
+// ── API Key Management Endpoints ─────────────────────────────────────────
+// CRUD for hly_sk_ API keys. Requires authenticated session (L1+).
+
+app.post('/api/keys', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to create API keys')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    name?: string
+    scopes?: string[]
+    expiresAt?: string
+  }
+
+  if (!body.name) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
+  }
+
+  try {
+    const result = await stub.createApiKey({
+      name: body.name,
+      identityId: auth.identityId,
+      scopes: body.scopes,
+      expiresAt: body.expiresAt,
+    })
+
+    // Write KV mapping so future requests with this key route to the correct DO shard
+    await c.env.SESSIONS.put(`apikey:${result.key}`, auth.identityId)
+
+    return c.json(result, 201)
+  } catch (err: any) {
+    const msg = err.message ?? 'Failed to create API key'
+    if (msg.includes('Invalid scope') || msg.includes('in the future') || msg.includes('required')) {
+      return errorResponse(c, 400, ErrorCode.InvalidRequest, msg)
+    }
+    return errorResponse(c, 500, ErrorCode.ServerError, msg)
+  }
+})
+
+app.get('/api/keys', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to list API keys')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  try {
+    const keys = await stub.listApiKeys(auth.identityId)
+    return c.json({ keys })
+  } catch (err: any) {
+    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  }
+})
+
+app.delete('/api/keys/:id', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to revoke API keys')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  const keyId = c.req.param('id')
+
+  try {
+    const result = await stub.revokeApiKey(keyId, auth.identityId)
+    if (!result) {
+      return errorResponse(c, 404, ErrorCode.NotFound, 'API key not found')
+    }
+
+    // Clean up KV entry so the revoked key can't route to a DO anymore
+    if (result.key) {
+      await c.env.SESSIONS.delete(`apikey:${result.key}`)
+    }
+
+    // Don't expose the key string in the response
+    return c.json({ id: result.id, status: result.status, revokedAt: result.revokedAt })
+  } catch (err: any) {
+    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
   }
 })
 
@@ -1051,6 +1167,9 @@ const nullStub: IdentityStub = {
   async claim() { return { success: false, error: 'Not available at L0' } },
   async getSession() { return { valid: false } },
   async validateApiKey() { return { valid: false } },
+  async createApiKey() { throw new Error('Not available at L0') },
+  async listApiKeys() { return [] },
+  async revokeApiKey() { return null },
   async checkRateLimit() { return { allowed: true, remaining: 30, resetAt: Date.now() + 60_000 } },
   async verifyClaimToken() { return { valid: false } },
   async freezeIdentity() { throw new Error('Not available at L0') },

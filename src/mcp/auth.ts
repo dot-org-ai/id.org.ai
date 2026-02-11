@@ -328,20 +328,27 @@ export class MCPAuth {
 
   // ─── Token Extraction ─────────────────────────────────────────────────
 
+  private static isApiKeyPrefix(s: string): boolean {
+    return s.startsWith('oai_') || s.startsWith('hly_sk_')
+  }
+
   private extractApiKey(request: Request): string | null {
     // X-API-Key header (preferred)
     const header = request.headers.get('x-api-key')
-    if (header?.startsWith('oai_')) return header
+    if (header && MCPAuth.isApiKeyPrefix(header)) return header
 
-    // Authorization: Bearer oai_*
+    // Authorization: Bearer oai_* or Bearer hly_sk_*
     const auth = request.headers.get('authorization')
-    if (auth?.startsWith('Bearer oai_')) return auth.slice(7)
+    if (auth?.startsWith('Bearer ')) {
+      const token = auth.slice(7)
+      if (MCPAuth.isApiKeyPrefix(token)) return token
+    }
 
     // Query parameter fallback (for MCP tool calls)
     try {
       const url = new URL(request.url)
       const keyParam = url.searchParams.get('api_key')
-      if (keyParam?.startsWith('oai_')) return keyParam
+      if (keyParam && MCPAuth.isApiKeyPrefix(keyParam)) return keyParam
     } catch {
       // Invalid URL, skip query param extraction
     }

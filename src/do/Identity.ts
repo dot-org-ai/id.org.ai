@@ -46,6 +46,9 @@ export interface IdentityStub {
   // Auth
   getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>
   validateApiKey(key: string): Promise<{ valid: boolean; identityId?: string; scopes?: string[]; level?: CapabilityLevel }>
+  createApiKey(data: { name: string; identityId: string; scopes?: string[]; expiresAt?: string }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string }>
+  listApiKeys(identityId: string): Promise<Array<{ id: string; name: string; prefix: string; scopes: string[]; status: string; createdAt: string; expiresAt?: string; lastUsedAt?: string }>>
+  revokeApiKey(keyId: string, identityId: string): Promise<{ id: string; status: string; revokedAt: string; key?: string } | null>
   checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{ allowed: boolean; remaining: number; resetAt: number }>
   verifyClaimToken(token: string): Promise<{ valid: boolean; identityId?: string; status?: ClaimStatus; level?: CapabilityLevel; stats?: { entities: number; events: number; createdAt: number; expiresAt?: number } }>
   freezeIdentity(id: string): Promise<{ frozen: boolean; stats: { entities: number; events: number; sessions: number }; expiresAt: number }>
@@ -496,29 +499,103 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── API Key Management ───────────────────────────────────────────────
 
+  static readonly VALID_SCOPES = new Set(['read', 'write', 'admin'])
+
   async createApiKey(data: {
     name: string
     identityId: string
     scopes?: string[]
-  }): Promise<{ id: string; key: string }> {
+    expiresAt?: string
+  }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string }> {
+    if (!data.name) throw new Error('name is required')
+
+    const scopes = data.scopes ?? ['read', 'write']
+    for (const s of scopes) {
+      if (!IdentityDO.VALID_SCOPES.has(s)) throw new Error(`Invalid scope: ${s}`)
+    }
+
+    if (data.expiresAt) {
+      const expiry = new Date(data.expiresAt).getTime()
+      if (expiry <= Date.now()) throw new Error('expiresAt must be in the future')
+    }
+
     const id = crypto.randomUUID()
-    const key = `oai_${crypto.randomUUID().replace(/-/g, '')}${crypto.randomUUID().replace(/-/g, '')}`
+    const key = `hly_sk_${crypto.randomUUID().replace(/-/g, '')}${crypto.randomUUID().replace(/-/g, '')}`
+    const prefix = key.slice(0, 15)
+    const now = new Date().toISOString()
 
     await this.ctx.storage.put(`apikey:${id}`, {
       id,
       key,
       name: data.name,
+      prefix,
       identityId: data.identityId,
-      scopes: data.scopes,
-      enabled: true,
-      createdAt: Date.now(),
+      scopes,
+      status: 'active',
+      createdAt: now,
+      expiresAt: data.expiresAt ?? undefined,
       requestCount: 0,
     })
 
     // Index by key for lookup
     await this.ctx.storage.put(`apikey-lookup:${key}`, id)
 
-    return { id, key }
+    const result: { id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string } = {
+      id, key, name: data.name, prefix, scopes, createdAt: now,
+    }
+    if (data.expiresAt) result.expiresAt = data.expiresAt
+    return result
+  }
+
+  async listApiKeys(identityId: string): Promise<Array<{
+    id: string; name: string; prefix: string; scopes: string[]; status: string;
+    createdAt: string; expiresAt?: string; lastUsedAt?: string
+  }>> {
+    const entries = await this.ctx.storage.list<any>({ prefix: 'apikey:' })
+    const keys: Array<{
+      id: string; name: string; prefix: string; scopes: string[]; status: string;
+      createdAt: string; expiresAt?: string; lastUsedAt?: string
+    }> = []
+
+    for (const [key, value] of entries) {
+      if (key.startsWith('apikey-lookup:')) continue
+      if (value.identityId !== identityId) continue
+      keys.push({
+        id: value.id,
+        name: value.name,
+        prefix: value.prefix ?? (value.key ? value.key.slice(0, 15) : ''),
+        scopes: value.scopes ?? ['read', 'write'],
+        status: value.status ?? (value.enabled === false ? 'revoked' : 'active'),
+        createdAt: value.createdAt ?? new Date(0).toISOString(),
+        expiresAt: value.expiresAt,
+        lastUsedAt: value.lastUsedAt,
+      })
+    }
+
+    return keys
+  }
+
+  async revokeApiKey(keyId: string, identityId: string): Promise<{
+    id: string; status: string; revokedAt: string; key?: string
+  } | null> {
+    const apiKey = await this.ctx.storage.get<any>(`apikey:${keyId}`)
+    if (!apiKey) return null
+    if (apiKey.identityId !== identityId) return null
+
+    const revokedAt = new Date().toISOString()
+    await this.ctx.storage.put(`apikey:${keyId}`, {
+      ...apiKey,
+      status: 'revoked',
+      enabled: false,
+      revokedAt,
+    })
+
+    // Remove lookup index so the key can't be used for auth
+    if (apiKey.key) {
+      await this.ctx.storage.delete(`apikey-lookup:${apiKey.key}`)
+    }
+
+    return { id: keyId, status: 'revoked', revokedAt, key: apiKey.key }
   }
 
   async validateApiKey(key: string): Promise<{
@@ -531,15 +608,23 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     if (!id) return { valid: false }
 
     const apiKey = await this.ctx.storage.get<any>(`apikey:${id}`)
-    if (!apiKey || !apiKey.enabled) return { valid: false }
+    if (!apiKey) return { valid: false }
+    if (apiKey.status === 'revoked' || apiKey.enabled === false) return { valid: false }
+
+    // Check expiry
+    if (apiKey.expiresAt) {
+      const expiry = new Date(apiKey.expiresAt).getTime()
+      if (Date.now() > expiry) return { valid: false }
+    }
 
     const identity = await this.getIdentity(apiKey.identityId)
     if (!identity) return { valid: false }
 
     // Update last used
+    const now = new Date().toISOString()
     await this.ctx.storage.put(`apikey:${id}`, {
       ...apiKey,
-      lastUsedAt: Date.now(),
+      lastUsedAt: now,
       requestCount: (apiKey.requestCount ?? 0) + 1,
     })
 
