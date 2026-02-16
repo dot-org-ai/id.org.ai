@@ -43,6 +43,9 @@
       "import": "./dist/workos/index.js"
     }
   },
+  "bin": {
+    "id.org.ai": "./dist/cli/index.js"
+  },
   "files": [
     "dist",
     "src"
@@ -58,6 +61,7 @@
   "dependencies": {
     "hono": "^4.0.0",
     "jose": "^6.0.0",
+    "open": "^10.1.0",
     "@workos-inc/node": "^7.0.0"
   },
   "devDependencies": {
