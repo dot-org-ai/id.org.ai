@@ -49,6 +49,12 @@ export * from './github'
 // Ed25519 cryptographic identity
 export * from './crypto'
 
+// JWT signing + JWKS
+export * from './jwt'
+
+// WorkOS upstream auth + API key validation
+export * from './workos'
+
 // CSRF protection
 export * from './csrf'
 

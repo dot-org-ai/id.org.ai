@@ -33,6 +33,14 @@
     "./claim": {
       "types": "./dist/claim/index.d.ts",
       "import": "./dist/claim/index.js"
+    },
+    "./jwt": {
+      "types": "./dist/jwt/index.d.ts",
+      "import": "./dist/jwt/index.js"
+    },
+    "./workos": {
+      "types": "./dist/workos/index.d.ts",
+      "import": "./dist/workos/index.js"
     }
   },
   "files": [

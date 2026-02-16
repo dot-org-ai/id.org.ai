@@ -35,6 +35,9 @@ import { verifyClaim } from '../src/claim/verify'
 import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
+import { SigningKeyManager } from '../src/jwt/signing'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { validateWorkOSApiKey } from '../src/workos/apikey'
 import {
   generateCSRFToken,
   buildCSRFCookie,
@@ -56,6 +59,8 @@ interface Env {
   AUTH_SECRET: string
   JWKS_SECRET: string
   WORKOS_CLIENT_ID?: string
+  WORKOS_API_KEY?: string
+  WORKOS_COOKIE_PASSWORD?: string
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
@@ -153,21 +158,18 @@ function parseCookieValue(cookieHeader: string, name: string): string | null {
 }
 
 // ── JWKS Cache ──────────────────────────────────────────────────────────
-// Module-level cache for the WorkOS JWKS verifier (persists across requests)
+// Module-level cache for JWKS verifiers (persists across requests within isolate)
+// Supports both our own JWKS and WorkOS JWKS.
 
-let jwksVerifier: jose.JWTVerifyGetKey | null = null
-let jwksVerifierUri: string | null = null
-let jwksExpiry = 0
+const jwksCache = new Map<string, { verifier: jose.JWTVerifyGetKey; expiry: number }>()
 
 function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
   const now = Date.now()
-  if (jwksVerifier && jwksVerifierUri === jwksUri && jwksExpiry > now) {
-    return jwksVerifier
-  }
-  jwksVerifier = jose.createRemoteJWKSet(new URL(jwksUri))
-  jwksVerifierUri = jwksUri
-  jwksExpiry = now + 3600 * 1000 // 1 hour
-  return jwksVerifier
+  const cached = jwksCache.get(jwksUri)
+  if (cached && cached.expiry > now) return cached.verifier
+  const verifier = jose.createRemoteJWKSet(new URL(jwksUri))
+  jwksCache.set(jwksUri, { verifier, expiry: now + 3600 * 1000 })
+  return verifier
 }
 
 // ── AuthService (RPC via Service Binding) ────────────────────────────────
@@ -177,10 +179,11 @@ function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
 //   env.AUTH.authenticate(authorization, cookie)
 //   env.AUTH.hasRoles(token, ['admin'])
 //
-// Supports three token types:
+// Supports four token types:
 //   1. ses_* session tokens → KV + IdentityDO validation
 //   2. oai_*/hly_sk_* API keys → KV + IdentityDO validation
-//   3. WorkOS JWTs → jose verification against WorkOS JWKS (human auth)
+//   3. sk_* WorkOS API keys → validated against WorkOS API
+//   4. JWTs → verified against id.org.ai JWKS first, then WorkOS JWKS
 
 export class AuthService extends WorkerEntrypoint<Env> {
   // ── verifyToken ─────────────────────────────────────────────────────
@@ -236,14 +239,36 @@ export class AuthService extends WorkerEntrypoint<Env> {
       return { valid: true, user }
     }
 
-    // WorkOS JWT — human auth via SSO, social login, MFA
+    // WorkOS API key (sk_*) — validated against WorkOS API
+    if (token.startsWith('sk_') && this.env.WORKOS_API_KEY) {
+      const result = await validateWorkOSApiKey(token, this.env.WORKOS_API_KEY)
+      if (result.valid) {
+        const user: AuthUser = {
+          id: result.id || 'workos-key',
+          name: result.name,
+          organizationId: result.organization_id,
+          permissions: result.permissions || ['read', 'write'],
+        }
+        await cacheUser(token, user)
+        return { valid: true, user }
+      }
+      return { valid: false, error: 'Invalid WorkOS API key' }
+    }
+
+    // JWT — try our own JWKS first (login flow JWTs), then WorkOS JWKS
+    const ownUser = await this.verifyOwnJWT(token)
+    if (ownUser) {
+      await cacheUser(token, ownUser)
+      return { valid: true, user: ownUser }
+    }
+
     const workosUser = await this.verifyWorkOSJWT(token)
     if (workosUser) {
       await cacheUser(token, workosUser)
       return { valid: true, user: workosUser }
     }
 
-    return { valid: false, error: 'Unrecognized token format. Use ses_* (session), oai_*/hly_sk_* (API key), or a WorkOS JWT.' }
+    return { valid: false, error: 'Unrecognized token format. Use ses_* (session), oai_*/hly_sk_* (API key), sk_* (WorkOS key), or a JWT.' }
   }
 
   // ── getUser ─────────────────────────────────────────────────────────
@@ -335,16 +360,38 @@ export class AuthService extends WorkerEntrypoint<Env> {
     return true
   }
 
-  // ── WorkOS JWT Verification (private) ──────────────────────────────
-  // Verifies a WorkOS JWT against the WorkOS JWKS endpoint.
-  // This is the human authentication path — SSO, social login, MFA.
-  // Uses jose library (same as oauth.do/hono) — no heavy WorkOS SDK.
+  // ── JWT Verification (private) ──────────────────────────────────────
+  // Verifies a JWT against our own JWKS first, then falls back to WorkOS.
+  // Our JWKS: JWTs issued by /callback (login flow) — signed by us
+  // WorkOS JWKS: JWTs issued directly by WorkOS AuthKit — SSO, social login
+
+  private async verifyOwnJWT(token: string): Promise<AuthUser | null> {
+    const ownJwksUri = 'https://id.org.ai/.well-known/jwks.json'
+    try {
+      const jwks = getJwksVerifier(ownJwksUri)
+      const { payload } = await jose.jwtVerify(token, jwks, {
+        issuer: 'https://id.org.ai',
+      })
+
+      return {
+        id: payload.sub || '',
+        email: payload.email as string | undefined,
+        name: payload.name as string | undefined,
+        image: payload.image as string | undefined,
+        organizationId: (payload.org_id as string | undefined),
+        roles: payload.roles as string[] | undefined,
+        permissions: payload.permissions as string[] | undefined,
+        metadata: payload.metadata as Record<string, unknown> | undefined,
+      }
+    } catch {
+      return null
+    }
+  }
 
   private async verifyWorkOSJWT(token: string): Promise<AuthUser | null> {
     const clientId = this.env.WORKOS_CLIENT_ID
     if (!clientId) return null
 
-    // WorkOS JWKS endpoint
     const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
 
     try {
@@ -388,7 +435,7 @@ function getStubForIdentity(env: Env, identityId: string): IdentityStub {
  * Extract the API key from a request (oai_* prefix).
  */
 function isApiKeyPrefix(s: string): boolean {
-  return s.startsWith('oai_') || s.startsWith('hly_sk_')
+  return s.startsWith('oai_') || s.startsWith('hly_sk_') || s.startsWith('sk_')
 }
 
 function extractApiKey(request: Request): string | null {
@@ -503,6 +550,207 @@ app.get('/health', (c) => c.json({
 app.get('/.well-known/openid-configuration', (c) => {
   const provider = getOAuthProvider(c)
   return provider.getOpenIDConfiguration()
+})
+
+// ── JWKS Endpoint (no auth required) ────────────────────────────────────────
+// Serves the public signing keys for JWT verification by other workers.
+// Other workers verify our JWTs by fetching this endpoint.
+
+app.get('/.well-known/jwks.json', async (c) => {
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const manager = new SigningKeyManager(oauthStub.oauthStorageOp.bind(oauthStub))
+  const jwks = await manager.getJWKS()
+  return c.json(jwks, 200, {
+    'Cache-Control': 'public, max-age=3600',
+  })
+})
+
+// ── WorkOS Login Flow (no auth required) ─────────────────────────────────────
+// Human authentication via WorkOS AuthKit (SSO, social login, MFA).
+// GET /login → redirect to WorkOS → GET /callback → set cookie → redirect
+
+app.get('/login', async (c) => {
+  const clientId = c.env.WORKOS_CLIENT_ID
+  if (!clientId || !c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  const continueUrl = c.req.query('continue') || c.req.query('redirect_uri') || '/'
+  const csrf = crypto.randomUUID()
+  const state = encodeLoginState(csrf, continueUrl)
+
+  // Store CSRF token for validation on callback (5 min TTL)
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  await oauthStub.oauthStorageOp({
+    op: 'put',
+    key: `login-csrf:${csrf}`,
+    value: { csrf, createdAt: Date.now() },
+    options: { expirationTtl: 300 },
+  })
+
+  const redirectUri = new URL('/callback', c.req.url).origin + '/callback'
+  const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state)
+  return c.redirect(authUrl, 302)
+})
+
+app.get('/callback', async (c) => {
+  const clientId = c.env.WORKOS_CLIENT_ID
+  const apiKey = c.env.WORKOS_API_KEY
+  if (!clientId || !apiKey) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  const code = c.req.query('code')
+  const state = c.req.query('state')
+  const error = c.req.query('error')
+
+  if (error) {
+    const desc = c.req.query('error_description') || 'Authentication failed'
+    return errorResponse(c, 400, ErrorCode.InvalidGrant, desc)
+  }
+
+  if (!code || !state) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing code or state parameter')
+  }
+
+  // Decode and validate state (CSRF)
+  const decoded = decodeLoginState(state)
+  if (!decoded) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid state parameter')
+  }
+
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const csrfData = await oauthStub.oauthStorageOp({ op: 'get', key: `login-csrf:${decoded.csrf}` })
+  if (!csrfData.value) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
+  }
+  // Consume CSRF token (one-time use)
+  await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
+
+  // Exchange code with WorkOS
+  let authResult
+  try {
+    authResult = await exchangeWorkOSCode(clientId, apiKey, code)
+  } catch (err: any) {
+    return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+  }
+
+  // Create or find identity for this human user
+  const shardKey = `human:${authResult.user.id}`
+  const stub = getStubForIdentity(c.env, shardKey)
+
+  let identity = await stub.getIdentity(shardKey)
+  if (!identity) {
+    // Create new human identity
+    const fullName = [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ')
+    identity = await stub.provisionAnonymous(shardKey).then((r) => r.identity)
+    // Upgrade to human type + level 2 (claimed via WorkOS)
+    await stub.oauthStorageOp({
+      op: 'put',
+      key: `identity:${shardKey}`,
+      value: {
+        id: shardKey,
+        type: 'human',
+        name: fullName || authResult.user.email,
+        email: authResult.user.email,
+        verified: true,
+        level: 2,
+        claimStatus: 'claimed',
+        workosUserId: authResult.user.id,
+        organizationId: authResult.user.organization_id,
+        createdAt: Date.now(),
+      },
+    })
+    identity = await stub.getIdentity(shardKey)
+  }
+
+  // Sign our own JWT for the auth cookie
+  const signingManager = new SigningKeyManager(oauthStub.oauthStorageOp.bind(oauthStub))
+  const jwt = await signingManager.sign(
+    {
+      sub: shardKey,
+      email: authResult.user.email,
+      name: [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ') || undefined,
+      org_id: authResult.user.organization_id,
+      roles: authResult.user.roles,
+      permissions: authResult.user.permissions,
+    },
+    { issuer: 'https://id.org.ai', expiresIn: 3600 },
+  )
+
+  // Build redirect response with auth cookie
+  const continueUrl = decoded.continue || '/'
+  const isSecure = new URL(c.req.url).protocol === 'https:'
+  const cookieFlags = [
+    `auth=${jwt}`,
+    'HttpOnly',
+    'Path=/',
+    `SameSite=Lax`,
+    `Max-Age=3600`,
+    ...(isSecure ? ['Secure'] : []),
+  ].join('; ')
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: continueUrl,
+      'Set-Cookie': cookieFlags,
+    },
+  })
+})
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+
+app.get('/logout', (c) => {
+  const returnUrl = c.req.query('return_url') || '/'
+  const isSecure = new URL(c.req.url).protocol === 'https:'
+  const clearCookie = [
+    'auth=',
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Lax',
+    'Max-Age=0',
+    ...(isSecure ? ['Secure'] : []),
+  ].join('; ')
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: returnUrl,
+      'Set-Cookie': clearCookie,
+    },
+  })
+})
+
+app.post('/logout', (c) => {
+  const isSecure = new URL(c.req.url).protocol === 'https:'
+  const clearCookie = [
+    'auth=',
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Lax',
+    'Max-Age=0',
+    ...(isSecure ? ['Secure'] : []),
+  ].join('; ')
+
+  return c.json({ ok: true }, 200, { 'Set-Cookie': clearCookie })
+})
+
+// ── Validate API Key Endpoint ────────────────────────────────────────────────
+// Validates WorkOS API keys (sk_*) — mirrors oauth.do's POST /validate-api-key
+
+app.post('/validate-api-key', async (c) => {
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  const body = await c.req.json().catch(() => ({})) as { api_key?: string }
+  if (!body.api_key) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'api_key is required')
+  }
+
+  const result = await validateWorkOSApiKey(body.api_key, c.env.WORKOS_API_KEY)
+  return c.json(result)
 })
 
 // ── MCP Auth Middleware ───────────────────────────────────────────────────

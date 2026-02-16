@@ -31,11 +31,12 @@
   ]
 
   // Secrets (set via wrangler secret):
-  // WORKOS_API_KEY
-  // WORKOS_CLIENT_ID
-  // AUTH_SECRET
-  // JWKS_SECRET
-  // GITHUB_APP_ID
-  // GITHUB_APP_PRIVATE_KEY
-  // GITHUB_WEBHOOK_SECRET
+  // WORKOS_API_KEY              — WorkOS API key (client secret for code exchange + sk_* validation)
+  // WORKOS_CLIENT_ID            — WorkOS client ID (for OAuth flow + JWT audience)
+  // WORKOS_COOKIE_PASSWORD      — Optional: for encrypting auth cookies (future)
+  // AUTH_SECRET                 — Signing secret (general purpose)
+  // JWKS_SECRET                 — JWKS signing secret (legacy, keys now stored in DO)
+  // GITHUB_APP_ID               — GitHub App ID (claim-by-commit)
+  // GITHUB_APP_PRIVATE_KEY      — GitHub App private key
+  // GITHUB_WEBHOOK_SECRET       — GitHub webhook signature secret
 }
