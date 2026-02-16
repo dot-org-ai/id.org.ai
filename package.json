@@ -54,17 +54,21 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
+    "test:workers": "vitest run",
+    "test:node": "vitest run --config vitest.node.config.ts",
+    "test:watch": "vitest",
     "deploy": "cd worker && wrangler deploy",
     "types": "cd worker && wrangler types"
   },
   "dependencies": {
+    "@workos-inc/node": "^7.0.0",
     "hono": "^4.0.0",
     "jose": "^6.0.0",
-    "open": "^10.1.0",
-    "@workos-inc/node": "^7.0.0"
+    "open": "^10.1.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.12",
     "@cloudflare/workers-types": "^4.20250109.0",
     "@types/node": "^22.0.0",
     "drizzle-kit": "^0.31.0",

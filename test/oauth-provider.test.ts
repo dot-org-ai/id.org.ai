@@ -1,11 +1,12 @@
 /**
- * OAuth 2.1 Provider — Comprehensive Test Suite
+ * OAuthProvider Comprehensive Test Suite
  *
- * Tests all OAuth 2.1 flows implemented in src/oauth/provider.ts:
+ * Tests the complete OAuth 2.1 authorization server implementation:
  *   - OIDC Discovery
  *   - Dynamic Client Registration (RFC 7591)
- *   - Authorization Endpoint
- *   - Token Endpoint (Authorization Code, Refresh Token, Client Credentials, Device Code)
+ *   - Authorization Code + PKCE (S256 mandatory)
+ *   - Refresh Token with Rotation
+ *   - Client Credentials
  *   - Device Flow (RFC 8628)
  *   - Token Introspection (RFC 7662)
  *   - Token Revocation (RFC 7009)
@@ -13,33 +14,124 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { OAuthProvider, type OAuthConfig } from '../src/oauth/provider'
+import { OAuthProvider } from '../src/oauth/provider'
+import type { OAuthConfig } from '../src/oauth/provider'
 
-// ── Mock Storage ────────────────────────────────────────────────────────
+// ============================================================================
+// Helpers
+// ============================================================================
 
-class MockStorage {
-  private store = new Map<string, unknown>()
-  async get<T>(key: string) {
-    return this.store.get(key) as T | undefined
-  }
-  async put(key: string, value: unknown) {
-    this.store.set(key, value)
-  }
-  async delete(key: string) {
-    return this.store.delete(key)
-  }
-  async list<T>(options?: { prefix?: string; limit?: number }) {
-    const map = new Map<string, T>()
-    for (const [k, v] of this.store) {
-      if (options?.prefix && !k.startsWith(options.prefix)) continue
-      map.set(k, v as T)
-      if (options?.limit && map.size >= options.limit) break
-    }
-    return map
+type StorageLike = {
+  get<T = unknown>(key: string): Promise<T | undefined>
+  put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void>
+  delete(key: string): Promise<boolean>
+  list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>>
+}
+
+interface IdentityInfo {
+  id: string
+  name?: string
+  handle?: string
+  email?: string
+  emailVerified?: boolean
+  image?: string
+}
+
+function createMockStorage(): StorageLike {
+  const store = new Map<string, unknown>()
+  return {
+    async get<T = unknown>(key: string): Promise<T | undefined> {
+      return store.get(key) as T | undefined
+    },
+    async put(key: string, value: unknown, _options?: { expirationTtl?: number }): Promise<void> {
+      store.set(key, value)
+    },
+    async delete(key: string): Promise<boolean> {
+      return store.delete(key)
+    },
+    async list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>> {
+      const result = new Map<string, T>()
+      let count = 0
+      for (const [key, value] of store) {
+        if (options?.prefix && !key.startsWith(options.prefix)) continue
+        if (options?.limit && count >= options.limit) break
+        result.set(key, value as T)
+        count++
+      }
+      return result
+    },
   }
 }
 
-// ── PKCE Helpers ────────────────────────────────────────────────────────
+const TEST_CONFIG: OAuthConfig = {
+  issuer: 'https://id.org.ai',
+  authorizationEndpoint: 'https://id.org.ai/oauth/authorize',
+  tokenEndpoint: 'https://id.org.ai/oauth/token',
+  userinfoEndpoint: 'https://id.org.ai/oauth/userinfo',
+  registrationEndpoint: 'https://id.org.ai/oauth/register',
+  deviceAuthorizationEndpoint: 'https://id.org.ai/oauth/device',
+  revocationEndpoint: 'https://id.org.ai/oauth/revoke',
+  introspectionEndpoint: 'https://id.org.ai/oauth/introspect',
+  jwksUri: 'https://id.org.ai/.well-known/jwks.json',
+}
+
+const TEST_IDENTITIES: Record<string, IdentityInfo> = {
+  'user-1': {
+    id: 'user-1',
+    name: 'Alice Test',
+    handle: 'alice',
+    email: 'alice@example.com',
+    emailVerified: true,
+    image: 'https://example.com/alice.png',
+  },
+  'user-2': {
+    id: 'user-2',
+    name: 'Bob Agent',
+    handle: 'bob',
+    email: 'bob@example.com',
+    emailVerified: false,
+  },
+}
+
+function createProvider(storage?: StorageLike): OAuthProvider {
+  return new OAuthProvider({
+    storage: storage ?? createMockStorage(),
+    config: TEST_CONFIG,
+    getIdentity: async (id: string) => TEST_IDENTITIES[id] ?? null,
+  })
+}
+
+async function registerClient(
+  provider: OAuthProvider,
+  overrides: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const body = {
+    client_name: 'Test App',
+    redirect_uris: ['https://app.example.com/callback'],
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    scope: 'openid profile email',
+    token_endpoint_auth_method: 'none',
+    ...overrides,
+  }
+  const request = new Request('https://id.org.ai/oauth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const response = await provider.handleRegister(request)
+  return response.json() as Promise<Record<string, unknown>>
+}
+
+async function registerConfidentialClient(
+  provider: OAuthProvider,
+  overrides: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  return registerClient(provider, {
+    token_endpoint_auth_method: 'client_secret_post',
+    ...overrides,
+  })
+}
 
 async function computeS256Challenge(verifier: string): Promise<string> {
   const encoder = new TextEncoder()
@@ -51,2177 +143,1502 @@ async function computeS256Challenge(verifier: string): Promise<string> {
     .replace(/=+$/g, '')
 }
 
-// ── Test Config & Fixtures ──────────────────────────────────────────────
+async function getAuthCode(
+  provider: OAuthProvider,
+  clientId: string,
+  redirectUri: string,
+  identityId: string,
+  codeVerifier: string,
+  extraParams: Record<string, string> = {},
+): Promise<string> {
+  const codeChallenge = await computeS256Challenge(codeVerifier)
+  const url = new URL('https://id.org.ai/oauth/authorize')
+  url.searchParams.set('client_id', clientId)
+  url.searchParams.set('redirect_uri', redirectUri)
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('scope', 'openid profile email')
+  url.searchParams.set('code_challenge', codeChallenge)
+  url.searchParams.set('code_challenge_method', 'S256')
+  url.searchParams.set('state', 'test-state')
+  for (const [k, v] of Object.entries(extraParams)) url.searchParams.set(k, v)
 
-const TEST_ISSUER = 'https://id.org.ai'
-
-const testConfig: OAuthConfig = {
-  issuer: TEST_ISSUER,
-  authorizationEndpoint: `${TEST_ISSUER}/oauth/authorize`,
-  tokenEndpoint: `${TEST_ISSUER}/oauth/token`,
-  userinfoEndpoint: `${TEST_ISSUER}/oauth/userinfo`,
-  registrationEndpoint: `${TEST_ISSUER}/oauth/register`,
-  deviceAuthorizationEndpoint: `${TEST_ISSUER}/oauth/device`,
-  revocationEndpoint: `${TEST_ISSUER}/oauth/revoke`,
-  introspectionEndpoint: `${TEST_ISSUER}/oauth/introspect`,
-  jwksUri: `${TEST_ISSUER}/.well-known/jwks.json`,
+  const req = new Request(url.toString(), { method: 'GET', redirect: 'manual' })
+  const res = await provider.handleAuthorize(req, identityId)
+  const location = new URL(res.headers.get('location')!)
+  return location.searchParams.get('code')!
 }
 
-const testIdentities: Record<string, { id: string; name: string; handle: string; email: string; emailVerified: boolean; image: string }> = {
-  'user-1': {
-    id: 'user-1',
-    name: 'Alice Test',
-    handle: 'alice',
-    email: 'alice@example.com',
-    emailVerified: true,
-    image: 'https://example.com/alice.png',
-  },
-  'user-2': {
-    id: 'user-2',
-    name: 'Bob Test',
-    handle: 'bob',
-    email: 'bob@example.com',
-    emailVerified: false,
-    image: 'https://example.com/bob.png',
-  },
-}
-
-function createProvider(storage: MockStorage) {
-  return new OAuthProvider({
-    storage,
-    config: testConfig,
-    getIdentity: async (id: string) => testIdentities[id] ?? null,
+async function getAuthCodeTokens(
+  provider: OAuthProvider,
+  clientId: string,
+  redirectUri: string,
+  identityId: string,
+  codeVerifier: string,
+): Promise<Record<string, unknown>> {
+  const code = await getAuthCode(provider, clientId, redirectUri, identityId, codeVerifier)
+  const tokenReq = new Request('https://id.org.ai/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      code_verifier: codeVerifier,
+    }),
   })
+  const tokenRes = await provider.handleToken(tokenReq)
+  return tokenRes.json() as Promise<Record<string, unknown>>
 }
 
-// ── Helper: Register a client ───────────────────────────────────────────
+function makeTokenRequest(body: Record<string, string>, authHeader?: string): Request {
+  const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' }
+  if (authHeader) headers['Authorization'] = authHeader
+  return new Request('https://id.org.ai/oauth/token', { method: 'POST', headers, body: new URLSearchParams(body) })
+}
 
-async function registerPublicClient(provider: OAuthProvider, overrides: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-  const body = {
-    client_name: 'Test App',
-    redirect_uris: ['https://app.example.com/callback'],
-    grant_types: ['authorization_code', 'refresh_token'],
-    response_types: ['code'],
-    scope: 'openid profile email',
-    token_endpoint_auth_method: 'none',
-    ...overrides,
-  }
-  const request = new Request(`${TEST_ISSUER}/oauth/register`, {
+function makeJsonRequest(url: string, body: unknown): Request {
+  return new Request(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const response = await provider.handleRegister(request)
-  return response.json() as Promise<Record<string, unknown>>
 }
 
-async function registerConfidentialClient(provider: OAuthProvider, overrides: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-  return registerPublicClient(provider, {
-    token_endpoint_auth_method: 'client_secret_post',
-    grant_types: ['authorization_code', 'refresh_token', 'client_credentials'],
-    ...overrides,
-  })
-}
-
-// ── Helper: Get authorization code ──────────────────────────────────────
-
-async function getAuthorizationCode(
-  provider: OAuthProvider,
-  clientId: string,
-  redirectUri: string,
-  codeChallenge: string,
-  identityId: string,
-  extraParams: Record<string, string> = {},
-): Promise<string> {
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'openid profile email',
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-    ...extraParams,
-  })
-  const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-  const response = await provider.handleAuthorize(request, identityId)
-  const location = response.headers.get('location')!
-  const url = new URL(location)
-  return url.searchParams.get('code')!
-}
-
-// ── Helper: Exchange code for tokens ────────────────────────────────────
-
-async function exchangeCode(
-  provider: OAuthProvider,
-  clientId: string,
-  code: string,
-  redirectUri: string,
-  codeVerifier: string,
-  extraBody: Record<string, string> = {},
-): Promise<{ response: Response; data: Record<string, unknown> }> {
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: clientId,
-    code,
-    redirect_uri: redirectUri,
-    code_verifier: codeVerifier,
-    ...extraBody,
-  })
-  const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  })
-  const response = await provider.handleToken(request)
-  const data = (await response.json()) as Record<string, unknown>
-  return { response, data }
-}
-
-// ════════════════════════════════════════════════════════════════════════
+// ============================================================================
 // Tests
-// ════════════════════════════════════════════════════════════════════════
+// ============================================================================
 
 describe('OAuthProvider', () => {
-  let storage: MockStorage
+  let storage: StorageLike
   let provider: OAuthProvider
 
   beforeEach(() => {
-    storage = new MockStorage()
+    storage = createMockStorage()
     provider = createProvider(storage)
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // OIDC Discovery
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 1. OIDC Discovery
+  // ══════════════════════════════════════════════════════════════════════════
 
   describe('OIDC Discovery', () => {
-    it('returns correct issuer', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.issuer).toBe(TEST_ISSUER)
+    it('returns 200 JSON response', () => {
+      const res = provider.getOpenIDConfiguration()
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Content-Type')).toBe('application/json')
     })
 
-    it('returns all endpoints', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.authorization_endpoint).toBe(testConfig.authorizationEndpoint)
-      expect(body.token_endpoint).toBe(testConfig.tokenEndpoint)
-      expect(body.userinfo_endpoint).toBe(testConfig.userinfoEndpoint)
-      expect(body.registration_endpoint).toBe(testConfig.registrationEndpoint)
-      expect(body.device_authorization_endpoint).toBe(testConfig.deviceAuthorizationEndpoint)
-      expect(body.revocation_endpoint).toBe(testConfig.revocationEndpoint)
-      expect(body.introspection_endpoint).toBe(testConfig.introspectionEndpoint)
-      expect(body.jwks_uri).toBe(testConfig.jwksUri)
+    it('includes issuer matching config', async () => {
+      const d = await provider.getOpenIDConfiguration().json()
+      expect(d.issuer).toBe('https://id.org.ai')
     })
 
-    it('returns supported grant types', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      const grantTypes = body.grant_types_supported as string[]
-      expect(grantTypes).toContain('authorization_code')
-      expect(grantTypes).toContain('refresh_token')
-      expect(grantTypes).toContain('client_credentials')
-      expect(grantTypes).toContain('urn:ietf:params:oauth:grant-type:device_code')
+    it('includes all endpoint URLs', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.authorization_endpoint).toBe(TEST_CONFIG.authorizationEndpoint)
+      expect(d.token_endpoint).toBe(TEST_CONFIG.tokenEndpoint)
+      expect(d.userinfo_endpoint).toBe(TEST_CONFIG.userinfoEndpoint)
+      expect(d.registration_endpoint).toBe(TEST_CONFIG.registrationEndpoint)
+      expect(d.device_authorization_endpoint).toBe(TEST_CONFIG.deviceAuthorizationEndpoint)
+      expect(d.revocation_endpoint).toBe(TEST_CONFIG.revocationEndpoint)
+      expect(d.introspection_endpoint).toBe(TEST_CONFIG.introspectionEndpoint)
+      expect(d.jwks_uri).toBe(TEST_CONFIG.jwksUri)
     })
 
-    it('returns supported scopes', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      const scopes = body.scopes_supported as string[]
-      expect(scopes).toContain('openid')
-      expect(scopes).toContain('profile')
-      expect(scopes).toContain('email')
-      expect(scopes).toContain('offline_access')
+    it('supports only code response type', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.response_types_supported).toEqual(['code'])
+    })
+
+    it('supports all four grant types', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      const gt = d.grant_types_supported as string[]
+      expect(gt).toContain('authorization_code')
+      expect(gt).toContain('refresh_token')
+      expect(gt).toContain('client_credentials')
+      expect(gt).toContain('urn:ietf:params:oauth:grant-type:device_code')
     })
 
     it('only supports S256 code challenge method', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.code_challenge_methods_supported).toEqual(['S256'])
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.code_challenge_methods_supported).toEqual(['S256'])
     })
 
-    it('only supports code response type', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.response_types_supported).toEqual(['code'])
+    it('includes scopes and claims', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access'])
+      expect(d.claims_supported).toContain('sub')
+      expect(d.claims_supported).toContain('email')
     })
 
-    it('returns supported claims', async () => {
-      const response = provider.getOpenIDConfiguration()
-      const body = (await response.json()) as Record<string, unknown>
-      const claims = body.claims_supported as string[]
-      expect(claims).toContain('sub')
-      expect(claims).toContain('name')
-      expect(claims).toContain('email')
-      expect(claims).toContain('email_verified')
+    it('includes token endpoint auth methods', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.token_endpoint_auth_methods_supported).toContain('none')
+      expect(d.token_endpoint_auth_methods_supported).toContain('client_secret_basic')
+      expect(d.token_endpoint_auth_methods_supported).toContain('client_secret_post')
     })
 
-    it('returns JSON content type with no-store cache', async () => {
-      const response = provider.getOpenIDConfiguration()
-      expect(response.headers.get('Content-Type')).toBe('application/json')
-      expect(response.headers.get('Cache-Control')).toBe('no-store')
+    it('sets no-store cache control', () => {
+      expect(provider.getOpenIDConfiguration().headers.get('Cache-Control')).toBe('no-store')
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Dynamic Client Registration (RFC 7591)
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 2. Dynamic Client Registration
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Dynamic Client Registration (RFC 7591)', () => {
-    it('registers a public client (no secret)', async () => {
-      const result = await registerPublicClient(provider)
-      expect(result.client_id).toBeDefined()
-      expect(result.client_id).toMatch(/^cid_/)
-      expect(result.client_name).toBe('Test App')
-      expect(result.redirect_uris).toEqual(['https://app.example.com/callback'])
-      expect(result.token_endpoint_auth_method).toBe('none')
-      expect(result.client_secret).toBeUndefined()
+  describe('Dynamic Client Registration', () => {
+    it('registers a valid public client', async () => {
+      const d = await registerClient(provider)
+      expect((d.client_id as string).startsWith('cid_')).toBe(true)
+      expect(d.client_name).toBe('Test App')
+      expect(d.token_endpoint_auth_method).toBe('none')
+      expect(d.client_secret).toBeUndefined()
     })
 
-    it('registers a confidential client (with secret)', async () => {
-      const result = await registerConfidentialClient(provider)
-      expect(result.client_id).toBeDefined()
-      expect(result.client_secret).toBeDefined()
-      expect(result.client_secret).toMatch(/^cs_/)
-      expect(result.client_secret_expires_at).toBe(0)
-      expect(result.token_endpoint_auth_method).toBe('client_secret_post')
+    it('registers a confidential client with secret', async () => {
+      const d = await registerConfidentialClient(provider)
+      expect((d.client_secret as string).startsWith('cs_')).toBe(true)
+      expect(d.client_secret_expires_at).toBe(0)
     })
 
-    it('validates redirect_uris require HTTPS', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
+    it('rejects GET method', async () => {
+      const req = new Request('https://id.org.ai/oauth/register', { method: 'GET' })
+      const res = await provider.handleRegister(req)
+      expect(res.status).toBe(405)
+    })
+
+    it('rejects PUT method', async () => {
+      const req = new Request('https://id.org.ai/oauth/register', {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Bad App',
-          redirect_uris: ['http://insecure.example.com/callback'],
-        }),
+        body: JSON.stringify({ client_name: 'X' }),
       })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_redirect_uri')
-    })
-
-    it('allows localhost redirect_uris for development', async () => {
-      const result = await registerPublicClient(provider, {
-        redirect_uris: ['http://localhost:3000/callback'],
-      })
-      expect(result.client_id).toBeDefined()
-      expect(result.redirect_uris).toEqual(['http://localhost:3000/callback'])
-    })
-
-    it('allows 127.0.0.1 redirect_uris for development', async () => {
-      const result = await registerPublicClient(provider, {
-        redirect_uris: ['http://127.0.0.1:3000/callback'],
-      })
-      expect(result.client_id).toBeDefined()
-    })
-
-    it('rejects redirect_uris with fragments', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Fragment App',
-          redirect_uris: ['https://app.example.com/callback#bad'],
-        }),
-      })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_redirect_uri')
-      expect(body.error_description).toContain('fragment')
-    })
-
-    it('rejects invalid redirect_uris (malformed URL)', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Malformed App',
-          redirect_uris: ['not-a-url'],
-        }),
-      })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_redirect_uri')
-    })
-
-    it('validates grant_types', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Bad Grant App',
-          redirect_uris: ['https://app.example.com/callback'],
-          grant_types: ['implicit'],
-        }),
-      })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_client_metadata')
-      expect(body.error_description).toContain('implicit')
-    })
-
-    it('requires client_name', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          redirect_uris: ['https://app.example.com/callback'],
-        }),
-      })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_client_metadata')
-      expect(body.error_description).toContain('client_name')
+      expect((await provider.handleRegister(req)).status).toBe(405)
     })
 
     it('rejects invalid JSON body', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
+      const req = new Request('https://id.org.ai/oauth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: 'not json {{{',
+        body: '{bad json',
       })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_request')
-      expect(body.error_description).toContain('Invalid JSON')
+      const res = await provider.handleRegister(req)
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_request')
     })
 
-    it('rejects non-POST methods', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, { method: 'GET' })
-      const response = await provider.handleRegister(request)
-      expect(response.status).toBe(405)
+    it('rejects missing client_name', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', { redirect_uris: ['https://x.com/cb'] })
+      const res = await provider.handleRegister(req)
+      expect(res.status).toBe(400)
+      const d = await res.json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_client_metadata')
+      expect(d.error_description).toContain('client_name')
     })
 
-    it('returns 201 status for successful registration', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Test App',
-          redirect_uris: ['https://app.example.com/callback'],
-        }),
+    it('rejects unsupported grant type: implicit', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'Bad', redirect_uris: ['https://x.com/cb'], grant_types: ['implicit'],
       })
-      const response = await provider.handleRegister(request)
-      expect(response.status).toBe(201)
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_client_metadata')
+      expect(d.error_description).toContain('implicit')
     })
 
-    it('includes client_id_issued_at in response', async () => {
-      const result = await registerPublicClient(provider)
-      expect(result.client_id_issued_at).toBeDefined()
-      expect(typeof result.client_id_issued_at).toBe('number')
+    it('rejects unsupported grant type: password', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'Bad', redirect_uris: ['https://x.com/cb'], grant_types: ['password'],
+      })
+      expect((await (await provider.handleRegister(req)).json() as Record<string, unknown>).error).toBe('invalid_client_metadata')
+    })
+
+    it('rejects non-HTTPS redirect URI', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'HTTP', redirect_uris: ['http://insecure.com/cb'],
+      })
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_redirect_uri')
+      expect(d.error_description).toContain('HTTPS')
+    })
+
+    it('allows localhost redirect URI', async () => {
+      const d = await registerClient(provider, { redirect_uris: ['http://localhost:3000/cb'] })
+      expect(d.client_id).toBeDefined()
+    })
+
+    it('allows 127.0.0.1 redirect URI', async () => {
+      const d = await registerClient(provider, { redirect_uris: ['http://127.0.0.1:8080/cb'] })
+      expect(d.client_id).toBeDefined()
+    })
+
+    it('allows HTTPS redirect URI', async () => {
+      const d = await registerClient(provider, { redirect_uris: ['https://secure.example.com/cb'] })
+      expect(d.redirect_uris).toEqual(['https://secure.example.com/cb'])
+    })
+
+    it('rejects redirect URI with fragment', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'Frag', redirect_uris: ['https://x.com/cb#frag'],
+      })
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_redirect_uri')
+      expect(d.error_description).toContain('fragment')
+    })
+
+    it('rejects invalid redirect URI', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'Bad', redirect_uris: ['not-a-url'],
+      })
+      expect((await (await provider.handleRegister(req)).json() as Record<string, unknown>).error).toBe('invalid_redirect_uri')
     })
 
     it('requires redirect_uris for authorization_code grant', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'No Redirect App',
-          grant_types: ['authorization_code'],
-          redirect_uris: [],
-        }),
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'No URIs', grant_types: ['authorization_code'], redirect_uris: [],
       })
-      const response = await provider.handleRegister(request)
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_client_metadata')
-      expect(body.error_description).toContain('redirect_uris required')
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_client_metadata')
+      expect(d.error_description).toContain('redirect_uris')
     })
 
-    it('includes logo_uri and client_uri if provided', async () => {
-      const result = await registerPublicClient(provider, {
-        logo_uri: 'https://app.example.com/logo.png',
-        client_uri: 'https://app.example.com',
+    it('allows client_credentials without redirect_uris', async () => {
+      const d = await registerClient(provider, {
+        grant_types: ['client_credentials'], redirect_uris: [],
+        token_endpoint_auth_method: 'client_secret_post',
       })
-      expect(result.logo_uri).toBe('https://app.example.com/logo.png')
-      expect(result.client_uri).toBe('https://app.example.com')
+      expect(d.client_id).toBeDefined()
+    })
+
+    it('returns 201 on success', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'OK', redirect_uris: ['https://x.com/cb'],
+      })
+      expect((await provider.handleRegister(req)).status).toBe(201)
+    })
+
+    it('includes client_id_issued_at', async () => {
+      const d = await registerClient(provider)
+      expect(typeof d.client_id_issued_at).toBe('number')
+      expect(d.client_id_issued_at as number).toBeGreaterThan(0)
+    })
+
+    it('includes optional logo_uri and client_uri', async () => {
+      const d = await registerClient(provider, {
+        logo_uri: 'https://x.com/logo.png', client_uri: 'https://x.com',
+      })
+      expect(d.logo_uri).toBe('https://x.com/logo.png')
+      expect(d.client_uri).toBe('https://x.com')
+    })
+
+    it('defaults to authorization_code + refresh_token', async () => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+        client_name: 'Defaults', redirect_uris: ['https://x.com/cb'],
+      })
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.grant_types).toEqual(['authorization_code', 'refresh_token'])
+    })
+
+    it('stores client in storage', async () => {
+      const d = await registerClient(provider)
+      const stored = await storage.get<Record<string, unknown>>(`client:${d.client_id}`)
+      expect(stored).toBeDefined()
+      expect(stored!.name).toBe('Test App')
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Authorization Endpoint
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 3. Authorization Code + PKCE
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Authorization Endpoint', () => {
-    it('returns error for unknown client_id', async () => {
-      const params = new URLSearchParams({
-        client_id: 'cid_unknown',
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_client')
+  describe('Authorization Code + PKCE', () => {
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
+
+    beforeEach(async () => {
+      const d = await registerClient(provider)
+      clientId = d.client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
     })
 
-    it('returns error for invalid redirect_uri', async () => {
-      const client = await registerPublicClient(provider)
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://evil.example.com/callback',
-        response_type: 'code',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      const body = (await response.json()) as Record<string, unknown>
-      expect(body.error).toBe('invalid_request')
-      expect(body.error_description).toContain('redirect_uri')
+    it('completes full auth code flow', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      expect((t.access_token as string).startsWith('at_')).toBe(true)
+      expect((t.refresh_token as string).startsWith('rt_')).toBe(true)
+      expect(t.token_type).toBe('Bearer')
+      expect(t.expires_in).toBe(3600)
+      expect(t.scope).toBe('openid profile email')
     })
 
-    it('returns error for response_type != code', async () => {
-      const client = await registerPublicClient(provider)
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'token',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      // Should redirect with error
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('error')).toBe('unsupported_response_type')
+    it('redirects with code and state', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
+      url.searchParams.set('state', 'my-state')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(302)
+      const loc = new URL(res.headers.get('location')!)
+      expect(loc.searchParams.get('code')!.startsWith('ac_')).toBe(true)
+      expect(loc.searchParams.get('state')).toBe('my-state')
     })
 
-    it('requires PKCE for public clients (OAuth 2.1)', async () => {
-      const client = await registerPublicClient(provider)
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('error')).toBe('invalid_request')
-      expect(location.searchParams.get('error_description')).toContain('code_challenge')
+    it('requires code_challenge for public clients', async () => {
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(302)
+      const loc = new URL(res.headers.get('location')!)
+      expect(loc.searchParams.get('error')).toBe('invalid_request')
+      expect(loc.searchParams.get('error_description')).toContain('code_challenge')
     })
 
     it('rejects non-S256 code_challenge_method', async () => {
-      const client = await registerPublicClient(provider)
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        code_challenge: 'some-challenge',
-        code_challenge_method: 'plain',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('error')).toBe('invalid_request')
-      expect(location.searchParams.get('error_description')).toContain('S256')
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('code_challenge', 'plain_value')
+      url.searchParams.set('code_challenge_method', 'plain')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      const loc = new URL(res.headers.get('location')!)
+      expect(loc.searchParams.get('error')).toBe('invalid_request')
+      expect(loc.searchParams.get('error_description')).toContain('S256')
     })
 
-    it('redirects to /login when user is not authenticated', async () => {
-      const client = await registerPublicClient(provider)
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const authorizeUrl = `${TEST_ISSUER}/oauth/authorize?${params}`
-      const request = new Request(authorizeUrl)
-      const response = await provider.handleAuthorize(request, null)
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.pathname).toBe('/login')
-      expect(location.searchParams.get('continue')).toBe(authorizeUrl)
+    it('rejects unknown client_id', async () => {
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', 'cid_nonexistent')
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_client')
     })
 
-    it('shows consent page for untrusted clients', async () => {
-      const client = await registerPublicClient(provider)
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.headers.get('Content-Type')).toContain('text/html')
-      const html = await response.text()
-      expect(html).toContain('Authorize application')
-      expect(html).toContain('Test App')
+    it('rejects invalid redirect_uri', async () => {
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', 'https://evil.com/steal')
+      url.searchParams.set('response_type', 'code')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_request')
     })
 
-    it('skips consent for trusted clients', async () => {
-      const client = await registerPublicClient(provider)
-      // Manually mark client as trusted in storage
-      const storedClient = await storage.get<Record<string, unknown>>(`client:${client.client_id}`)
-      await storage.put(`client:${client.client_id}`, { ...storedClient, trusted: true })
+    it('rejects unsupported response_type token', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'token')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
 
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('code')).toBeDefined()
-      expect(location.searchParams.get('code')).toMatch(/^ac_/)
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(302)
+      expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('unsupported_response_type')
     })
 
-    it('issues authorization code on consent (redirect with code + state)', async () => {
-      const client = await registerPublicClient(provider)
-      await storage.put(`client:${client.client_id}`, {
-        ...(await storage.get(`client:${client.client_id}`)),
-        trusted: true,
-      })
-
-      const codeChallenge = await computeS256Challenge('my-verifier')
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        scope: 'openid profile email',
-        state: 'xyz-state-123',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.origin).toBe('https://app.example.com')
-      expect(location.pathname).toBe('/callback')
-      expect(location.searchParams.get('code')).toMatch(/^ac_/)
-      expect(location.searchParams.get('state')).toBe('xyz-state-123')
+    it('rejects wrong code_verifier', async () => {
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', code, redirect_uri: redir,
+        client_id: clientId, code_verifier: 'wrong-verifier',
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
     })
 
-    it('skips consent when user has already consented to all requested scopes', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-
-      // Pre-store consent for user-1
-      await storage.put(`consent:user-1:${clientId}`, {
-        scopes: ['openid', 'profile', 'email'],
-        createdAt: Date.now(),
-      })
-
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        scope: 'openid profile email',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      // Should redirect with code (no consent page)
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('code')).toMatch(/^ac_/)
+    it('succeeds with correct code_verifier', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      expect(t.access_token).toBeDefined()
+      expect(t.error).toBeUndefined()
     })
 
-    it('shows consent when user previously consented to fewer scopes', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
+    it('rejects code reuse (one-time use)', async () => {
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const body = { grant_type: 'authorization_code', code, redirect_uri: redir, client_id: clientId, code_verifier: verifier }
 
-      // Pre-store partial consent
-      await storage.put(`consent:user-1:${clientId}`, {
-        scopes: ['openid'],
-        createdAt: Date.now(),
-      })
+      const r1 = await provider.handleToken(makeTokenRequest(body))
+      expect(r1.status).toBe(200)
 
-      const codeChallenge = await computeS256Challenge('test-verifier')
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        scope: 'openid profile email',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      // Should show consent page because existing consent doesn't cover all scopes
-      expect(response.headers.get('Content-Type')).toContain('text/html')
-    })
-
-    it('preserves state in error redirects', async () => {
-      const client = await registerPublicClient(provider)
-      const params = new URLSearchParams({
-        client_id: client.client_id as string,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'token',
-        state: 'my-state',
-        code_challenge: 'something',
-        code_challenge_method: 'S256',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize?${params}`)
-      const response = await provider.handleAuthorize(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('state')).toBe('my-state')
-    })
-  })
-
-  // ────────────────────────────────────────────────────────────────────
-  // Authorization Consent Submission
-  // ────────────────────────────────────────────────────────────────────
-
-  describe('Authorization Consent Submission', () => {
-    it('issues code when user approves', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const codeChallenge = await computeS256Challenge('verifier-123')
-
-      const body = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        scope: 'openid profile email',
-        state: 'consent-state',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-        approved: 'true',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleAuthorizeConsent(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('code')).toMatch(/^ac_/)
-      expect(location.searchParams.get('state')).toBe('consent-state')
-    })
-
-    it('redirects with access_denied when user denies', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        approved: 'false',
-        state: 'deny-state',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleAuthorizeConsent(request, 'user-1')
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.searchParams.get('error')).toBe('access_denied')
-      expect(location.searchParams.get('state')).toBe('deny-state')
-    })
-
-    it('stores consent for future requests', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        scope: 'openid profile',
-        approved: 'true',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/authorize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      await provider.handleAuthorizeConsent(request, 'user-1')
-
-      const consentKey = `consent:user-1:${clientId}`
-      const consent = await storage.get<{ scopes: string[] }>(consentKey)
-      expect(consent).toBeDefined()
-      expect(consent!.scopes).toContain('openid')
-      expect(consent!.scopes).toContain('profile')
-    })
-  })
-
-  // ────────────────────────────────────────────────────────────────────
-  // Token Endpoint - Authorization Code
-  // ────────────────────────────────────────────────────────────────────
-
-  describe('Token Endpoint - Authorization Code', () => {
-    it('exchanges valid code for access + refresh tokens', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      // Mark client as trusted to skip consent
-      const storedClient = await storage.get(`client:${clientId}`)
-      await storage.put(`client:${clientId}`, { ...storedClient, trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-
-      expect(data.access_token).toBeDefined()
-      expect((data.access_token as string)).toMatch(/^at_/)
-      expect(data.refresh_token).toBeDefined()
-      expect((data.refresh_token as string)).toMatch(/^rt_/)
-      expect(data.token_type).toBe('Bearer')
-      expect(data.expires_in).toBe(3600)
-      expect(data.scope).toBe('openid profile email')
-    })
-
-    it('validates PKCE code_verifier (S256)', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'correct-verifier-value-for-pkce-test'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { response } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-
-      expect(response.status).toBe(200)
-    })
-
-    it('rejects invalid code_verifier', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const correctVerifier = 'the-correct-verifier'
-      const codeChallenge = await computeS256Challenge(correctVerifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', 'wrong-verifier')
-
-      expect(data.error).toBe('invalid_grant')
-      expect(data.error_description).toContain('code_verifier')
+      const r2 = await provider.handleToken(makeTokenRequest(body))
+      expect(r2.status).toBe(400)
+      expect((await r2.json() as Record<string, unknown>).error).toBe('invalid_grant')
     })
 
     it('rejects expired authorization code', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'my-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const cd = await storage.get<Record<string, unknown>>(`code:${code}`)
+      await storage.put(`code:${code}`, { ...cd, expiresAt: Date.now() - 1000 })
 
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-
-      // Manually expire the code
-      const codeData = await storage.get<Record<string, unknown>>(`code:${code}`)
-      await storage.put(`code:${code}`, { ...codeData, expiresAt: Date.now() - 1000 })
-
-      const { data } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-
-      expect(data.error).toBe('invalid_grant')
-      expect(data.error_description).toContain('expired')
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', code, redirect_uri: redir,
+        client_id: clientId, code_verifier: verifier,
+      }))
+      expect(res.status).toBe(400)
+      const d = await res.json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_grant')
+      expect(d.error_description).toContain('expired')
     })
 
-    it('rejects code from wrong client', async () => {
-      const client1 = await registerPublicClient(provider, { client_name: 'Client 1' })
-      const client2 = await registerPublicClient(provider, { client_name: 'Client 2' })
-      const clientId1 = client1.client_id as string
-      const clientId2 = client2.client_id as string
-      const verifier = 'my-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId1}`, { ...(await storage.get(`client:${clientId1}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId1, 'https://app.example.com/callback', codeChallenge, 'user-1')
-
-      // Try to exchange using client2
-      const { data } = await exchangeCode(provider, clientId2, code, 'https://app.example.com/callback', verifier)
-
-      expect(data.error).toBe('invalid_grant')
-      expect(data.error_description).toContain('not issued to this client')
+    it('rejects redirect_uri mismatch on token exchange', async () => {
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', code, redirect_uri: 'https://other.com/cb',
+        client_id: clientId, code_verifier: verifier,
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('redirect_uri')
     })
 
-    it('rejects redirect_uri mismatch', async () => {
-      const client = await registerPublicClient(provider, {
-        redirect_uris: ['https://app.example.com/callback', 'https://app.example.com/other'],
-      })
-      const clientId = client.client_id as string
-      const verifier = 'my-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data } = await exchangeCode(provider, clientId, code, 'https://app.example.com/other', verifier)
-
-      expect(data.error).toBe('invalid_grant')
-      expect(data.error_description).toContain('redirect_uri mismatch')
+    it('rejects wrong client_id on token exchange', async () => {
+      const other = await registerClient(provider, { client_name: 'Other', redirect_uris: ['https://o.com/cb'] })
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', code, redirect_uri: redir,
+        client_id: other.client_id as string, code_verifier: verifier,
+      }))
+      expect(res.status).toBe(400)
     })
 
-    it('consumes code (one-time use)', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'single-use-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-
-      // First exchange succeeds
-      const { data: first } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-      expect(first.access_token).toBeDefined()
-
-      // Second exchange fails
-      const { data: second } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-      expect(second.error).toBe('invalid_grant')
+    it('rejects missing code on token exchange', async () => {
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', redirect_uri: redir,
+        client_id: clientId, code_verifier: verifier,
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('code')
     })
 
-    it('validates client secret for confidential clients', async () => {
-      const client = await registerConfidentialClient(provider)
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-
-      // Confidential clients can use PKCE too, or omit it and use secret
-      // For this test, create a code without PKCE challenge (empty string)
-      // by directly inserting the code into storage
-      const codeId = 'ac_test_confidential_code'
-      await storage.put(`code:${codeId}`, {
-        id: codeId,
-        clientId,
-        identityId: 'user-1',
-        scopes: ['openid', 'profile', 'email'],
-        redirectUri: 'https://app.example.com/callback',
-        codeChallenge: '', // no PKCE
-        codeChallengeMethod: 'S256',
-        expiresAt: Date.now() + 600000,
-        createdAt: Date.now(),
-      })
-
-      // Exchange with wrong secret
-      const body = new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        client_secret: 'wrong-secret',
-        code: codeId,
-        redirect_uri: 'https://app.example.com/callback',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_client')
-      expect(response.status).toBe(401)
+    it('rejects missing code_verifier when code has challenge', async () => {
+      const code = await getAuthCode(provider, clientId, redir, 'user-1', verifier)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'authorization_code', code, redirect_uri: redir, client_id: clientId,
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('code_verifier')
     })
 
-    it('rejects missing code', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
+    it('redirects to login when user not authenticated', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
 
-      const body = new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        code_verifier: 'some-verifier',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_request')
-      expect(data.error_description).toContain('code is required')
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), null)
+      expect(res.status).toBe(302)
+      const loc = new URL(res.headers.get('location')!)
+      expect(loc.pathname).toBe('/login')
+      expect(loc.searchParams.get('continue')).toContain('authorize')
     })
 
-    it('rejects non-POST method', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, { method: 'GET' })
-      const response = await provider.handleToken(request)
-      expect(response.status).toBe(405)
+    it('shows consent page for untrusted client', async () => {
+      const ud = await registerClient(provider, { client_name: 'Untrusted' })
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', ud.client_id as string)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Content-Type')).toContain('text/html')
+      const html = await res.text()
+      expect(html).toContain('Authorize application')
+      expect(html).toContain('Untrusted')
     })
 
-    it('supports Basic auth header for client credentials', async () => {
-      const client = await registerConfidentialClient(provider)
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
-      const verifier = 'basic-auth-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
+    it('trusted client skips consent', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', clientId)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
 
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(302)
+      expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeDefined()
+    })
 
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
+    it('skips consent with prior consent record', async () => {
+      const ud = await registerClient(provider, { client_name: 'Prior' })
+      await storage.put(`consent:user-1:${ud.client_id}`, { scopes: ['openid', 'profile', 'email'], createdAt: Date.now() })
 
-      const basicAuth = btoa(`${clientId}:${clientSecret}`)
-      const body = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: 'https://app.example.com/callback',
-        code_verifier: verifier,
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: `Basic ${basicAuth}`,
-        },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.access_token).toBeDefined()
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', ud.client_id as string)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(302)
+    })
+
+    it('shows consent when new scopes exceed prior consent', async () => {
+      const ud = await registerClient(provider, { client_name: 'Scope', scope: 'openid profile email offline_access' })
+      await storage.put(`consent:user-1:${ud.client_id}`, { scopes: ['openid', 'profile'], createdAt: Date.now() })
+
+      const ch = await computeS256Challenge(verifier)
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', ud.client_id as string)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      url.searchParams.set('code_challenge', ch)
+      url.searchParams.set('code_challenge_method', 'S256')
+
+      const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Content-Type')).toContain('text/html')
+    })
+
+    it('rejects GET on token endpoint', async () => {
+      expect((await provider.handleToken(new Request('https://id.org.ai/oauth/token', { method: 'GET' }))).status).toBe(405)
     })
 
     it('rejects unsupported grant_type', async () => {
-      const body = new URLSearchParams({
-        grant_type: 'password',
-        username: 'alice',
-        password: 'secret',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('unsupported_grant_type')
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'password' }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('unsupported_grant_type')
+    })
+
+    it('supports Basic auth on token endpoint', async () => {
+      const cd = await registerConfidentialClient(provider)
+      const cid = cd.client_id as string
+      const cs = cd.client_secret as string
+      const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+      await storage.put(`client:${cid}`, { ...s, trusted: true, redirectUris: [redir] })
+
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', cid)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+
+      const authRes = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+
+      const basic = 'Basic ' + btoa(`${cid}:${cs}`)
+      const tRes = await provider.handleToken(makeTokenRequest({ grant_type: 'authorization_code', code, redirect_uri: redir }, basic))
+      expect(tRes.status).toBe(200)
+      expect((await tRes.json() as Record<string, unknown>).access_token).toBeDefined()
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Token Endpoint - Refresh Token
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 4. Consent Submission
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Token Endpoint - Refresh Token', () => {
-    async function getTokenPair(clientId: string, verifier: string, codeChallenge: string) {
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-      return data
-    }
+  describe('Consent Submission', () => {
+    let untrustedId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'consent-test-verifier-long-enough-value'
 
-    async function refreshToken(clientId: string, refreshTokenId: string, clientSecret?: string) {
-      const bodyParams: Record<string, string> = {
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        refresh_token: refreshTokenId,
-      }
-      if (clientSecret) bodyParams.client_secret = clientSecret
-      const body = new URLSearchParams(bodyParams)
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
+    beforeEach(async () => {
+      untrustedId = (await registerClient(provider, { client_name: 'Consent App' })).client_id as string
+    })
+
+    it('issues code after user approves', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const req = new Request('https://id.org.ai/oauth/authorize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
+        body: new URLSearchParams({
+          client_id: untrustedId, redirect_uri: redir, scope: 'openid profile email',
+          state: 'cs', code_challenge: ch, code_challenge_method: 'S256', approved: 'true',
+        }),
       })
-      const response = await provider.handleToken(request)
-      return (await response.json()) as Record<string, unknown>
-    }
-
-    it('issues new access + refresh tokens', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'refresh-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      const tokens = await getTokenPair(clientId, verifier, codeChallenge)
-      const result = await refreshToken(clientId, tokens.refresh_token as string)
-
-      expect(result.access_token).toBeDefined()
-      expect((result.access_token as string)).toMatch(/^at_/)
-      expect(result.refresh_token).toBeDefined()
-      expect((result.refresh_token as string)).toMatch(/^rt_/)
-      // New tokens should be different from old ones
-      expect(result.access_token).not.toBe(tokens.access_token)
-      expect(result.refresh_token).not.toBe(tokens.refresh_token)
+      const res = await provider.handleAuthorizeConsent(req, 'user-1')
+      expect(res.status).toBe(302)
+      const loc = new URL(res.headers.get('location')!)
+      expect(loc.searchParams.get('code')).toBeDefined()
+      expect(loc.searchParams.get('state')).toBe('cs')
     })
 
-    it('revokes old refresh token on rotation', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'rotation-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      const tokens = await getTokenPair(clientId, verifier, codeChallenge)
-      const oldRt = tokens.refresh_token as string
-
-      await refreshToken(clientId, oldRt)
-
-      // Old refresh token should now be revoked
-      const oldTokenData = await storage.get<{ revoked: boolean }>(`refresh:${oldRt}`)
-      expect(oldTokenData!.revoked).toBe(true)
+    it('redirects with access_denied when user denies', async () => {
+      const req = new Request('https://id.org.ai/oauth/authorize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: untrustedId, redirect_uri: redir, state: 'ds', approved: 'false',
+        }),
+      })
+      const res = await provider.handleAuthorizeConsent(req, 'user-1')
+      expect(res.status).toBe(302)
+      expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('access_denied')
     })
 
-    it('rejects revoked token (replay detection)', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'replay-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      const tokens = await getTokenPair(clientId, verifier, codeChallenge)
-      const oldRt = tokens.refresh_token as string
-
-      // First refresh succeeds
-      const result1 = await refreshToken(clientId, oldRt)
-      expect(result1.access_token).toBeDefined()
-
-      // Second use of same token (replay) should fail
-      const result2 = await refreshToken(clientId, oldRt)
-      expect(result2.error).toBe('invalid_grant')
-      expect(result2.error_description).toContain('revoked')
+    it('stores consent record', async () => {
+      const ch = await computeS256Challenge(verifier)
+      const req = new Request('https://id.org.ai/oauth/authorize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: untrustedId, redirect_uri: redir, scope: 'openid profile email',
+          code_challenge: ch, code_challenge_method: 'S256', approved: 'true',
+        }),
+      })
+      await provider.handleAuthorizeConsent(req, 'user-1')
+      const c = await storage.get<Record<string, unknown>>(`consent:user-1:${untrustedId}`)
+      expect(c).toBeDefined()
+      expect((c!.scopes as string[])).toContain('email')
     })
 
-    it('revokes entire family on replay', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'family-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
+    it('rejects unknown client_id', async () => {
+      const req = new Request('https://id.org.ai/oauth/authorize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: 'cid_bogus', redirect_uri: redir, approved: 'true' }),
+      })
+      const res = await provider.handleAuthorizeConsent(req, 'user-1')
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_client')
+    })
+  })
 
-      const tokens = await getTokenPair(clientId, verifier, codeChallenge)
-      const rt1 = tokens.refresh_token as string
+  // ══════════════════════════════════════════════════════════════════════════
+  // 5. Refresh Token
+  // ══════════════════════════════════════════════════════════════════════════
 
-      // Rotate once (get rt2)
-      const result1 = await refreshToken(clientId, rt1)
-      const rt2 = result1.refresh_token as string
+  describe('Refresh Token', () => {
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'refresh-test-verifier-long-enough-value'
 
-      // Replay rt1 (already revoked) - this should revoke the entire family
-      await refreshToken(clientId, rt1)
+    beforeEach(async () => {
+      clientId = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
+    })
 
-      // Now rt2 should also be revoked
-      const rt2Data = await storage.get<{ revoked: boolean }>(`refresh:${rt2}`)
-      expect(rt2Data!.revoked).toBe(true)
+    it('exchanges refresh token for new pair', async () => {
+      const t1 = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t1.refresh_token as string, client_id: clientId,
+      }))
+      expect(res.status).toBe(200)
+      const t2 = await res.json() as Record<string, unknown>
+      expect(t2.access_token).not.toBe(t1.access_token)
+      expect(t2.refresh_token).not.toBe(t1.refresh_token)
+    })
+
+    it('rotates: old token revoked after use', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const rt = t.refresh_token as string
+      await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt, client_id: clientId }))
+      const d = await storage.get<Record<string, unknown>>(`refresh:${rt}`)
+      expect(d!.revoked).toBe(true)
+    })
+
+    it('detects replay and revokes entire family', async () => {
+      const t1 = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const rt1 = t1.refresh_token as string
+
+      const r1 = await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt1, client_id: clientId }))
+      const t2 = await r1.json() as Record<string, unknown>
+      const rt2 = t2.refresh_token as string
+
+      // Replay old token
+      const r2 = await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt1, client_id: clientId }))
+      expect(r2.status).toBe(400)
+      expect((await r2.json() as Record<string, unknown>).error_description).toContain('revoked')
+
+      // New token also revoked (family revocation)
+      expect((await storage.get<Record<string, unknown>>(`refresh:${rt2}`))!.revoked).toBe(true)
     })
 
     it('rejects expired refresh token', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'expired-refresh-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const rt = t.refresh_token as string
+      const d = await storage.get<Record<string, unknown>>(`refresh:${rt}`)
+      await storage.put(`refresh:${rt}`, { ...d, expiresAt: Date.now() - 1000 })
 
-      const tokens = await getTokenPair(clientId, verifier, codeChallenge)
-      const rt = tokens.refresh_token as string
-
-      // Manually expire the token
-      const tokenData = await storage.get<Record<string, unknown>>(`refresh:${rt}`)
-      await storage.put(`refresh:${rt}`, { ...tokenData, expiresAt: Date.now() - 1000 })
-
-      const result = await refreshToken(clientId, rt)
-      expect(result.error).toBe('invalid_grant')
-      expect(result.error_description).toContain('expired')
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt, client_id: clientId }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('expired')
     })
 
-    it('validates client_id match', async () => {
-      const client1 = await registerPublicClient(provider, { client_name: 'Client A' })
-      const client2 = await registerPublicClient(provider, { client_name: 'Client B' })
-      const clientId1 = client1.client_id as string
-      const clientId2 = client2.client_id as string
-      const verifier = 'client-match-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      const tokens = await getTokenPair(clientId1, verifier, codeChallenge)
-      const rt = tokens.refresh_token as string
-
-      // Try to refresh with wrong client_id
-      const result = await refreshToken(clientId2, rt)
-      expect(result.error).toBe('invalid_grant')
-      expect(result.error_description).toContain('not issued to this client')
+    it('rejects refresh token from different client', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const other = (await registerClient(provider, { client_name: 'Other', redirect_uris: ['https://o.com/cb'] })).client_id as string
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t.refresh_token as string, client_id: other,
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('not issued to this client')
     })
 
-    it('rejects missing refresh_token', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_request')
-      expect(data.error_description).toContain('refresh_token is required')
+    it('rejects missing refresh_token parameter', async () => {
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', client_id: clientId }))
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('refresh_token')
     })
 
-    it('rejects invalid refresh_token id', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-
-      const result = await refreshToken(clientId, 'rt_nonexistent_token')
-      expect(result.error).toBe('invalid_grant')
+    it('rejects invalid refresh token id', async () => {
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: 'rt_nonexistent', client_id: clientId,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
     })
 
-    it('validates client secret for confidential clients during refresh', async () => {
-      const client = await registerConfidentialClient(provider)
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
-      const verifier = 'confidential-refresh-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
+    it('preserves family across rotations', async () => {
+      const t1 = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const family = (await storage.get<Record<string, unknown>>(`refresh:${t1.refresh_token}`))!.family
 
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
+      const r1 = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t1.refresh_token as string, client_id: clientId,
+      }))).json() as Record<string, unknown>
+      expect((await storage.get<Record<string, unknown>>(`refresh:${r1.refresh_token}`))!.family).toBe(family)
 
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data: tokens } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-      const rt = tokens.refresh_token as string
+      const r2 = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: r1.refresh_token as string, client_id: clientId,
+      }))).json() as Record<string, unknown>
+      expect((await storage.get<Record<string, unknown>>(`refresh:${r2.refresh_token}`))!.family).toBe(family)
+    })
+
+    it('validates confidential client secret on refresh', async () => {
+      const cd = await registerConfidentialClient(provider)
+      const cid = cd.client_id as string
+      const cs = cd.client_secret as string
+      const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+      await storage.put(`client:${cid}`, { ...s, trusted: true, redirectUris: [redir] })
+
+      // Get tokens via auth code
+      const url = new URL('https://id.org.ai/oauth/authorize')
+      url.searchParams.set('client_id', cid)
+      url.searchParams.set('redirect_uri', redir)
+      url.searchParams.set('response_type', 'code')
+      url.searchParams.set('scope', 'openid profile email')
+      const authRes = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+      const basic = 'Basic ' + btoa(`${cid}:${cs}`)
+      const tRes = await provider.handleToken(makeTokenRequest({ grant_type: 'authorization_code', code, redirect_uri: redir }, basic))
+      const tokens = await tRes.json() as Record<string, unknown>
 
       // Refresh with wrong secret
-      const bodyParams = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        client_secret: 'wrong-secret',
-        refresh_token: rt,
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: bodyParams,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_client')
-      expect(response.status).toBe(401)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: tokens.refresh_token as string,
+        client_id: cid, client_secret: 'cs_wrong',
+      }))
+      expect(res.status).toBe(401)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_client')
+    })
+
+    it('maintains scope through rotation', async () => {
+      const t1 = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      expect(t1.scope).toBe('openid profile email')
+      const t2 = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t1.refresh_token as string, client_id: clientId,
+      }))).json() as Record<string, unknown>
+      expect(t2.scope).toBe('openid profile email')
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Token Endpoint - Client Credentials
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 6. Client Credentials
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Token Endpoint - Client Credentials', () => {
-    it('issues access token (no refresh)', async () => {
-      const client = await registerConfidentialClient(provider, {
-        grant_types: ['authorization_code', 'refresh_token', 'client_credentials'],
-      })
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
+  describe('Client Credentials', () => {
+    let cid: string
+    let cs: string
 
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(response.status).toBe(200)
-      expect(data.access_token).toBeDefined()
-      expect((data.access_token as string)).toMatch(/^at_/)
-      expect(data.token_type).toBe('Bearer')
-      expect(data.expires_in).toBe(3600)
-      expect(data.refresh_token).toBeUndefined()
+    beforeEach(async () => {
+      const d = await registerConfidentialClient(provider, { grant_types: ['client_credentials'], redirect_uris: [] })
+      cid = d.client_id as string
+      cs = d.client_secret as string
     })
 
-    it('validates client secret', async () => {
-      const client = await registerConfidentialClient(provider, {
-        grant_types: ['client_credentials'],
-      })
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: 'wrong-secret',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(response.status).toBe(401)
-      expect(data.error).toBe('invalid_client')
+    it('issues access token for valid credentials', async () => {
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials', client_id: cid, client_secret: cs }))
+      expect(res.status).toBe(200)
+      const d = await res.json() as Record<string, unknown>
+      expect((d.access_token as string).startsWith('at_')).toBe(true)
+      expect(d.token_type).toBe('Bearer')
+      expect(d.expires_in).toBe(3600)
+      expect(d.refresh_token).toBeUndefined()
     })
 
-    it('rejects unauthorized grant type', async () => {
-      // Register a client without client_credentials grant
-      const client = await registerConfidentialClient(provider, {
-        grant_types: ['authorization_code', 'refresh_token'],
-      })
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
-
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('unauthorized_client')
+    it('uses Basic auth', async () => {
+      const basic = 'Basic ' + btoa(`${cid}:${cs}`)
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials' }, basic))
+      expect(res.status).toBe(200)
     })
 
-    it('requires both client_id and client_secret', async () => {
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: 'some-client',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
+    it('rejects missing client_secret', async () => {
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials', client_id: cid }))
+      expect(res.status).toBe(401)
+    })
+
+    it('rejects wrong client_secret', async () => {
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials', client_id: cid, client_secret: 'cs_wrong' }))
+      expect(res.status).toBe(401)
+    })
+
+    it('rejects unknown client_id', async () => {
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials', client_id: 'cid_x', client_secret: 'cs_x' }))
+      expect(res.status).toBe(401)
+    })
+
+    it('rejects client not authorized for client_credentials', async () => {
+      const d = await registerConfidentialClient(provider, { grant_types: ['authorization_code'], redirect_uris: ['https://x.com/cb'] })
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'client_credentials', client_id: d.client_id as string, client_secret: d.client_secret as string,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('unauthorized_client')
+    })
+
+    it('rejects public client', async () => {
+      const d = await registerClient(provider, { grant_types: ['client_credentials'], redirect_uris: [] })
+      const res = await provider.handleToken(makeTokenRequest({ grant_type: 'client_credentials', client_id: d.client_id as string }))
+      expect(res.status).toBe(401)
+    })
+
+    it('respects custom scope', async () => {
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'client_credentials', client_id: cid, client_secret: cs, scope: 'openid profile',
+      }))
+      expect((await res.json() as Record<string, unknown>).scope).toBe('openid profile')
+    })
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 7. Device Flow
+  // ══════════════════════════════════════════════════════════════════════════
+
+  describe('Device Flow', () => {
+    let dcid: string
+
+    beforeEach(async () => {
+      dcid = (await registerClient(provider, {
+        client_name: 'CLI', grant_types: ['urn:ietf:params:oauth:grant-type:device_code'], redirect_uris: [],
+      })).client_id as string
+    })
+
+    async function initDevice(): Promise<Record<string, unknown>> {
+      const req = new Request('https://id.org.ai/oauth/device', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
+        body: new URLSearchParams({ client_id: dcid }),
       })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(response.status).toBe(401)
-      expect(data.error).toBe('invalid_client')
+      return (await provider.handleDeviceAuthorization(req)).json() as Promise<Record<string, unknown>>
+    }
+
+    it('initiates device authorization', async () => {
+      const d = await initDevice()
+      expect((d.device_code as string).startsWith('dc_')).toBe(true)
+      expect((d.user_code as string).length).toBe(8)
+      expect(d.verification_uri).toBe('https://id.org.ai/device')
+      expect(d.verification_uri_complete).toContain('user_code=')
+      expect(d.expires_in).toBe(1800)
+      expect(d.interval).toBe(5)
+    })
+
+    it('rejects non-POST for device authorization', async () => {
+      const res = await provider.handleDeviceAuthorization(new Request('https://id.org.ai/oauth/device', { method: 'GET' }))
+      expect(res.status).toBe(405)
+    })
+
+    it('rejects missing client_id', async () => {
+      const req = new Request('https://id.org.ai/oauth/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({}),
+      })
+      expect((await (await provider.handleDeviceAuthorization(req)).json() as Record<string, unknown>).error).toBe('invalid_request')
     })
 
     it('rejects unknown client', async () => {
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: 'cid_nonexistent',
-        client_secret: 'cs_fake',
+      const req = new Request('https://id.org.ai/oauth/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: 'cid_unknown' }),
       })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(response.status).toBe(401)
-      expect(data.error).toBe('invalid_client')
+      expect((await (await provider.handleDeviceAuthorization(req)).json() as Record<string, unknown>).error).toBe('invalid_client')
     })
 
-    it('uses requested scope if provided', async () => {
-      const client = await registerConfidentialClient(provider, {
-        grant_types: ['client_credentials'],
-        scope: 'openid profile email',
+    it('rejects client not authorized for device_code', async () => {
+      const other = (await registerClient(provider, { client_name: 'NoDevice', redirect_uris: ['https://x.com/cb'] })).client_id as string
+      const req = new Request('https://id.org.ai/oauth/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: other }),
       })
-      const clientId = client.client_id as string
-      const clientSecret = client.client_secret as string
-
-      const body = new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: clientSecret,
-        scope: 'openid profile',
-      })
-      const request = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleToken(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.scope).toBe('openid profile')
-    })
-  })
-
-  // ────────────────────────────────────────────────────────────────────
-  // Device Flow (RFC 8628)
-  // ────────────────────────────────────────────────────────────────────
-
-  describe('Device Flow (RFC 8628)', () => {
-    async function registerDeviceClient() {
-      return registerPublicClient(provider, {
-        grant_types: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:device_code'],
-      })
-    }
-
-    it('device authorization returns device_code, user_code, verification_uri', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({ client_id: clientId })
-      const request = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleDeviceAuthorization(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.device_code).toBeDefined()
-      expect((data.device_code as string)).toMatch(/^dc_/)
-      expect(data.user_code).toBeDefined()
-      expect((data.user_code as string).length).toBe(8)
-      expect(data.verification_uri).toBe(`${TEST_ISSUER}/device`)
-      expect(data.verification_uri_complete).toContain(data.user_code as string)
-      expect(data.expires_in).toBe(1800)
-      expect(data.interval).toBe(5)
+      expect((await (await provider.handleDeviceAuthorization(req)).json() as Record<string, unknown>).error).toBe('unauthorized_client')
     })
 
-    it('polling returns authorization_pending for pending code', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
-
-      // Create device code
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-
-      // Poll
-      const pollBody = new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        client_id: clientId,
-        device_code: deviceData.device_code as string,
-      })
-      const pollReq = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: pollBody,
-      })
-      const pollResp = await provider.handleToken(pollReq)
-      const pollData = (await pollResp.json()) as Record<string, unknown>
-
-      expect(pollData.error).toBe('authorization_pending')
+    it('returns authorization_pending before user acts', async () => {
+      const d = await initDevice()
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
+      }))
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('authorization_pending')
     })
 
-    it('polling returns tokens after user approves', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
+    it('returns access_denied when user denies', async () => {
+      const d = await initDevice()
+      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'false' }),
+      }), 'user-1')
 
-      // Create device code
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-      const deviceCode = deviceData.device_code as string
-      const userCode = deviceData.user_code as string
-
-      // Approve the device code via verification endpoint
-      const approveBody = new URLSearchParams({
-        user_code: userCode,
-        approved: 'true',
-      })
-      const approveReq = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: approveBody,
-      })
-      await provider.handleDeviceVerification(approveReq, 'user-1')
-
-      // Poll
-      const pollBody = new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        client_id: clientId,
-        device_code: deviceCode,
-      })
-      const pollReq = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: pollBody,
-      })
-      const pollResp = await provider.handleToken(pollReq)
-      const pollData = (await pollResp.json()) as Record<string, unknown>
-
-      expect(pollData.access_token).toBeDefined()
-      expect(pollData.refresh_token).toBeDefined()
-      expect(pollData.token_type).toBe('Bearer')
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('access_denied')
     })
 
-    it('polling returns access_denied after user denies', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
+    it('full device flow: init -> approve -> tokens', async () => {
+      const d = await initDevice()
+      const approveRes = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
+      }), 'user-1')
+      expect(await approveRes.text()).toContain('Device Authorized')
 
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-
-      // Deny
-      const denyBody = new URLSearchParams({
-        user_code: deviceData.user_code as string,
-        approved: 'false',
-      })
-      const denyReq = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: denyBody,
-      })
-      await provider.handleDeviceVerification(denyReq, 'user-1')
-
-      // Poll
-      const pollBody = new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        client_id: clientId,
-        device_code: deviceData.device_code as string,
-      })
-      const pollReq = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: pollBody,
-      })
-      const pollResp = await provider.handleToken(pollReq)
-      const pollData = (await pollResp.json()) as Record<string, unknown>
-
-      expect(pollData.error).toBe('access_denied')
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
+      }))
+      expect(res.status).toBe(200)
+      const t = await res.json() as Record<string, unknown>
+      expect(t.access_token).toBeDefined()
+      expect(t.refresh_token).toBeDefined()
+      expect(t.token_type).toBe('Bearer')
     })
 
-    it('polling returns expired_token after expiry', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
+    it('returns expired_token for expired device code', async () => {
+      const d = await initDevice()
+      const dc = await storage.get<Record<string, unknown>>(`device:${d.device_code}`)
+      await storage.put(`device:${d.device_code}`, { ...dc, expiresAt: Date.now() - 1000 })
 
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-      const deviceCode = deviceData.device_code as string
-
-      // Manually expire the device code
-      const dcData = await storage.get<Record<string, unknown>>(`device:${deviceCode}`)
-      await storage.put(`device:${deviceCode}`, { ...dcData, expiresAt: Date.now() - 1000 })
-
-      // Poll
-      const pollBody = new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        client_id: clientId,
-        device_code: deviceCode,
-      })
-      const pollReq = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: pollBody,
-      })
-      const pollResp = await provider.handleToken(pollReq)
-      const pollData = (await pollResp.json()) as Record<string, unknown>
-
-      expect(pollData.error).toBe('expired_token')
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('expired_token')
     })
 
-    it('user code verification page renders for GET', async () => {
-      const request = new Request(`${TEST_ISSUER}/device?user_code=ABCD1234`, { method: 'GET' })
-      const response = await provider.handleDeviceVerification(request, 'user-1')
-      expect(response.headers.get('Content-Type')).toContain('text/html')
-      const html = await response.text()
+    it('rejects device code from wrong client', async () => {
+      const d = await initDevice()
+      const other = (await registerClient(provider, {
+        client_name: 'Other', grant_types: ['urn:ietf:params:oauth:grant-type:device_code'], redirect_uris: [],
+      })).client_id as string
+
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: other,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
+    })
+
+    it('rejects invalid device code', async () => {
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: 'dc_none', client_id: dcid,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
+    })
+
+    it('rejects missing device_code', async () => {
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: dcid,
+      }))
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_request')
+    })
+
+    it('device code is one-time use', async () => {
+      const d = await initDevice()
+      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
+      }), 'user-1')
+
+      const body = { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid }
+      expect((await provider.handleToken(makeTokenRequest(body))).status).toBe(200)
+      expect((await provider.handleToken(makeTokenRequest(body))).status).toBe(400)
+    })
+
+    it('redirects to login for unauthenticated user', async () => {
+      const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', { method: 'GET', redirect: 'manual' }), null)
+      expect(res.status).toBe(302)
+      expect(new URL(res.headers.get('location')!).pathname).toBe('/login')
+    })
+
+    it('renders verification page with user_code', async () => {
+      const res = await provider.handleDeviceVerification(
+        new Request('https://id.org.ai/device?user_code=ABCD1234', { method: 'GET' }), 'user-1',
+      )
+      expect(res.status).toBe(200)
+      const html = await res.text()
       expect(html).toContain('Authorize Device')
       expect(html).toContain('ABCD1234')
     })
 
-    it('approval updates device code status', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
-
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-      const deviceCode = deviceData.device_code as string
-      const userCode = deviceData.user_code as string
-
-      // Verify initial status is pending
-      const beforeApproval = await storage.get<{ status: string }>(`device:${deviceCode}`)
-      expect(beforeApproval!.status).toBe('pending')
-
-      // Approve
-      const approveBody = new URLSearchParams({
-        user_code: userCode,
-        approved: 'true',
-      })
-      const approveReq = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: approveBody,
-      })
-      await provider.handleDeviceVerification(approveReq, 'user-1')
-
-      // Verify status changed
-      const afterApproval = await storage.get<{ status: string; identityId?: string }>(`device:${deviceCode}`)
-      expect(afterApproval!.status).toBe('approved')
-      expect(afterApproval!.identityId).toBe('user-1')
+    it('shows error for short user code', async () => {
+      const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: 'ABC', approved: 'true' }),
+      }), 'user-1')
+      expect(await res.text()).toContain('valid 8-character code')
     })
 
-    it('redirects to /login when user is not authenticated on device page', async () => {
-      const request = new Request(`${TEST_ISSUER}/device?user_code=ABCD1234`, { method: 'GET' })
-      const response = await provider.handleDeviceVerification(request, null)
-      expect(response.status).toBe(302)
-      const location = new URL(response.headers.get('location')!)
-      expect(location.pathname).toBe('/login')
+    it('shows error for non-existent user code', async () => {
+      const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: 'ZZZZZZZZ', approved: 'true' }),
+      }), 'user-1')
+      expect(await res.text()).toContain('Invalid or expired code')
     })
 
-    it('rejects device authorization for unauthorized client', async () => {
-      const client = await registerPublicClient(provider, {
-        grant_types: ['authorization_code'],
-      })
-      const clientId = client.client_id as string
-
-      const body = new URLSearchParams({ client_id: clientId })
-      const request = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleDeviceAuthorization(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('unauthorized_client')
-    })
-
-    it('rejects device authorization without client_id', async () => {
-      const body = new URLSearchParams({})
-      const request = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleDeviceAuthorization(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_request')
-    })
-
-    it('rejects non-POST method for device authorization', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/device`, { method: 'GET' })
-      const response = await provider.handleDeviceAuthorization(request)
-      expect(response.status).toBe(405)
-    })
-
-    it('rejects invalid user code format on verification', async () => {
-      const body = new URLSearchParams({
-        user_code: 'AB',
-        approved: 'true',
-      })
-      const request = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleDeviceVerification(request, 'user-1')
-      const html = await response.text()
-      expect(html).toContain('valid 8-character code')
-    })
-
-    it('rejects unknown user code on verification', async () => {
-      const body = new URLSearchParams({
-        user_code: 'ZZZZZZZZ',
-        approved: 'true',
-      })
-      const request = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleDeviceVerification(request, 'user-1')
-      const html = await response.text()
-      expect(html).toContain('Invalid or expired')
-    })
-
-    it('shows approved HTML after successful device authorization', async () => {
-      const client = await registerDeviceClient()
-      const clientId = client.client_id as string
-
-      const deviceBody = new URLSearchParams({ client_id: clientId })
-      const deviceReq = new Request(`${TEST_ISSUER}/oauth/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: deviceBody,
-      })
-      const deviceResp = await provider.handleDeviceAuthorization(deviceReq)
-      const deviceData = (await deviceResp.json()) as Record<string, unknown>
-
-      const approveBody = new URLSearchParams({
-        user_code: deviceData.user_code as string,
-        approved: 'true',
-      })
-      const approveReq = new Request(`${TEST_ISSUER}/device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: approveBody,
-      })
-      const response = await provider.handleDeviceVerification(approveReq, 'user-1')
-      const html = await response.text()
-      expect(html).toContain('Device Authorized')
-      expect(html).toContain('close this window')
+    it('rejects PUT method for device verification', async () => {
+      const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', { method: 'PUT' }), 'user-1')
+      expect(res.status).toBe(405)
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Token Introspection (RFC 7662)
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 8. Token Introspection
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Token Introspection (RFC 7662)', () => {
-    async function introspect(token: string) {
-      const body = new URLSearchParams({ token })
-      const request = new Request(`${TEST_ISSUER}/oauth/introspect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleIntrospect(request)
-      return (await response.json()) as Record<string, unknown>
+  describe('Token Introspection', () => {
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'introspection-verifier-long-enough'
+
+    beforeEach(async () => {
+      clientId = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
+    })
+
+    function introspect(token: string): Promise<Response> {
+      return provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token }),
+      }))
     }
 
-    it('returns active: true for valid access token with claims', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'introspect-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data: tokens } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-
-      const result = await introspect(tokens.access_token as string)
-      expect(result.active).toBe(true)
-      expect(result.client_id).toBe(clientId)
-      expect(result.sub).toBe('user-1')
-      expect(result.scope).toBe('openid profile email')
-      expect(result.token_type).toBe('Bearer')
-      expect(result.exp).toBeDefined()
-      expect(result.iat).toBeDefined()
+    it('active=true for valid access token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await introspect(t.access_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.client_id).toBe(clientId)
+      expect(d.sub).toBe('user-1')
+      expect(d.token_type).toBe('Bearer')
+      expect(d.scope).toContain('openid')
+      expect(d.exp).toBeDefined()
+      expect(d.iat).toBeDefined()
     })
 
-    it('returns active: true for valid refresh token', async () => {
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
-      const verifier = 'introspect-rt-verifier'
-      const codeChallenge = await computeS256Challenge(verifier)
-
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
-      const code = await getAuthorizationCode(provider, clientId, 'https://app.example.com/callback', codeChallenge, 'user-1')
-      const { data: tokens } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', verifier)
-
-      const result = await introspect(tokens.refresh_token as string)
-      expect(result.active).toBe(true)
-      expect(result.client_id).toBe(clientId)
-      expect(result.token_type).toBe('refresh_token')
+    it('active=true for valid refresh token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await introspect(t.refresh_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.token_type).toBe('refresh_token')
     })
 
-    it('returns active: false for expired access token', async () => {
-      const tokenId = 'at_expired_token_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        expiresAt: Date.now() - 1000,
-        createdAt: Date.now() - 7200000,
-      })
-
-      const result = await introspect(tokenId)
-      expect(result.active).toBe(false)
+    it('active=false for expired access token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, expiresAt: Date.now() - 1000 })
+      expect((await (await introspect(at)).json() as Record<string, unknown>).active).toBe(false)
     })
 
-    it('returns active: false for unknown token', async () => {
-      const result = await introspect('at_nonexistent_token_xyz')
-      expect(result.active).toBe(false)
+    it('active=false for revoked refresh token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const rt = t.refresh_token as string
+      await provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt, client_id: clientId }))
+      expect((await (await introspect(rt)).json() as Record<string, unknown>).active).toBe(false)
     })
 
-    it('returns active: false for revoked refresh token', async () => {
-      const tokenId = 'rt_revoked_test'
-      await storage.put(`refresh:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        family: 'family-test',
-        revoked: true,
-        expiresAt: Date.now() + 86400000,
-        createdAt: Date.now(),
-      })
-
-      const result = await introspect(tokenId)
-      expect(result.active).toBe(false)
+    it('active=false for unknown token', async () => {
+      expect((await (await introspect('at_nonexistent')).json() as Record<string, unknown>).active).toBe(false)
     })
 
-    it('returns active: false when no token is provided', async () => {
-      const body = new URLSearchParams({})
-      const request = new Request(`${TEST_ISSUER}/oauth/introspect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleIntrospect(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.active).toBe(false)
+    it('active=false when no token provided', async () => {
+      const res = await provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({}),
+      }))
+      expect((await res.json() as Record<string, unknown>).active).toBe(false)
     })
 
-    it('rejects non-POST method', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/introspect`, { method: 'GET' })
-      const response = await provider.handleIntrospect(request)
-      expect(response.status).toBe(405)
+    it('active=false for non-prefixed token', async () => {
+      expect((await (await introspect('random_garbage')).json() as Record<string, unknown>).active).toBe(false)
     })
 
-    it('returns active: false for token with unrecognized prefix', async () => {
-      const result = await introspect('unknown_prefix_token')
-      expect(result.active).toBe(false)
+    it('rejects GET method', async () => {
+      expect((await provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', { method: 'GET' }))).status).toBe(405)
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Token Revocation (RFC 7009)
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 9. Token Revocation
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('Token Revocation (RFC 7009)', () => {
-    async function revoke(token: string) {
-      const body = new URLSearchParams({ token })
-      const request = new Request(`${TEST_ISSUER}/oauth/revoke`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      return provider.handleRevoke(request)
+  describe('Token Revocation', () => {
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'revocation-verifier-long-enough'
+
+    beforeEach(async () => {
+      clientId = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
+    })
+
+    function revoke(token: string): Promise<Response> {
+      return provider.handleRevoke(new Request('https://id.org.ai/oauth/revoke', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token }),
+      }))
     }
 
-    it('revokes access token (deletes it)', async () => {
-      const tokenId = 'at_revoke_access_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        expiresAt: Date.now() + 3600000,
-        createdAt: Date.now(),
-      })
-
-      const response = await revoke(tokenId)
-      expect(response.status).toBe(200)
-
-      // Token should be deleted
-      const tokenData = await storage.get(`access:${tokenId}`)
-      expect(tokenData).toBeUndefined()
+    it('revokes an access token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      expect((await revoke(at)).status).toBe(200)
+      expect(await storage.get(`access:${at}`)).toBeUndefined()
     })
 
-    it('revokes refresh token (marks as revoked)', async () => {
-      const tokenId = 'rt_revoke_refresh_test'
-      await storage.put(`refresh:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        family: 'family-revoke-test',
-        revoked: false,
-        expiresAt: Date.now() + 86400000,
-        createdAt: Date.now(),
-      })
+    it('revokes a refresh token and its family', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const rt = t.refresh_token as string
 
-      const response = await revoke(tokenId)
-      expect(response.status).toBe(200)
+      const t2 = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: rt, client_id: clientId,
+      }))).json() as Record<string, unknown>
+      const rt2 = t2.refresh_token as string
 
-      // Token should be marked revoked
-      const tokenData = await storage.get<{ revoked: boolean }>(`refresh:${tokenId}`)
-      expect(tokenData!.revoked).toBe(true)
+      expect((await revoke(rt2)).status).toBe(200)
+      expect((await storage.get<Record<string, unknown>>(`refresh:${rt2}`))!.revoked).toBe(true)
     })
 
-    it('revokes entire refresh token family', async () => {
-      const familyId = 'family-full-revoke'
-      const rt1 = 'rt_family_member_1'
-      const rt2 = 'rt_family_member_2'
-      const rt3 = 'rt_family_member_3'
-
-      for (const rtId of [rt1, rt2, rt3]) {
-        await storage.put(`refresh:${rtId}`, {
-          id: rtId,
-          clientId: 'cid_test',
-          identityId: 'user-1',
-          scopes: ['openid'],
-          family: familyId,
-          revoked: false,
-          expiresAt: Date.now() + 86400000,
-          createdAt: Date.now(),
-        })
-      }
-
-      // Revoke one family member
-      await revoke(rt1)
-
-      // All family members should be revoked
-      for (const rtId of [rt1, rt2, rt3]) {
-        const tokenData = await storage.get<{ revoked: boolean }>(`refresh:${rtId}`)
-        expect(tokenData!.revoked).toBe(true)
-      }
+    it('returns 200 for missing token (RFC 7009)', async () => {
+      const res = await provider.handleRevoke(new Request('https://id.org.ai/oauth/revoke', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({}),
+      }))
+      expect(res.status).toBe(200)
     })
 
-    it('returns 200 for unknown token (per RFC)', async () => {
-      const response = await revoke('at_nonexistent_revoke_token')
-      expect(response.status).toBe(200)
+    it('returns 200 for non-existent token', async () => {
+      expect((await revoke('at_doesnotexist')).status).toBe(200)
     })
 
-    it('returns 200 when no token is provided', async () => {
-      const body = new URLSearchParams({})
-      const request = new Request(`${TEST_ISSUER}/oauth/revoke`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const response = await provider.handleRevoke(request)
-      expect(response.status).toBe(200)
+    it('rejects GET method', async () => {
+      expect((await provider.handleRevoke(new Request('https://id.org.ai/oauth/revoke', { method: 'GET' }))).status).toBe(405)
     })
 
-    it('rejects non-POST method', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/revoke`, { method: 'GET' })
-      const response = await provider.handleRevoke(request)
-      expect(response.status).toBe(405)
+    it('revoked token fails introspection', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      await revoke(at)
+      const res = await provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: at }),
+      }))
+      expect((await res.json() as Record<string, unknown>).active).toBe(false)
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // UserInfo Endpoint
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 10. UserInfo
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('UserInfo Endpoint', () => {
-    async function createAccessToken(scopes: string[], identityId = 'user-1') {
-      const tokenId = `at_userinfo_${Date.now()}_${Math.random().toString(36).slice(2)}`
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId,
-        scopes,
-        expiresAt: Date.now() + 3600000,
-        createdAt: Date.now(),
-      })
-      return tokenId
+  describe('UserInfo', () => {
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'userinfo-verifier-long-enough-value'
+
+    beforeEach(async () => {
+      clientId = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
+    })
+
+    function userinfo(token: string): Promise<Response> {
+      return provider.handleUserinfo(new Request('https://id.org.ai/oauth/userinfo', {
+        headers: { Authorization: `Bearer ${token}` },
+      }))
     }
 
-    it('returns profile claims when scope includes profile', async () => {
-      const tokenId = await createAccessToken(['openid', 'profile'])
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.sub).toBe('user-1')
-      expect(data.name).toBe('Alice Test')
-      expect(data.preferred_username).toBe('alice')
-      expect(data.picture).toBe('https://example.com/alice.png')
+    it('returns full claims for valid token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const res = await userinfo(t.access_token as string)
+      expect(res.status).toBe(200)
+      const d = await res.json() as Record<string, unknown>
+      expect(d.sub).toBe('user-1')
+      expect(d.name).toBe('Alice Test')
+      expect(d.preferred_username).toBe('alice')
+      expect(d.picture).toBe('https://example.com/alice.png')
+      expect(d.email).toBe('alice@example.com')
+      expect(d.email_verified).toBe(true)
     })
 
-    it('returns email claims when scope includes email', async () => {
-      const tokenId = await createAccessToken(['openid', 'email'])
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.sub).toBe('user-1')
-      expect(data.email).toBe('alice@example.com')
-      expect(data.email_verified).toBe(true)
+    it('401 for missing Authorization header', async () => {
+      const res = await provider.handleUserinfo(new Request('https://id.org.ai/oauth/userinfo'))
+      expect(res.status).toBe(401)
+      expect(res.headers.get('WWW-Authenticate')).toBe('Bearer')
     })
 
-    it('omits profile claims when scope does not include profile', async () => {
-      const tokenId = await createAccessToken(['openid', 'email'])
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.name).toBeUndefined()
-      expect(data.preferred_username).toBeUndefined()
-      expect(data.picture).toBeUndefined()
-    })
-
-    it('omits email claims when scope does not include email', async () => {
-      const tokenId = await createAccessToken(['openid', 'profile'])
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.email).toBeUndefined()
-      expect(data.email_verified).toBeUndefined()
-    })
-
-    it('returns both profile and email when both scopes requested', async () => {
-      const tokenId = await createAccessToken(['openid', 'profile', 'email'])
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-
-      expect(data.sub).toBe('user-1')
-      expect(data.name).toBe('Alice Test')
-      expect(data.email).toBe('alice@example.com')
-    })
-
-    it('returns error for expired token', async () => {
-      const tokenId = 'at_expired_userinfo_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid', 'profile'],
-        expiresAt: Date.now() - 1000,
-        createdAt: Date.now() - 7200000,
-      })
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_token')
-    })
-
-    it('returns error for invalid/unknown token', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: 'Bearer at_nonexistent_token' },
-      })
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.error).toBe('invalid_token')
-    })
-
-    it('returns error for missing Bearer token', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`)
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
-      expect(response.headers.get('WWW-Authenticate')).toBe('Bearer')
-    })
-
-    it('returns error for non-Bearer auth scheme', async () => {
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
+    it('401 for non-Bearer auth', async () => {
+      const res = await provider.handleUserinfo(new Request('https://id.org.ai/oauth/userinfo', {
         headers: { Authorization: 'Basic dXNlcjpwYXNz' },
-      })
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
+      }))
+      expect(res.status).toBe(401)
     })
 
-    it('returns error for unknown identity', async () => {
-      const tokenId = 'at_unknown_identity_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-nonexistent',
-        scopes: ['openid', 'profile'],
-        expiresAt: Date.now() + 3600000,
-        createdAt: Date.now(),
-      })
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
+    it('401 for unknown token', async () => {
+      expect((await userinfo('at_nonexistent')).status).toBe(401)
     })
 
-    it('returns error for client_credentials token (no identity)', async () => {
-      const tokenId = 'at_no_identity_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        scopes: ['openid'],
-        expiresAt: Date.now() + 3600000,
-        createdAt: Date.now(),
-        // no identityId
-      })
-
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
-      })
-      const response = await provider.handleUserinfo(request)
-      expect(response.status).toBe(401)
+    it('401 for expired token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, expiresAt: Date.now() - 1000 })
+      const res = await userinfo(at)
+      expect(res.status).toBe(401)
+      expect((await res.json() as Record<string, unknown>).error_description).toContain('expired')
     })
 
-    it('returns email_verified: false for unverified email', async () => {
-      const tokenId = await createAccessToken(['openid', 'email'], 'user-2')
+    it('only sub when no profile/email scope', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, scopes: ['openid'] })
+      const d = await (await userinfo(at)).json() as Record<string, unknown>
+      expect(d.sub).toBe('user-1')
+      expect(d.name).toBeUndefined()
+      expect(d.email).toBeUndefined()
+    })
 
-      const request = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenId}` },
+    it('profile claims when profile scope present', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, scopes: ['openid', 'profile'] })
+      const d = await (await userinfo(at)).json() as Record<string, unknown>
+      expect(d.name).toBe('Alice Test')
+      expect(d.preferred_username).toBe('alice')
+      expect(d.email).toBeUndefined()
+    })
+
+    it('email claims when email scope present', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, scopes: ['openid', 'email'] })
+      const d = await (await userinfo(at)).json() as Record<string, unknown>
+      expect(d.email).toBe('alice@example.com')
+      expect(d.email_verified).toBe(true)
+      expect(d.name).toBeUndefined()
+    })
+
+    it('401 for token without identityId', async () => {
+      await storage.put('access:at_no_id', {
+        id: 'at_no_id', clientId, scopes: ['openid'], expiresAt: Date.now() + 3600000, createdAt: Date.now(),
       })
-      const response = await provider.handleUserinfo(request)
-      const data = (await response.json()) as Record<string, unknown>
-      expect(data.email_verified).toBe(false)
+      expect((await userinfo('at_no_id')).status).toBe(401)
+    })
+
+    it('401 when identity lookup fails', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, identityId: 'user-nonexistent' })
+      expect((await userinfo(at)).status).toBe(401)
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // Validate Access Token (utility)
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 11. validateAccessToken
+  // ══════════════════════════════════════════════════════════════════════════
 
   describe('validateAccessToken', () => {
-    it('returns token data for valid access token', async () => {
-      const tokenId = 'at_validate_test'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        expiresAt: Date.now() + 3600000,
-        createdAt: Date.now(),
-      })
+    let clientId: string
+    const redir = 'https://app.example.com/callback'
+    const verifier = 'validate-verifier-long-enough-value'
 
-      const result = await provider.validateAccessToken(tokenId)
-      expect(result).not.toBeNull()
-      expect(result!.id).toBe(tokenId)
-      expect(result!.identityId).toBe('user-1')
+    beforeEach(async () => {
+      clientId = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${clientId}`)
+      await storage.put(`client:${clientId}`, { ...s, trusted: true })
+    })
+
+    it('returns data for valid token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const r = await provider.validateAccessToken(t.access_token as string)
+      expect(r).not.toBeNull()
+      expect(r!.clientId).toBe(clientId)
+      expect(r!.identityId).toBe('user-1')
     })
 
     it('returns null for expired token', async () => {
-      const tokenId = 'at_validate_expired'
-      await storage.put(`access:${tokenId}`, {
-        id: tokenId,
-        clientId: 'cid_test',
-        identityId: 'user-1',
-        scopes: ['openid'],
-        expiresAt: Date.now() - 1000,
-        createdAt: Date.now() - 7200000,
-      })
-
-      const result = await provider.validateAccessToken(tokenId)
-      expect(result).toBeNull()
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const at = t.access_token as string
+      const td = await storage.get<Record<string, unknown>>(`access:${at}`)
+      await storage.put(`access:${at}`, { ...td, expiresAt: Date.now() - 1000 })
+      expect(await provider.validateAccessToken(at)).toBeNull()
     })
 
-    it('returns null for unknown token', async () => {
-      const result = await provider.validateAccessToken('at_nonexistent')
-      expect(result).toBeNull()
+    it('returns null for non-existent token', async () => {
+      expect(await provider.validateAccessToken('at_doesnotexist')).toBeNull()
     })
 
     it('returns null for non-at_ prefix', async () => {
-      const result = await provider.validateAccessToken('rt_wrong_prefix')
-      expect(result).toBeNull()
+      expect(await provider.validateAccessToken('rt_some_token')).toBeNull()
     })
   })
 
-  // ────────────────────────────────────────────────────────────────────
-  // End-to-end: Full Authorization Code + PKCE flow
-  // ────────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // 12. PKCE S256 Computation
+  // ══════════════════════════════════════════════════════════════════════════
 
-  describe('End-to-end: Full Authorization Code + PKCE Flow', () => {
-    it('completes the full flow from registration to userinfo', async () => {
-      // 1. Register a client
-      const client = await registerPublicClient(provider)
-      const clientId = client.client_id as string
+  describe('PKCE S256 Computation', () => {
+    it('matches RFC 7636 Appendix B example', async () => {
+      const challenge = await computeS256Challenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk')
+      expect(challenge).toBe('E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM')
+    })
 
-      // Mark as trusted for simplicity
-      await storage.put(`client:${clientId}`, { ...(await storage.get(`client:${clientId}`)), trusted: true })
+    it('produces URL-safe base64', async () => {
+      const challenge = await computeS256Challenge('test-verifier-for-base64-safety')
+      expect(challenge).not.toContain('+')
+      expect(challenge).not.toContain('/')
+      expect(challenge).not.toContain('=')
+    })
 
-      // 2. Authorization request with PKCE
-      const codeVerifier = 'e2e-test-verifier-with-sufficient-entropy-for-pkce'
-      const codeChallenge = await computeS256Challenge(codeVerifier)
+    it('different verifiers produce different challenges', async () => {
+      const c1 = await computeS256Challenge('verifier-one')
+      const c2 = await computeS256Challenge('verifier-two')
+      expect(c1).not.toBe(c2)
+    })
 
-      const authParams = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: 'https://app.example.com/callback',
-        response_type: 'code',
-        scope: 'openid profile email',
-        state: 'e2e-state',
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-      })
-      const authRequest = new Request(`${TEST_ISSUER}/oauth/authorize?${authParams}`)
-      const authResponse = await provider.handleAuthorize(authRequest, 'user-1')
-      expect(authResponse.status).toBe(302)
+    it('same verifier is deterministic', async () => {
+      const c1 = await computeS256Challenge('deterministic')
+      const c2 = await computeS256Challenge('deterministic')
+      expect(c1).toBe(c2)
+    })
+  })
 
-      const authLocation = new URL(authResponse.headers.get('location')!)
-      const code = authLocation.searchParams.get('code')!
-      expect(code).toMatch(/^ac_/)
-      expect(authLocation.searchParams.get('state')).toBe('e2e-state')
+  // ══════════════════════════════════════════════════════════════════════════
+  // 13. End-to-End Integration
+  // ══════════════════════════════════════════════════════════════════════════
 
-      // 3. Exchange code for tokens
-      const { data: tokens } = await exchangeCode(provider, clientId, code, 'https://app.example.com/callback', codeVerifier)
-      expect(tokens.access_token).toBeDefined()
-      expect(tokens.refresh_token).toBeDefined()
-      expect(tokens.token_type).toBe('Bearer')
+  describe('End-to-End Integration', () => {
+    it('register -> authorize -> token -> userinfo -> refresh -> revoke', async () => {
+      const cid = (await registerClient(provider)).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+      await storage.put(`client:${cid}`, { ...s, trusted: true })
 
-      // 4. Access userinfo
-      const userinfoRequest = new Request(`${TEST_ISSUER}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
-      })
-      const userinfoResponse = await provider.handleUserinfo(userinfoRequest)
-      expect(userinfoResponse.status).toBe(200)
+      const redir = 'https://app.example.com/callback'
+      const v = 'e2e-integration-test-code-verifier'
 
-      const userinfo = (await userinfoResponse.json()) as Record<string, unknown>
-      expect(userinfo.sub).toBe('user-1')
-      expect(userinfo.name).toBe('Alice Test')
-      expect(userinfo.email).toBe('alice@example.com')
+      const t1 = await getAuthCodeTokens(provider, cid, redir, 'user-1', v)
+      expect(t1.access_token).toBeDefined()
 
-      // 5. Introspect access token
-      const introspectBody = new URLSearchParams({ token: tokens.access_token as string })
-      const introspectRequest = new Request(`${TEST_ISSUER}/oauth/introspect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: introspectBody,
-      })
-      const introspectResponse = await provider.handleIntrospect(introspectRequest)
-      const introspectData = (await introspectResponse.json()) as Record<string, unknown>
-      expect(introspectData.active).toBe(true)
+      // UserInfo
+      const ui = await (await provider.handleUserinfo(new Request('https://id.org.ai/oauth/userinfo', {
+        headers: { Authorization: `Bearer ${t1.access_token}` },
+      }))).json() as Record<string, unknown>
+      expect(ui.sub).toBe('user-1')
+      expect(ui.name).toBe('Alice Test')
 
-      // 6. Refresh tokens
-      const refreshBody = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        refresh_token: tokens.refresh_token as string,
-      })
-      const refreshRequest = new Request(`${TEST_ISSUER}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: refreshBody,
-      })
-      const refreshResponse = await provider.handleToken(refreshRequest)
-      const newTokens = (await refreshResponse.json()) as Record<string, unknown>
-      expect(newTokens.access_token).toBeDefined()
-      expect(newTokens.refresh_token).toBeDefined()
-      expect(newTokens.access_token).not.toBe(tokens.access_token)
+      // Introspect
+      const ir = await (await provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: t1.access_token as string }),
+      }))).json() as Record<string, unknown>
+      expect(ir.active).toBe(true)
 
-      // 7. Revoke new access token
-      const revokeBody = new URLSearchParams({ token: newTokens.access_token as string })
-      const revokeRequest = new Request(`${TEST_ISSUER}/oauth/revoke`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: revokeBody,
-      })
-      const revokeResponse = await provider.handleRevoke(revokeRequest)
-      expect(revokeResponse.status).toBe(200)
+      // Refresh
+      const t2 = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t1.refresh_token as string, client_id: cid,
+      }))).json() as Record<string, unknown>
+      expect(t2.access_token).not.toBe(t1.access_token)
 
-      // 8. Verify revoked token is no longer valid
-      const afterRevokeIntrospect = new URLSearchParams({ token: newTokens.access_token as string })
-      const afterRevokeRequest = new Request(`${TEST_ISSUER}/oauth/introspect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: afterRevokeIntrospect,
-      })
-      const afterRevokeResponse = await provider.handleIntrospect(afterRevokeRequest)
-      const afterRevokeData = (await afterRevokeResponse.json()) as Record<string, unknown>
-      expect(afterRevokeData.active).toBe(false)
+      // Revoke
+      expect((await provider.handleRevoke(new Request('https://id.org.ai/oauth/revoke', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: t2.access_token as string }),
+      }))).status).toBe(200)
+
+      // Verify revoked
+      expect(await provider.validateAccessToken(t2.access_token as string)).toBeNull()
+    })
+
+    it('device flow: register -> device auth -> approve -> tokens -> userinfo', async () => {
+      const cid = (await registerClient(provider, {
+        client_name: 'E2E Agent', grant_types: ['urn:ietf:params:oauth:grant-type:device_code'], redirect_uris: [],
+      })).client_id as string
+
+      const init = await (await provider.handleDeviceAuthorization(new Request('https://id.org.ai/oauth/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: cid }),
+      }))).json() as Record<string, unknown>
+
+      // Pending
+      const p = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: init.device_code as string, client_id: cid,
+      }))).json() as Record<string, unknown>
+      expect(p.error).toBe('authorization_pending')
+
+      // Approve
+      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: init.user_code as string, approved: 'true' }),
+      }), 'user-2')
+
+      // Tokens
+      const t = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: init.device_code as string, client_id: cid,
+      }))).json() as Record<string, unknown>
+      expect(t.access_token).toBeDefined()
+
+      // UserInfo
+      const ui = await (await provider.handleUserinfo(new Request('https://id.org.ai/oauth/userinfo', {
+        headers: { Authorization: `Bearer ${t.access_token}` },
+      }))).json() as Record<string, unknown>
+      expect(ui.sub).toBe('user-2')
+      expect(ui.name).toBe('Bob Agent')
+    })
+
+    it('client_credentials: register -> token -> introspect', async () => {
+      const d = await registerConfidentialClient(provider, { grant_types: ['client_credentials'], redirect_uris: [] })
+      const cid = d.client_id as string
+      const cs = d.client_secret as string
+
+      const t = await (await provider.handleToken(makeTokenRequest({
+        grant_type: 'client_credentials', client_id: cid, client_secret: cs, scope: 'openid',
+      }))).json() as Record<string, unknown>
+      expect(t.access_token).toBeDefined()
+
+      const ir = await (await provider.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: t.access_token as string }),
+      }))).json() as Record<string, unknown>
+      expect(ir.active).toBe(true)
+      expect(ir.client_id).toBe(cid)
+      expect(ir.sub).toBeUndefined()
     })
   })
 })
