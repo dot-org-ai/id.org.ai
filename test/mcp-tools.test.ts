@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { handleExplore, handleTry, handleSearch, handleFetch, handleDo, dispatchTool } from '../src/mcp/tools'
 import type { MCPAuthResult } from '../src/mcp/auth'
+import type { IdentityStub, CapabilityLevel } from '../src/do/Identity'
 
 // ── Auth Fixtures ───────────────────────────────────────────────────────
 
@@ -30,202 +31,222 @@ const L1_AUTH: MCPAuthResult = {
 // ── Mock Identity Stub Helpers ──────────────────────────────────────────
 
 /**
- * Creates a mock identity stub that simulates the IdentityDO endpoints.
+ * Creates a mock identity stub that simulates the IdentityDO RPC methods.
  * Stores entities in an in-memory map to mirror the DO's storage layout.
  */
 function createEntityStub() {
   const storage = new Map<string, Record<string, unknown>>()
 
-  return {
-    storage,
-    stub: {
-      fetch: vi.fn(async (input: string | Request): Promise<Response> => {
-        const request = typeof input === 'string' ? new Request(input) : input
-        const url = new URL(request.url)
-        const path = url.pathname
+  const stub: IdentityStub = {
+    getIdentity: vi.fn(async () => null),
+    provisionAnonymous: vi.fn(async () => ({
+      identity: { id: '', type: 'agent' as const, name: '', verified: false, level: 1 as const, claimStatus: 'unclaimed' as const },
+      sessionToken: '',
+      claimToken: '',
+    })),
+    claim: vi.fn(async () => ({ success: true })),
+    getSession: vi.fn(async () => ({ valid: false })),
+    validateApiKey: vi.fn(async () => ({ valid: false })),
+    createApiKey: vi.fn(async () => ({ id: '', key: '', name: '', prefix: '', scopes: [] as string[], createdAt: '' })),
+    listApiKeys: vi.fn(async () => []),
+    revokeApiKey: vi.fn(async () => null),
+    checkRateLimit: vi.fn(async () => ({ allowed: true, remaining: 99, resetAt: Date.now() + 60000 })),
+    verifyClaimToken: vi.fn(async () => ({ valid: false })),
+    freezeIdentity: vi.fn(async () => ({ frozen: true, stats: { entities: 0, events: 0, sessions: 0 }, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 })),
+    oauthStorageOp: vi.fn(async () => ({})),
+    writeAuditEvent: vi.fn(async () => {}),
+    queryAuditLog: vi.fn(async () => ({ events: [], hasMore: false })),
 
-        // ── mcp-do: create/update/delete entities ──
-        if (path === '/api/mcp-do' && request.method === 'POST') {
-          const body = await request.json() as {
-            entity: string
-            verb: string
-            data: Record<string, unknown>
-            identityId?: string
-            timestamp: number
-          }
-          const entityId = (body.data.id as string) ?? crypto.randomUUID()
-          const owner = body.identityId ?? 'global'
-          const storageKey = `entity:${owner}:${body.entity}:${entityId}`
+    // ── mcpDo: create/update/delete entities ──
+    mcpDo: vi.fn(async (params: {
+      entity: string
+      verb: string
+      data: Record<string, unknown>
+      identityId?: string
+      authLevel: number
+      timestamp: number
+    }) => {
+      if (params.authLevel < 1) {
+        return { success: false, entity: params.entity, verb: params.verb, error: 'L1+ authentication required for entity operations' }
+      }
 
-          if (body.verb === 'create') {
-            const record = {
-              ...body.data,
-              id: entityId,
-              $type: body.entity,
-              createdAt: body.timestamp,
-              updatedAt: body.timestamp,
+      const entityId = (params.data.id as string) ?? crypto.randomUUID()
+      const owner = params.identityId ?? 'global'
+      const storageKey = `entity:${owner}:${params.entity}:${entityId}`
+
+      if (params.verb === 'create') {
+        const record = {
+          ...params.data,
+          id: entityId,
+          $type: params.entity,
+          createdAt: params.timestamp,
+          updatedAt: params.timestamp,
+        }
+        storage.set(storageKey, record)
+        return {
+          success: true,
+          entity: params.entity,
+          verb: params.verb,
+          result: record,
+          events: [
+            { type: `${params.verb}ing`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+            { type: `${params.verb}ed`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          ],
+        }
+      }
+
+      if (params.verb === 'delete') {
+        storage.delete(storageKey)
+        return {
+          success: true,
+          entity: params.entity,
+          verb: params.verb,
+          result: { id: entityId, deleted: true },
+          events: [
+            { type: 'deleting', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+            { type: 'deleted', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          ],
+        }
+      }
+
+      // update / custom verbs
+      const existing = storage.get(storageKey)
+      const record = { ...(existing ?? {}), ...params.data, id: entityId, $type: params.entity, updatedAt: params.timestamp }
+      storage.set(storageKey, record)
+      return {
+        success: true,
+        entity: params.entity,
+        verb: params.verb,
+        result: record,
+        events: [
+          { type: `${params.verb}ing`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+          { type: `${params.verb}ed`, entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
+        ],
+      }
+    }),
+
+    // ── mcpSearch: search entities ──
+    mcpSearch: vi.fn(async (params: {
+      identityId: string
+      query?: string
+      type?: string
+      filters?: Record<string, unknown>
+      limit?: number
+      offset?: number
+    }) => {
+      const owner = params.identityId ?? 'global'
+      const limit = Math.min(params.limit ?? 20, 100)
+      const offset = params.offset ?? 0
+      const queryLower = params.query?.toLowerCase().trim() ?? ''
+      const prefix = params.type ? `entity:${owner}:${params.type}:` : `entity:${owner}:`
+
+      let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
+
+      for (const [key, value] of storage) {
+        if (!key.startsWith(prefix)) continue
+        const parts = key.split(':')
+        const entityType = parts[2]
+
+        // Apply field filters
+        if (params.filters) {
+          let matches = true
+          for (const [field, expected] of Object.entries(params.filters)) {
+            const actual = value[field]
+            if (actual === undefined || actual === null) { matches = false; break }
+            if (typeof actual === 'string' && typeof expected === 'string') {
+              if (actual.toLowerCase() !== expected.toLowerCase()) { matches = false; break }
+            } else if (actual !== expected) {
+              matches = false; break
             }
-            storage.set(storageKey, record)
-            return Response.json({
-              success: true,
-              entity: body.entity,
-              verb: body.verb,
-              result: record,
-              events: [
-                { type: `${body.verb}ing`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-                { type: `${body.verb}ed`, entity: body.entity, verb: body.verb, timestamp: new Date(body.timestamp).toISOString() },
-              ],
-            })
           }
-
-          if (body.verb === 'delete') {
-            storage.delete(storageKey)
-            return Response.json({
-              success: true,
-              entity: body.entity,
-              verb: body.verb,
-              result: { id: entityId, deleted: true },
-              events: [],
-            })
-          }
-
-          // update / custom verbs
-          const existing = storage.get(storageKey)
-          const record = { ...(existing ?? {}), ...body.data, id: entityId, $type: body.entity, updatedAt: body.timestamp }
-          storage.set(storageKey, record)
-          return Response.json({
-            success: true,
-            entity: body.entity,
-            verb: body.verb,
-            result: record,
-            events: [],
-          })
+          if (!matches) continue
         }
 
-        // ── mcp-search: search entities ──
-        if (path === '/api/mcp-search' && request.method === 'POST') {
-          const body = await request.json() as {
-            identityId: string
-            query?: string
-            type?: string
-            filters?: Record<string, unknown>
-            limit?: number
-            offset?: number
-          }
-
-          const owner = body.identityId ?? 'global'
-          const limit = Math.min(body.limit ?? 20, 100)
-          const offset = body.offset ?? 0
-          const queryLower = body.query?.toLowerCase().trim() ?? ''
-          const prefix = body.type ? `entity:${owner}:${body.type}:` : `entity:${owner}:`
-
-          let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
-
-          for (const [key, value] of storage) {
-            if (!key.startsWith(prefix)) continue
-            const parts = key.split(':')
-            const entityType = parts[2]
-
-            // Apply field filters
-            if (body.filters) {
-              let matches = true
-              for (const [field, expected] of Object.entries(body.filters)) {
-                const actual = value[field]
-                if (actual === undefined || actual === null) { matches = false; break }
-                if (typeof actual === 'string' && typeof expected === 'string') {
-                  if (actual.toLowerCase() !== expected.toLowerCase()) { matches = false; break }
-                } else if (actual !== expected) {
-                  matches = false; break
-                }
-              }
-              if (!matches) continue
+        // Text search
+        let score = 1
+        if (queryLower) {
+          score = 0
+          for (const [field, val] of Object.entries(value)) {
+            if (val === null || val === undefined || typeof val === 'object') continue
+            const strVal = String(val).toLowerCase()
+            if (strVal.includes(queryLower)) {
+              if (field === 'name' || field === 'title') score += strVal === queryLower ? 20 : 10
+              else if (field === 'email') score += strVal === queryLower ? 15 : 8
+              else score += 2
             }
-
-            // Text search
-            let score = 1
-            if (queryLower) {
-              score = 0
-              for (const [field, val] of Object.entries(value)) {
-                if (val === null || val === undefined || typeof val === 'object') continue
-                const strVal = String(val).toLowerCase()
-                if (strVal.includes(queryLower)) {
-                  if (field === 'name' || field === 'title') score += strVal === queryLower ? 20 : 10
-                  else if (field === 'email') score += strVal === queryLower ? 15 : 8
-                  else score += 2
-                }
-              }
-              if (score === 0) continue
-            }
-
-            results.push({
-              type: entityType,
-              id: String(value.id ?? ''),
-              data: value,
-              score,
-            })
           }
-
-          results.sort((a, b) => b.score - a.score)
-          const total = results.length
-          results = results.slice(offset, offset + limit)
-          return Response.json({ results, total, limit, offset })
+          if (score === 0) continue
         }
 
-        // ── mcp-fetch: fetch entities by type/id ──
-        if (path === '/api/mcp-fetch' && request.method === 'POST') {
-          const body = await request.json() as {
-            identityId: string
-            type: string
-            id?: string
-            filters?: Record<string, unknown>
-            limit?: number
-            offset?: number
-          }
+        results.push({
+          type: entityType,
+          id: String(value.id ?? ''),
+          data: value,
+          score,
+        })
+      }
 
-          const owner = body.identityId ?? 'global'
+      results.sort((a, b) => b.score - a.score)
+      const total = results.length
+      results = results.slice(offset, offset + limit)
+      return { results, total, limit, offset }
+    }),
 
-          if (body.id) {
-            const storageKey = `entity:${owner}:${body.type}:${body.id}`
-            const data = storage.get(storageKey)
-            if (!data) {
-              return new Response(JSON.stringify({ type: body.type, id: body.id, data: null }), { status: 404 })
+    // ── mcpFetch: fetch entities by type/id ──
+    mcpFetch: vi.fn(async (params: {
+      identityId: string
+      type: string
+      id?: string
+      filters?: Record<string, unknown>
+      limit?: number
+      offset?: number
+    }) => {
+      const owner = params.identityId ?? 'global'
+
+      if (params.id) {
+        const storageKey = `entity:${owner}:${params.type}:${params.id}`
+        const data = storage.get(storageKey)
+        return { type: params.type, id: params.id, data: data ?? null }
+      }
+
+      // List all entities of this type
+      const prefix = `entity:${owner}:${params.type}:`
+      const limit = Math.min(params.limit ?? 20, 100)
+      const offset = params.offset ?? 0
+      let items: Record<string, unknown>[] = []
+
+      for (const [key, value] of storage) {
+        if (!key.startsWith(prefix)) continue
+        if (params.filters) {
+          let matches = true
+          for (const [field, expected] of Object.entries(params.filters)) {
+            const actual = value[field]
+            if (actual === undefined || actual === null) { matches = false; break }
+            if (typeof actual === 'string' && typeof expected === 'string') {
+              if (actual.toLowerCase() !== expected.toLowerCase()) { matches = false; break }
+            } else if (actual !== expected) {
+              matches = false; break
             }
-            return Response.json({ type: body.type, id: body.id, data })
           }
-
-          // List all entities of this type
-          const prefix = `entity:${owner}:${body.type}:`
-          const limit = Math.min(body.limit ?? 20, 100)
-          const offset = body.offset ?? 0
-          let items: Record<string, unknown>[] = []
-
-          for (const [key, value] of storage) {
-            if (!key.startsWith(prefix)) continue
-            if (body.filters) {
-              let matches = true
-              for (const [field, expected] of Object.entries(body.filters)) {
-                const actual = value[field]
-                if (actual === undefined || actual === null) { matches = false; break }
-                if (typeof actual === 'string' && typeof expected === 'string') {
-                  if (actual.toLowerCase() !== expected.toLowerCase()) { matches = false; break }
-                } else if (actual !== expected) {
-                  matches = false; break
-                }
-              }
-              if (!matches) continue
-            }
-            items.push(value)
-          }
-
-          const total = items.length
-          items = items.slice(offset, offset + limit)
-          return Response.json({ type: body.type, items, total, limit, offset })
+          if (!matches) continue
         }
+        items.push(value)
+      }
 
-        return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 })
-      }),
-    },
+      const total = items.length
+      items = items.slice(offset, offset + limit)
+      return { type: params.type, items, total, limit, offset }
+    }),
   }
+
+  return { storage, stub }
+}
+
+/**
+ * Creates a minimal mock identity stub (no entity storage) for simple dispatch tests.
+ */
+function createMinimalStub(): IdentityStub {
+  return createEntityStub().stub
 }
 
 // ── Explore Tests ───────────────────────────────────────────────────────
@@ -871,17 +892,15 @@ describe('do + search + fetch integration', () => {
 // ── dispatchTool Tests ──────────────────────────────────────────────────
 
 describe('dispatchTool', () => {
-  const mockStub = {
-    fetch: async () => new Response(JSON.stringify({})),
-  }
-
   it('dispatches explore tool', async () => {
+    const mockStub = createMinimalStub()
     const result = await dispatchTool('explore', {}, mockStub, L0_AUTH)
     const data = JSON.parse(result.content[0].text)
     expect(data.totalEntities).toBe(32)
   })
 
   it('dispatches try tool', async () => {
+    const mockStub = createMinimalStub()
     const result = await dispatchTool('try', {
       operations: [{ entity: 'Contact', verb: 'create', data: { name: 'Test' } }],
     }, mockStub, L1_AUTH)
@@ -929,6 +948,7 @@ describe('dispatchTool', () => {
   })
 
   it('returns error for unknown tool', async () => {
+    const mockStub = createMinimalStub()
     const result = await dispatchTool('nonexistent', {}, mockStub, L0_AUTH)
     expect(result.isError).toBe(true)
     const data = JSON.parse(result.content[0].text)

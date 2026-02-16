@@ -9,24 +9,34 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MCPAuth } from '../src/mcp/auth'
+import type { IdentityStub, CapabilityLevel } from '../src/do/Identity'
 
 // ── Mock Identity Stub ──────────────────────────────────────────────────
 
-function createMockStub(handlers: Record<string, (url: string, request: Request) => Promise<Response> | Response> = {}) {
+function createMockIdentityStub(overrides: Partial<IdentityStub> = {}): IdentityStub {
   return {
-    fetch: vi.fn(async (input: string | Request): Promise<Response> => {
-      const request = typeof input === 'string' ? new Request(input) : input
-      const url = new URL(request.url)
-      const path = url.pathname
-
-      for (const [pattern, handler] of Object.entries(handlers)) {
-        if (path.startsWith(pattern)) {
-          return handler(path, request)
-        }
-      }
-
-      return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 })
-    }),
+    getIdentity: vi.fn(async () => null),
+    provisionAnonymous: vi.fn(async () => ({
+      identity: { id: '', type: 'agent' as const, name: '', verified: false, level: 1 as const, claimStatus: 'unclaimed' as const },
+      sessionToken: '',
+      claimToken: '',
+    })),
+    claim: vi.fn(async () => ({ success: true })),
+    getSession: vi.fn(async () => ({ valid: false })),
+    validateApiKey: vi.fn(async () => ({ valid: false })),
+    createApiKey: vi.fn(async () => ({ id: '', key: '', name: '', prefix: '', scopes: [], createdAt: '' })),
+    listApiKeys: vi.fn(async () => []),
+    revokeApiKey: vi.fn(async () => null),
+    checkRateLimit: vi.fn(async () => ({ allowed: true, remaining: 99, resetAt: Date.now() + 60000 })),
+    verifyClaimToken: vi.fn(async () => ({ valid: false })),
+    freezeIdentity: vi.fn(async () => ({ frozen: true, stats: { entities: 0, events: 0, sessions: 0 }, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 })),
+    mcpSearch: vi.fn(async () => ({ results: [], total: 0, limit: 20, offset: 0 })),
+    mcpFetch: vi.fn(async () => ({})),
+    mcpDo: vi.fn(async () => ({ success: true, entity: '', verb: '' })),
+    oauthStorageOp: vi.fn(async () => ({})),
+    writeAuditEvent: vi.fn(async () => {}),
+    queryAuditLog: vi.fn(async () => ({ events: [], hasMore: false })),
+    ...overrides,
   }
 }
 
@@ -52,7 +62,7 @@ function makeRequest(options: { apiKey?: string; sessionToken?: string; url?: st
 describe('MCPAuth', () => {
   describe('L0: Anonymous authentication', () => {
     it('returns L0 result when no credentials are provided', async () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest()
 
@@ -70,7 +80,7 @@ describe('MCPAuth', () => {
     })
 
     it('includes upgrade hint to L1', async () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest()
 
@@ -83,7 +93,7 @@ describe('MCPAuth', () => {
     })
 
     it('provides rate limit info for anonymous users', async () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest()
 
@@ -97,19 +107,18 @@ describe('MCPAuth', () => {
 
   describe('L1: Session token authentication', () => {
     it('authenticates valid session token', async () => {
-      const stub = createMockStub({
-        '/api/session/': () => Response.json({
+      const stub = createMockIdentityStub({
+        getSession: vi.fn(async () => ({
           valid: true,
           identityId: 'id-123',
-          level: 1,
+          level: 1 as CapabilityLevel,
           expiresAt: Date.now() + 86400000,
-        }),
-        '/api/rate-limit/': () => Response.json({
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 99,
           resetAt: Date.now() + 60000,
-          level: 1,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ sessionToken: 'ses_abc123' })
@@ -127,19 +136,18 @@ describe('MCPAuth', () => {
     })
 
     it('includes upgrade hint to L2 (claim)', async () => {
-      const stub = createMockStub({
-        '/api/session/': () => Response.json({
+      const stub = createMockIdentityStub({
+        getSession: vi.fn(async () => ({
           valid: true,
           identityId: 'id-123',
-          level: 1,
+          level: 1 as CapabilityLevel,
           expiresAt: Date.now() + 86400000,
-        }),
-        '/api/rate-limit/': () => Response.json({
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 99,
           resetAt: Date.now() + 60000,
-          level: 1,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ sessionToken: 'ses_abc123' })
@@ -152,8 +160,8 @@ describe('MCPAuth', () => {
     })
 
     it('falls back to L0 for invalid session token', async () => {
-      const stub = createMockStub({
-        '/api/session/': () => Response.json({ valid: false }),
+      const stub = createMockIdentityStub({
+        getSession: vi.fn(async () => ({ valid: false })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ sessionToken: 'ses_invalid' })
@@ -166,19 +174,18 @@ describe('MCPAuth', () => {
     })
 
     it('reports rate limit exceeded for L1', async () => {
-      const stub = createMockStub({
-        '/api/session/': () => Response.json({
+      const stub = createMockIdentityStub({
+        getSession: vi.fn(async () => ({
           valid: true,
           identityId: 'id-123',
-          level: 1,
+          level: 1 as CapabilityLevel,
           expiresAt: Date.now() + 86400000,
-        }),
-        '/api/rate-limit/': () => Response.json({
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: false,
           remaining: 0,
           resetAt: Date.now() + 30000,
-          level: 1,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ sessionToken: 'ses_abc123' })
@@ -193,25 +200,23 @@ describe('MCPAuth', () => {
 
   describe('L2+: API key authentication', () => {
     it('authenticates valid API key via X-API-Key header', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async (_path, req) => {
-          const body = await req.json() as { key: string }
-          if (body.key === 'oai_validkey123') {
-            return Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async (key: string) => {
+          if (key === 'oai_validkey123') {
+            return {
               valid: true,
               identityId: 'id-456',
               scopes: ['read', 'write'],
-              level: 2,
-            })
+              level: 2 as CapabilityLevel,
+            }
           }
-          return Response.json({ valid: false })
-        },
-        '/api/rate-limit/': () => Response.json({
+          return { valid: false }
+        }),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 999,
           resetAt: Date.now() + 60000,
-          level: 2,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ apiKey: 'oai_validkey123' })
@@ -224,18 +229,17 @@ describe('MCPAuth', () => {
     })
 
     it('authenticates valid API key via Bearer header', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({
           valid: true,
           identityId: 'id-789',
-          level: 3,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 3 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: Infinity,
           resetAt: 0,
-          level: 3,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = new Request('https://id.org.ai/mcp', {
@@ -249,8 +253,8 @@ describe('MCPAuth', () => {
     })
 
     it('falls back to L0 for invalid API key', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({ valid: false }),
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({ valid: false })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ apiKey: 'oai_invalidkey' })
@@ -263,18 +267,17 @@ describe('MCPAuth', () => {
     })
 
     it('includes upgrade hint to L3 for L2 users', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({
           valid: true,
           identityId: 'id-456',
-          level: 2,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 2 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 999,
           resetAt: Date.now() + 60000,
-          level: 2,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = makeRequest({ apiKey: 'oai_validkey' })
@@ -287,18 +290,17 @@ describe('MCPAuth', () => {
     })
 
     it('API key takes priority over session token', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({
           valid: true,
           identityId: 'id-apikey',
-          level: 2,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 2 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 999,
           resetAt: Date.now() + 60000,
-          level: 2,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       // Both API key and session token provided — API key should win
@@ -318,7 +320,7 @@ describe('MCPAuth', () => {
 
   describe('buildMeta', () => {
     it('builds meta with auth level and capabilities', () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
 
       const meta = mcpAuth.buildMeta({
@@ -337,7 +339,7 @@ describe('MCPAuth', () => {
     })
 
     it('includes rate limit info when present', () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
 
       const meta = mcpAuth.buildMeta({
@@ -360,7 +362,7 @@ describe('MCPAuth', () => {
     })
 
     it('includes upgrade hint when present', () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
 
       const meta = mcpAuth.buildMeta({
@@ -380,7 +382,7 @@ describe('MCPAuth', () => {
     })
 
     it('includes error when present', () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
 
       const meta = mcpAuth.buildMeta({
@@ -397,18 +399,17 @@ describe('MCPAuth', () => {
 
   describe('Token extraction', () => {
     it('extracts API key from X-API-Key header', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({
           valid: true,
           identityId: 'id-1',
-          level: 2,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 2 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 999,
           resetAt: Date.now() + 60000,
-          level: 2,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = new Request('https://id.org.ai/mcp', {
@@ -420,18 +421,17 @@ describe('MCPAuth', () => {
     })
 
     it('extracts API key from query parameter', async () => {
-      const stub = createMockStub({
-        '/api/validate-key': async () => Response.json({
+      const stub = createMockIdentityStub({
+        validateApiKey: vi.fn(async () => ({
           valid: true,
           identityId: 'id-1',
-          level: 2,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 2 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 999,
           resetAt: Date.now() + 60000,
-          level: 2,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = new Request('https://id.org.ai/mcp?api_key=oai_from_query')
@@ -441,7 +441,7 @@ describe('MCPAuth', () => {
     })
 
     it('ignores non-oai Bearer tokens for API key extraction', async () => {
-      const stub = createMockStub()
+      const stub = createMockIdentityStub()
       const mcpAuth = new MCPAuth(stub)
       const request = new Request('https://id.org.ai/mcp', {
         headers: { 'Authorization': 'Bearer some_random_token' },
@@ -454,18 +454,17 @@ describe('MCPAuth', () => {
     })
 
     it('extracts session token from Bearer ses_* header', async () => {
-      const stub = createMockStub({
-        '/api/session/': () => Response.json({
+      const stub = createMockIdentityStub({
+        getSession: vi.fn(async () => ({
           valid: true,
           identityId: 'id-ses',
-          level: 1,
-        }),
-        '/api/rate-limit/': () => Response.json({
+          level: 1 as CapabilityLevel,
+        })),
+        checkRateLimit: vi.fn(async () => ({
           allowed: true,
           remaining: 99,
           resetAt: Date.now() + 60000,
-          level: 1,
-        }),
+        })),
       })
       const mcpAuth = new MCPAuth(stub)
       const request = new Request('https://id.org.ai/mcp', {
