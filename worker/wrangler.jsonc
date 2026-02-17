@@ -1,11 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "id-org-ai",
+  "name": "auth",
   "main": "index.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
 
   "workers_dev": true,
+
+  "vars": {
+    "WORKOS_CLIENT_ID": "client_01JQYTRXK9ZPD8JPJTKDCRB656"
+  },
 
   "routes": [
     { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
