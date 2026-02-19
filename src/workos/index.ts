@@ -44,3 +44,15 @@ export {
   interpolateSecrets,
 } from './vault'
 export type { VaultSecret, VaultSecretWithValue, CreateSecretOptions, UpdateSecretOptions } from './vault'
+export {
+  PIPES_PROVIDERS,
+  getAccessToken,
+  listConnections,
+  getConnection,
+  disconnectConnection,
+  getSlackToken,
+  getGitHubToken,
+  isProviderConnected,
+  getConnectionStatus,
+} from './pipes'
+export type { PipesProvider, PipesConnection, PipesAccessToken } from './pipes'

@@ -75,6 +75,15 @@ import {
 } from '../src/workos/vault'
 import type { CreateSecretOptions, UpdateSecretOptions } from '../src/workos/vault'
 import {
+  PIPES_PROVIDERS,
+  getAccessToken,
+  listConnections,
+  getConnection,
+  disconnectConnection,
+  getConnectionStatus,
+} from '../src/workos/pipes'
+import type { PipesProvider } from '../src/workos/pipes'
+import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
@@ -1782,6 +1791,66 @@ app.post('/vault/resolve', async (c) => {
   }
 
   return c.json({ error: 'Provide name, names, or template' }, 400)
+})
+
+// ── WorkOS Pipes — Managed OAuth Connections ─────────────────────────────────
+// Replaces manual OAuth token management for third-party providers (Slack, GitHub, etc.).
+// WorkOS handles the OAuth flow, token storage, and automatic refresh.
+
+// POST /pipes/token — Get a fresh access token for a provider
+app.post('/pipes/token', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = await c.req.json<{ provider: string; userId: string; organizationId?: string }>()
+  if (!body.provider || !body.userId) {
+    return c.json({ error: 'provider and userId are required' }, 400)
+  }
+  if (!PIPES_PROVIDERS.includes(body.provider as PipesProvider)) {
+    return c.json({ error: `Unsupported provider: ${body.provider}. Supported: ${PIPES_PROVIDERS.join(', ')}` }, 400)
+  }
+  const token = await getAccessToken(c.env.WORKOS_API_KEY, body.provider as PipesProvider, body.userId, body.organizationId)
+  return c.json(token)
+})
+
+// GET /pipes/connections — List all connections
+app.get('/pipes/connections', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const userId = c.req.query('user_id')
+  const orgId = c.req.query('organization_id')
+  const provider = c.req.query('provider')
+  const result = await listConnections(c.env.WORKOS_API_KEY, {
+    userId: userId || undefined,
+    organizationId: orgId || undefined,
+    provider: (provider as PipesProvider) || undefined,
+  })
+  return c.json(result)
+})
+
+// GET /pipes/connections/:id — Get a specific connection
+app.get('/pipes/connections/:id', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  try {
+    const connection = await getConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
+    return c.json(connection)
+  } catch {
+    return c.json({ error: 'Connection not found' }, 404)
+  }
+})
+
+// DELETE /pipes/connections/:id — Disconnect a provider
+app.delete('/pipes/connections/:id', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  await disconnectConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
+  return c.json({ ok: true })
+})
+
+// GET /pipes/status — Get connection status for all providers
+app.get('/pipes/status', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const userId = c.req.query('user_id')
+  const orgId = c.req.query('organization_id')
+  if (!userId) return c.json({ error: 'user_id query param required' }, 400)
+  const status = await getConnectionStatus(c.env.WORKOS_API_KEY, userId, orgId || undefined)
+  return c.json({ providers: status })
 })
 
 // ── GitHub webhook endpoint ───────────────────────────────────────────────
