@@ -63,6 +63,18 @@ import {
 } from '../src/workos/fga'
 import type { FGACheckRequest, FGARelation } from '../src/workos/fga'
 import {
+  createVaultSecret,
+  getVaultSecret,
+  readVaultSecretValue,
+  listVaultSecrets,
+  updateVaultSecret,
+  deleteVaultSecret,
+  resolveSecret,
+  resolveSecrets,
+  interpolateSecrets,
+} from '../src/workos/vault'
+import type { CreateSecretOptions, UpdateSecretOptions } from '../src/workos/vault'
+import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
@@ -1659,6 +1671,117 @@ app.get('/fga/accessible', async (c) => {
   if (!fgaType) return c.json({ error: `Unknown resource type: ${resourceType}` }, 400)
   const resources = await listAccessible(c.env.WORKOS_API_KEY, fgaType, userId)
   return c.json({ resources })
+})
+
+// ── WorkOS Vault — Secret Management ────────────────────────────────────────
+// CRUD for encrypted secrets stored in WorkOS Vault.
+// Secrets are used by code functions, workflows, integrations, and API proxies.
+// The /vault/resolve endpoint does NOT expose actual secret values in the API
+// response — values are only injected by runtime (code execution, workflows).
+
+// POST /vault/secrets — Create a new secret
+app.post('/vault/secrets', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = await c.req.json<CreateSecretOptions>()
+  if (!body.name || !body.value) {
+    return c.json({ error: 'name and value are required' }, 400)
+  }
+  const secret = await createVaultSecret(c.env.WORKOS_API_KEY, body)
+  return c.json(secret, 201)
+})
+
+// GET /vault/secrets — List all secrets (metadata only)
+app.get('/vault/secrets', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const env = c.req.query('environment')
+  const limit = c.req.query('limit')
+  const after = c.req.query('after')
+  const result = await listVaultSecrets(c.env.WORKOS_API_KEY, {
+    environment: env,
+    limit: limit ? parseInt(limit) : undefined,
+    after,
+  })
+  return c.json(result)
+})
+
+// GET /vault/secrets/:id — Get secret metadata (no value)
+app.get('/vault/secrets/:id', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const id = c.req.param('id')
+  try {
+    const secret = await getVaultSecret(c.env.WORKOS_API_KEY, id)
+    return c.json(secret)
+  } catch {
+    return c.json({ error: 'Secret not found' }, 404)
+  }
+})
+
+// GET /vault/secrets/:id/reveal — Get secret with decrypted value
+app.get('/vault/secrets/:id/reveal', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const id = c.req.param('id')
+  try {
+    const secret = await readVaultSecretValue(c.env.WORKOS_API_KEY, id)
+    return c.json(secret)
+  } catch {
+    return c.json({ error: 'Secret not found or cannot be revealed' }, 404)
+  }
+})
+
+// PUT /vault/secrets/:id — Update a secret
+app.put('/vault/secrets/:id', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const id = c.req.param('id')
+  const body = await c.req.json<UpdateSecretOptions>()
+  const secret = await updateVaultSecret(c.env.WORKOS_API_KEY, id, body)
+  return c.json(secret)
+})
+
+// DELETE /vault/secrets/:id — Delete a secret
+app.delete('/vault/secrets/:id', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const id = c.req.param('id')
+  await deleteVaultSecret(c.env.WORKOS_API_KEY, id)
+  return c.json({ ok: true })
+})
+
+// POST /vault/resolve — Resolve a secret by name (runtime API)
+// NOTE: This endpoint does NOT expose actual secret values in the response.
+// Values are only injected into runtime contexts by the code execution worker
+// and workflow engine, which call resolveSecret() directly.
+app.post('/vault/resolve', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = await c.req.json<{ name?: string; names?: string[]; template?: string }>()
+
+  // Single secret resolution
+  if (body.name) {
+    try {
+      await resolveSecret(c.env.WORKOS_API_KEY, body.name)
+      return c.json({ name: body.name, resolved: true })
+      // NOTE: We return resolved:true but NOT the value in the response
+      // The value should only be injected into runtime contexts, not exposed via API
+    } catch {
+      return c.json({ name: body.name, resolved: false, error: 'Secret not found' }, 404)
+    }
+  }
+
+  // Batch resolution
+  if (body.names) {
+    const resolved = await resolveSecrets(c.env.WORKOS_API_KEY, body.names)
+    return c.json({
+      resolved: Object.keys(resolved),
+      missing: body.names.filter((n) => !(n in resolved)),
+    })
+  }
+
+  // Template interpolation
+  if (body.template) {
+    await interpolateSecrets(c.env.WORKOS_API_KEY, body.template)
+    return c.json({ interpolated: true })
+    // Again, don't return the actual interpolated string via API
+  }
+
+  return c.json({ error: 'Provide name, names, or template' }, 400)
 })
 
 // ── GitHub webhook endpoint ───────────────────────────────────────────────

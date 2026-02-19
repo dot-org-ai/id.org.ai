@@ -32,3 +32,15 @@ export {
   entityTypeToFGA,
 } from './fga'
 export type { FGAResourceType, FGARelation, FGAWarrant, FGACheckRequest } from './fga'
+export {
+  createVaultSecret,
+  getVaultSecret,
+  readVaultSecretValue,
+  listVaultSecrets,
+  updateVaultSecret,
+  deleteVaultSecret,
+  resolveSecret,
+  resolveSecrets,
+  interpolateSecrets,
+} from './vault'
+export type { VaultSecret, VaultSecretWithValue, CreateSecretOptions, UpdateSecretOptions } from './vault'
