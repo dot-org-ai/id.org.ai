@@ -101,7 +101,7 @@ export { IdentityDO }
 interface Env {
   IDENTITY: DurableObjectNamespace
   SESSIONS: KVNamespace
-  DB: D1Database
+  DB?: D1Database
   AUTH_SECRET: string
   JWKS_SECRET: string
   WORKOS_CLIENT_ID?: string
@@ -191,6 +191,37 @@ async function invalidateCachedToken(token: string): Promise<boolean> {
   }
 }
 
+// ── Negative Cache (invalid tokens) ─────────────────────────────────────
+// Caches failed verification results for 60 seconds to prevent repeated
+// KV lookups and JWT verification for known-bad tokens.
+
+const NEGATIVE_CACHE_TTL = 60 // 60 seconds
+const NEGATIVE_CACHE_URL_PREFIX = 'https://id.org.ai/_cache/neg/'
+
+async function isNegativelyCached(token: string): Promise<boolean> {
+  try {
+    const hash = await hashToken(token)
+    const cacheKey = new Request(`${NEGATIVE_CACHE_URL_PREFIX}${hash}`)
+    const cached = await caches.default.match(cacheKey)
+    return !!cached
+  } catch {
+    return false
+  }
+}
+
+async function cacheNegativeResult(token: string): Promise<void> {
+  try {
+    const hash = await hashToken(token)
+    const cacheKey = new Request(`${NEGATIVE_CACHE_URL_PREFIX}${hash}`)
+    const response = new Response('invalid', {
+      headers: { 'Cache-Control': `max-age=${NEGATIVE_CACHE_TTL}` },
+    })
+    await caches.default.put(cacheKey, response)
+  } catch {
+    // Cache failures are non-fatal
+  }
+}
+
 // ── Cookie Parsing ──────────────────────────────────────────────────────
 // Simple cookie parser for extracting auth tokens from cookie headers.
 // Used by authenticate() when called with a raw cookie header string.
@@ -198,6 +229,17 @@ async function invalidateCachedToken(token: string): Promise<boolean> {
 function parseCookieValue(cookieHeader: string, name: string): string | null {
   const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`))
   return match ? decodeURIComponent(match[1]) : null
+}
+
+// ── Cookie Domain Detection ──────────────────────────────────────────────
+// When running on a subdomain (e.g. id.headless.ly), set Domain=.headless.ly
+// so the auth cookie is shared across all subdomains. On root domains or
+// localhost, omit Domain to use the default (exact host).
+
+function getRootDomain(hostname: string): string | null {
+  const parts = hostname.split('.')
+  if (parts.length <= 2) return null // already root or localhost
+  return '.' + parts.slice(-2).join('.') // .headless.ly, .org.ai, etc.
 }
 
 // ── JWKS Cache ──────────────────────────────────────────────────────────
@@ -234,7 +276,10 @@ export class AuthService extends WorkerEntrypoint<Env> {
   // Results are cached for 5 minutes via Cache API.
 
   async verifyToken(token: string): Promise<VerifyResult> {
-    // Check cache first
+    // Check negative cache first (known-bad tokens)
+    if (await isNegativelyCached(token)) return { valid: false, error: 'Invalid token (cached)' }
+
+    // Check positive cache
     const cached = await getCachedUser(token)
     if (cached) return { valid: true, user: cached, cached: true }
 
@@ -312,6 +357,8 @@ export class AuthService extends WorkerEntrypoint<Env> {
       return { valid: true, user: workosUser }
     }
 
+    // Cache negative result to prevent repeated verification of bad tokens
+    await cacheNegativeResult(token)
     return { valid: false, error: 'Unrecognized token format. Use ses_* (session), oai_*/hly_sk_* (API key), sk_* (WorkOS key), or a JWT.' }
   }
 
@@ -495,6 +542,9 @@ export class AuthService extends WorkerEntrypoint<Env> {
     }
   }
 }
+
+// AuthRPC alias — events.do and other consumers bind with entrypoint: "AuthRPC"
+export { AuthService as AuthRPC }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -767,8 +817,10 @@ app.get('/callback', async (c) => {
 
   // Build redirect response with auth cookie
   const continueUrl = decoded.continue || '/'
-  const isSecure = new URL(c.req.url).protocol === 'https:'
-  const cookieFlags = [`auth=${jwt}`, 'HttpOnly', 'Path=/', `SameSite=Lax`, `Max-Age=3600`, ...(isSecure ? ['Secure'] : [])].join('; ')
+  const reqUrl = new URL(c.req.url)
+  const isSecure = reqUrl.protocol === 'https:'
+  const domain = getRootDomain(reqUrl.hostname)
+  const cookieFlags = [`auth=${jwt}`, 'HttpOnly', 'Path=/', `SameSite=Lax`, `Max-Age=3600`, ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
 
   return new Response(null, {
     status: 302,
@@ -783,8 +835,10 @@ app.get('/callback', async (c) => {
 
 app.get('/logout', (c) => {
   const returnUrl = c.req.query('return_url') || '/'
-  const isSecure = new URL(c.req.url).protocol === 'https:'
-  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : [])].join('; ')
+  const reqUrl = new URL(c.req.url)
+  const isSecure = reqUrl.protocol === 'https:'
+  const domain = getRootDomain(reqUrl.hostname)
+  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
 
   return new Response(null, {
     status: 302,
@@ -796,8 +850,10 @@ app.get('/logout', (c) => {
 })
 
 app.post('/logout', (c) => {
-  const isSecure = new URL(c.req.url).protocol === 'https:'
-  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : [])].join('; ')
+  const reqUrl = new URL(c.req.url)
+  const isSecure = reqUrl.protocol === 'https:'
+  const domain = getRootDomain(reqUrl.hostname)
+  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
 
   return c.json({ ok: true }, 200, { 'Set-Cookie': clearCookie })
 })
@@ -1533,6 +1589,8 @@ app.get('/claim/:token', async (c) => {
 // No auth middleware — WorkOS authenticates via webhook signature.
 
 app.post('/webhooks/workos', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'SCIM not configured' }, 503)
+
   const rawBody = await c.req.text()
   let body: DSyncEvent
 
