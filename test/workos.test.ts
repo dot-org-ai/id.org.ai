@@ -6,13 +6,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import {
-  buildWorkOSAuthUrl,
-  exchangeWorkOSCode,
-  encodeLoginState,
-  decodeLoginState,
-} from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
+import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -393,13 +389,19 @@ describe('encodeLoginState / decodeLoginState', () => {
   })
 
   it('returns null for missing csrf field', () => {
-    const encoded = btoa(JSON.stringify({ foo: 'bar' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const encoded = btoa(JSON.stringify({ foo: 'bar' }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '')
     const result = decodeLoginState(encoded)
     expect(result).toBeNull()
   })
 
   it('returns null for empty csrf field', () => {
-    const encoded = btoa(JSON.stringify({ csrf: '' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const encoded = btoa(JSON.stringify({ csrf: '' }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '')
     const result = decodeLoginState(encoded)
     expect(result).toBeNull()
   })
@@ -467,9 +469,7 @@ describe('validateWorkOSApiKey', () => {
   })
 
   it('sends POST to api.workos.com/api_keys/validations with correct auth', async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ id: 'key_1', name: 'Test Key' }),
-    )
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', name: 'Test Key' }))
 
     await validateWorkOSApiKey('sk_test_api_key', 'sk_platform_secret')
 
@@ -482,9 +482,7 @@ describe('validateWorkOSApiKey', () => {
   })
 
   it('sends the api_key in the request body', async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ id: 'key_1', name: 'Test Key' }),
-    )
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', name: 'Test Key' }))
 
     await validateWorkOSApiKey('sk_test_api_key', 'sk_platform_secret')
 
@@ -594,5 +592,305 @@ describe('validateWorkOSApiKey', () => {
 
     expect(result.valid).toBe(true)
     expect(result.organization_id).toBeUndefined()
+  })
+})
+
+// ============================================================================
+// createWorkOSApiKey
+// ============================================================================
+
+describe('createWorkOSApiKey', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends POST to api.workos.com/api_keys with correct auth', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'My Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform_secret', { name: 'My Key' })
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://api.workos.com/api_keys')
+    expect(options.method).toBe('POST')
+    expect(options.headers['Content-Type']).toBe('application/json')
+    expect(options.headers['Authorization']).toBe('Bearer sk_platform_secret')
+  })
+
+  it('sends name in the request body', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'Test Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform', { name: 'Test Key' })
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.name).toBe('Test Key')
+  })
+
+  it('sends organization_id when provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'Org Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform', { name: 'Org Key', organizationId: 'org_xyz' })
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.organization_id).toBe('org_xyz')
+  })
+
+  it('sends permissions when provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'Scoped Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform', { name: 'Scoped Key', permissions: ['read', 'write'] })
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.permissions).toEqual(['read', 'write'])
+  })
+
+  it('sends expires_at when provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'Expiring Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform', { name: 'Expiring Key', expiresAt: '2027-01-01T00:00:00Z' })
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.expires_at).toBe('2027-01-01T00:00:00Z')
+  })
+
+  it('does not send optional fields when not provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'key_1', key: 'sk_live_abc', name: 'Minimal Key', created_at: '2026-01-01T00:00:00Z' }))
+
+    await createWorkOSApiKey('sk_platform', { name: 'Minimal Key' })
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.organization_id).toBeUndefined()
+    expect(body.permissions).toBeUndefined()
+    expect(body.expires_at).toBeUndefined()
+  })
+
+  it('returns the created key with id, key, and name', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'key_abc',
+        key: 'sk_live_generated_key',
+        name: 'Production Key',
+        created_at: '2026-02-19T00:00:00Z',
+      }),
+    )
+
+    const result = await createWorkOSApiKey('sk_platform', { name: 'Production Key' })
+
+    expect(result.id).toBe('key_abc')
+    expect(result.key).toBe('sk_live_generated_key')
+    expect(result.name).toBe('Production Key')
+    expect(result.created_at).toBe('2026-02-19T00:00:00Z')
+  })
+
+  it('throws on non-200 response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Bad Request', 400))
+
+    await expect(createWorkOSApiKey('sk_platform', { name: 'Bad Key' })).rejects.toThrow('WorkOS create API key failed: 400')
+  })
+
+  it('throws on 401 unauthorized response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Unauthorized', 401))
+
+    await expect(createWorkOSApiKey('sk_bad', { name: 'Test' })).rejects.toThrow('WorkOS create API key failed: 401')
+  })
+
+  it('throws on 500 server error', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Internal Server Error', 500))
+
+    await expect(createWorkOSApiKey('sk_platform', { name: 'Test' })).rejects.toThrow('WorkOS create API key failed: 500')
+  })
+
+  it('includes error body text in thrown error', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('{"error":"name_required"}', 422))
+
+    await expect(createWorkOSApiKey('sk_platform', { name: '' })).rejects.toThrow('name_required')
+  })
+})
+
+// ============================================================================
+// listWorkOSApiKeys
+// ============================================================================
+
+describe('listWorkOSApiKeys', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends GET to api.workos.com/api_keys with correct auth', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listWorkOSApiKeys('sk_platform_secret')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toContain('https://api.workos.com/api_keys')
+    expect(options.headers['Authorization']).toBe('Bearer sk_platform_secret')
+  })
+
+  it('includes limit=100 query parameter', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listWorkOSApiKeys('sk_platform')
+
+    const [url] = mockFetch.mock.calls[0]
+    const parsed = new URL(url)
+    expect(parsed.searchParams.get('limit')).toBe('100')
+  })
+
+  it('includes organization_id when provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listWorkOSApiKeys('sk_platform', 'org_123')
+
+    const [url] = mockFetch.mock.calls[0]
+    const parsed = new URL(url)
+    expect(parsed.searchParams.get('organization_id')).toBe('org_123')
+  })
+
+  it('does not include organization_id when not provided', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listWorkOSApiKeys('sk_platform')
+
+    const [url] = mockFetch.mock.calls[0]
+    const parsed = new URL(url)
+    expect(parsed.searchParams.has('organization_id')).toBe(false)
+  })
+
+  it('returns array of keys from data envelope', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: 'key_1', name: 'Key One', created_at: '2026-01-01T00:00:00Z' },
+          { id: 'key_2', name: 'Key Two', organization_id: 'org_abc', created_at: '2026-01-02T00:00:00Z', last_used_at: '2026-02-01T00:00:00Z' },
+        ],
+      }),
+    )
+
+    const keys = await listWorkOSApiKeys('sk_platform')
+
+    expect(keys).toHaveLength(2)
+    expect(keys[0].id).toBe('key_1')
+    expect(keys[0].name).toBe('Key One')
+    expect(keys[1].id).toBe('key_2')
+    expect(keys[1].organization_id).toBe('org_abc')
+    expect(keys[1].last_used_at).toBe('2026-02-01T00:00:00Z')
+  })
+
+  it('returns empty array when no keys exist', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    const keys = await listWorkOSApiKeys('sk_platform')
+
+    expect(keys).toEqual([])
+  })
+
+  it('throws on non-200 response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Forbidden', 403))
+
+    await expect(listWorkOSApiKeys('sk_bad')).rejects.toThrow('WorkOS list API keys failed: 403')
+  })
+
+  it('throws on 500 server error', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Internal Server Error', 500))
+
+    await expect(listWorkOSApiKeys('sk_platform')).rejects.toThrow('WorkOS list API keys failed: 500')
+  })
+})
+
+// ============================================================================
+// revokeWorkOSApiKey
+// ============================================================================
+
+describe('revokeWorkOSApiKey', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends DELETE to api.workos.com/api_keys/{keyId} with correct auth', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await revokeWorkOSApiKey('sk_platform_secret', 'key_abc123')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://api.workos.com/api_keys/key_abc123')
+    expect(options.method).toBe('DELETE')
+    expect(options.headers['Authorization']).toBe('Bearer sk_platform_secret')
+  })
+
+  it('returns true on 200 OK', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+
+    const result = await revokeWorkOSApiKey('sk_platform', 'key_1')
+
+    expect(result).toBe(true)
+  })
+
+  it('returns true on 204 No Content', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const result = await revokeWorkOSApiKey('sk_platform', 'key_1')
+
+    expect(result).toBe(true)
+  })
+
+  it('returns true on 404 Not Found (key already deleted)', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+
+    const result = await revokeWorkOSApiKey('sk_platform', 'key_nonexistent')
+
+    expect(result).toBe(true)
+  })
+
+  it('returns false on 403 Forbidden', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 403 }))
+
+    const result = await revokeWorkOSApiKey('sk_bad', 'key_1')
+
+    expect(result).toBe(false)
+  })
+
+  it('returns false on 500 Server Error', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 500 }))
+
+    const result = await revokeWorkOSApiKey('sk_platform', 'key_1')
+
+    expect(result).toBe(false)
+  })
+
+  it('includes the key ID in the URL path', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await revokeWorkOSApiKey('sk_platform', 'key_special_id_456')
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://api.workos.com/api_keys/key_special_id_456')
   })
 })

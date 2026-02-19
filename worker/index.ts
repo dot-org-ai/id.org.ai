@@ -38,6 +38,7 @@ import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
 import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
+import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
   generateCSRFToken,
   buildCSRFCookie,
@@ -87,13 +88,9 @@ type AuthUser = {
   metadata?: Record<string, unknown>
 }
 
-type VerifyResult =
-  | { valid: true; user: AuthUser; cached?: boolean }
-  | { valid: false; error: string }
+type VerifyResult = { valid: true; user: AuthUser; cached?: boolean } | { valid: false; error: string }
 
-type AuthRPCResult =
-  | { ok: true; user: AuthUser }
-  | { ok: false; status: number; error: string }
+type AuthRPCResult = { ok: true; user: AuthUser } | { ok: false; status: number; error: string }
 
 // ── Token Cache Helpers ─────────────────────────────────────────────────
 // Uses Cloudflare Cache API to cache verified tokens for 5 minutes.
@@ -379,7 +376,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         email: payload.email as string | undefined,
         name: payload.name as string | undefined,
         image: payload.image as string | undefined,
-        organizationId: (payload.org_id as string | undefined),
+        organizationId: payload.org_id as string | undefined,
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         metadata: payload.metadata as Record<string, unknown> | undefined,
@@ -418,7 +415,11 @@ export class AuthService extends WorkerEntrypoint<Env> {
         const isAdmin = roles?.includes('admin') || rawPerms?.some((p) => p.startsWith('admin:'))
         const permissions = isAdmin
           ? ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim', ...(rawPerms || [])]
-          : [...(rawPerms || []), ...(rawPerms?.some((p) => p.includes(':write')) ? ['write'] : []), ...(rawPerms?.some((p) => p.includes(':read')) ? ['read'] : [])]
+          : [
+              ...(rawPerms || []),
+              ...(rawPerms?.some((p) => p.includes(':write')) ? ['write'] : []),
+              ...(rawPerms?.some((p) => p.includes(':read')) ? ['read'] : []),
+            ]
 
         return {
           id: payload.sub || '',
@@ -483,7 +484,9 @@ function extractApiKey(request: Request): string | null {
     const url = new URL(request.url)
     const keyParam = url.searchParams.get('api_key')
     if (keyParam && isApiKeyPrefix(keyParam)) return keyParam
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return null
 }
 
@@ -531,15 +534,18 @@ async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<s
 // Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
 // The origin callback dynamically checks against the allowlist.
 
-app.use('*', cors({
-  origin: (origin) => {
-    if (!origin) return origin
-    return isAllowedOrigin(origin) ? origin : ''
-  },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-  credentials: true,
-}))
+app.use(
+  '*',
+  cors({
+    origin: (origin) => {
+      if (!origin) return origin
+      return isAllowedOrigin(origin) ? origin : ''
+    },
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+    credentials: true,
+  }),
+)
 
 // ── Origin Validation for Mutating Requests ──────────────────────────────
 // Validates Origin header on POST/PUT/DELETE to prevent cross-origin attacks
@@ -572,11 +578,13 @@ app.use('*', async (c, next) => {
 
 // ── Health (no auth required) ─────────────────────────────────────────────
 
-app.get('/health', (c) => c.json({
-  status: 'ok',
-  service: 'id.org.ai',
-  tagline: 'Humans. Agents. Identity.',
-}))
+app.get('/health', (c) =>
+  c.json({
+    status: 'ok',
+    service: 'id.org.ai',
+    tagline: 'Humans. Agents. Identity.',
+  }),
+)
 
 // ── OIDC Discovery (no auth required) ─────────────────────────────────────
 
@@ -714,14 +722,7 @@ app.get('/callback', async (c) => {
   // Build redirect response with auth cookie
   const continueUrl = decoded.continue || '/'
   const isSecure = new URL(c.req.url).protocol === 'https:'
-  const cookieFlags = [
-    `auth=${jwt}`,
-    'HttpOnly',
-    'Path=/',
-    `SameSite=Lax`,
-    `Max-Age=3600`,
-    ...(isSecure ? ['Secure'] : []),
-  ].join('; ')
+  const cookieFlags = [`auth=${jwt}`, 'HttpOnly', 'Path=/', `SameSite=Lax`, `Max-Age=3600`, ...(isSecure ? ['Secure'] : [])].join('; ')
 
   return new Response(null, {
     status: 302,
@@ -737,14 +738,7 @@ app.get('/callback', async (c) => {
 app.get('/logout', (c) => {
   const returnUrl = c.req.query('return_url') || '/'
   const isSecure = new URL(c.req.url).protocol === 'https:'
-  const clearCookie = [
-    'auth=',
-    'HttpOnly',
-    'Path=/',
-    'SameSite=Lax',
-    'Max-Age=0',
-    ...(isSecure ? ['Secure'] : []),
-  ].join('; ')
+  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : [])].join('; ')
 
   return new Response(null, {
     status: 302,
@@ -757,14 +751,7 @@ app.get('/logout', (c) => {
 
 app.post('/logout', (c) => {
   const isSecure = new URL(c.req.url).protocol === 'https:'
-  const clearCookie = [
-    'auth=',
-    'HttpOnly',
-    'Path=/',
-    'SameSite=Lax',
-    'Max-Age=0',
-    ...(isSecure ? ['Secure'] : []),
-  ].join('; ')
+  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : [])].join('; ')
 
   return c.json({ ok: true }, 200, { 'Set-Cookie': clearCookie })
 })
@@ -777,7 +764,7 @@ app.post('/validate-api-key', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
-  const body = await c.req.json().catch(() => ({})) as { api_key?: string }
+  const body = (await c.req.json().catch(() => ({}))) as { api_key?: string }
   if (!body.api_key) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'api_key is required')
   }
@@ -867,17 +854,20 @@ app.post('/mcp', async (c) => {
       })
     }
 
-    return c.json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Rate limit exceeded',
-        data: meta,
+    return c.json(
+      {
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Rate limit exceeded',
+          data: meta,
+        },
       },
-    }, 429)
+      429,
+    )
   }
 
-  const body = await c.req.json() as { method?: string; params?: any; id?: string | number }
+  const body = (await c.req.json()) as { method?: string; params?: any; id?: string | number }
 
   // Handle MCP initialize
   if (body.method === 'initialize') {
@@ -917,28 +907,34 @@ app.post('/mcp', async (c) => {
     const requiredLevel = toolLevelMap[toolName] ?? 0
 
     if (requiredLevel > auth.level) {
-      return c.json({
-        jsonrpc: '2.0',
-        id: body.id,
-        error: {
-          code: -32601,
-          message: `Tool "${toolName}" requires Level ${requiredLevel}+ authentication`,
-          data: { ...meta, requiredLevel, currentLevel: auth.level },
+      return c.json(
+        {
+          jsonrpc: '2.0',
+          id: body.id,
+          error: {
+            code: -32601,
+            message: `Tool "${toolName}" requires Level ${requiredLevel}+ authentication`,
+            data: { ...meta, requiredLevel, currentLevel: auth.level },
+          },
         },
-      }, 403)
+        403,
+      )
     }
 
     // L1+ tools require a DO stub (authenticated identity)
     if (requiredLevel >= 1 && !stub) {
-      return c.json({
-        jsonrpc: '2.0',
-        id: body.id,
-        error: {
-          code: -32601,
-          message: `Tool "${toolName}" requires authentication`,
-          data: meta,
+      return c.json(
+        {
+          jsonrpc: '2.0',
+          id: body.id,
+          error: {
+            code: -32601,
+            message: `Tool "${toolName}" requires authentication`,
+            data: meta,
+          },
         },
-      }, 401)
+        401,
+      )
     }
 
     // For L0 tools without a stub, pass a null-safe stub
@@ -955,11 +951,14 @@ app.post('/mcp', async (c) => {
     })
   }
 
-  return c.json({
-    jsonrpc: '2.0',
-    id: body.id,
-    error: { code: -32601, message: 'Method not found', data: meta },
-  }, 404)
+  return c.json(
+    {
+      jsonrpc: '2.0',
+      id: body.id,
+      error: { code: -32601, message: 'Method not found', data: meta },
+    },
+    404,
+  )
 })
 
 // ── Provision Endpoint ────────────────────────────────────────────────────
@@ -998,17 +997,9 @@ app.post('/api/provision', async (c) => {
 
     // Write KV mappings so future requests can route to this shard.
     // Session token → identityId (24h TTL matches session TTL)
-    await c.env.SESSIONS.put(
-      `session:${data.sessionToken}`,
-      data.identity.id,
-      { expirationTtl: 86400 },
-    )
+    await c.env.SESSIONS.put(`session:${data.sessionToken}`, data.identity.id, { expirationTtl: 86400 })
     // Claim token → identityId (30 days — claim window)
-    await c.env.SESSIONS.put(
-      `claim:${data.claimToken}`,
-      data.identity.id,
-      { expirationTtl: 2592000 },
-    )
+    await c.env.SESSIONS.put(`claim:${data.claimToken}`, data.identity.id, { expirationTtl: 2592000 })
 
     // Audit: identity provisioned
     await logAuditEvent(stub, {
@@ -1082,7 +1073,8 @@ app.post('/api/freeze', async (c) => {
 })
 
 // ── API Key Management Endpoints ─────────────────────────────────────────
-// CRUD for hly_sk_ API keys. Requires authenticated session (L1+).
+// CRUD for API keys. Prefers WorkOS API keys when WORKOS_API_KEY is configured,
+// falls back to custom hly_sk_* keys for tenants without WorkOS. Requires L1+.
 
 app.post('/api/keys', async (c) => {
   const auth = c.get('auth')
@@ -1095,7 +1087,7 @@ app.post('/api/keys', async (c) => {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
 
-  const body = await c.req.json().catch(() => ({})) as {
+  const body = (await c.req.json().catch(() => ({}))) as {
     name?: string
     scopes?: string[]
     expiresAt?: string
@@ -1105,6 +1097,21 @@ app.post('/api/keys', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
   }
 
+  // Use WorkOS API keys when configured — WorkOS handles generation, rotation, validation
+  if (c.env.WORKOS_API_KEY) {
+    try {
+      const result = await createWorkOSApiKey(c.env.WORKOS_API_KEY, {
+        name: body.name,
+        permissions: body.scopes,
+        expiresAt: body.expiresAt,
+      })
+      return c.json({ id: result.id, key: result.key, name: result.name }, 201)
+    } catch (err: any) {
+      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    }
+  }
+
+  // Fallback to custom hly_sk_* keys for tenants without WorkOS
   try {
     const result = await stub.createApiKey({
       name: body.name,
@@ -1137,6 +1144,24 @@ app.get('/api/keys', async (c) => {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
 
+  // Use WorkOS API keys when configured
+  if (c.env.WORKOS_API_KEY) {
+    try {
+      const workosKeys = await listWorkOSApiKeys(c.env.WORKOS_API_KEY)
+      const keys = workosKeys.map((k) => ({
+        id: k.id,
+        name: k.name,
+        organization_id: k.organization_id,
+        created_at: k.created_at,
+        last_used_at: k.last_used_at,
+      }))
+      return c.json({ keys })
+    } catch (err: any) {
+      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    }
+  }
+
+  // Fallback to custom hly_sk_* keys
   try {
     const keys = await stub.listApiKeys(auth.identityId)
     return c.json({ keys })
@@ -1158,6 +1183,20 @@ app.delete('/api/keys/:id', async (c) => {
 
   const keyId = c.req.param('id')
 
+  // Use WorkOS API keys when configured
+  if (c.env.WORKOS_API_KEY) {
+    try {
+      const revoked = await revokeWorkOSApiKey(c.env.WORKOS_API_KEY, keyId)
+      if (!revoked) {
+        return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to revoke WorkOS API key')
+      }
+      return c.json({ id: keyId, status: 'revoked', revokedAt: new Date().toISOString() })
+    } catch (err: any) {
+      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    }
+  }
+
+  // Fallback to custom hly_sk_* keys
   try {
     const result = await stub.revokeApiKey(keyId, auth.identityId)
     if (!result) {
@@ -1270,7 +1309,7 @@ app.post('/oauth/register', async (c) => {
 // On POST (consent submission): validate the CSRF token from cookie + form body.
 app.get('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
-  const identityId = auth?.authenticated ? auth.identityId ?? null : null
+  const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
 
   // Generate CSRF token for the consent form
   const oauthStub = getStubForIdentity(c.env, 'oauth')
@@ -1319,7 +1358,7 @@ app.post('/oauth/authorize', async (c) => {
   const contentType = c.req.raw.headers.get('content-type') || ''
   let formState: string | undefined
   if (contentType.includes('application/json')) {
-    const body = await clonedRequest.json() as Record<string, string>
+    const body = (await clonedRequest.json()) as Record<string, string>
     formState = body.state
   } else {
     const form = await clonedRequest.formData()
@@ -1383,7 +1422,7 @@ app.post('/oauth/device', async (c) => {
 // Device Verification (browser-side)
 app.all('/device', async (c) => {
   const auth = c.get('auth')
-  const identityId = auth?.authenticated ? auth.identityId ?? null : null
+  const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
   const provider = getOAuthProvider(c)
   return provider.handleDeviceVerification(c.req.raw, identityId)
 })
@@ -1463,7 +1502,7 @@ app.post('/webhook/github', async (c) => {
   })
 
   // Verify webhook signature
-  if (!await githubApp.verifySignature(body, signature ?? '')) {
+  if (!(await githubApp.verifySignature(body, signature ?? ''))) {
     return errorResponse(c, 401, ErrorCode.InvalidSignature, 'Webhook signature verification failed')
   }
 
@@ -1553,9 +1592,7 @@ async function handlePushWithSharding(
 }> {
   // Check if any commit touches the headlessly workflow
   const WORKFLOW_PATH = '.github/workflows/headlessly.yml'
-  const touchedWorkflow = push.commits.some(
-    (c) => c.added.includes(WORKFLOW_PATH) || c.modified.includes(WORKFLOW_PATH),
-  )
+  const touchedWorkflow = push.commits.some((c) => c.added.includes(WORKFLOW_PATH) || c.modified.includes(WORKFLOW_PATH))
 
   if (!touchedWorkflow) {
     return { claimed: false }
@@ -1570,11 +1607,7 @@ async function handlePushWithSharding(
   // Fetch the workflow file to extract the claim token
   let yamlContent: string | null = null
   try {
-    yamlContent = await githubApp.fetchWorkflowContent(
-      push.repository.full_name,
-      push.ref,
-      push.installation.id,
-    )
+    yamlContent = await githubApp.fetchWorkflowContent(push.repository.full_name, push.ref, push.installation.id)
   } catch (err: any) {
     return { claimed: false, branch, error: `fetch_workflow_failed: ${err.message}` }
   }
@@ -1690,23 +1723,55 @@ async function logAuditEvent(
  * a stub but never call write methods.
  */
 const nullStub: IdentityStub = {
-  async getIdentity() { return null },
-  async provisionAnonymous() { throw new Error('Not available at L0') },
-  async claim() { return { success: false, error: 'Not available at L0' } },
-  async getSession() { return { valid: false } },
-  async validateApiKey() { return { valid: false } },
-  async createApiKey() { throw new Error('Not available at L0') },
-  async listApiKeys() { return [] },
-  async revokeApiKey() { return null },
-  async checkRateLimit() { return { allowed: true, remaining: 30, resetAt: Date.now() + 60_000 } },
-  async verifyClaimToken() { return { valid: false } },
-  async freezeIdentity() { throw new Error('Not available at L0') },
-  async mcpSearch() { return { results: [], total: 0, limit: 20, offset: 0 } },
-  async mcpFetch() { return { type: '', data: null } },
-  async mcpDo() { return { success: false, entity: '', verb: '', error: 'Not available at L0' } },
-  async oauthStorageOp() { return {} },
+  async getIdentity() {
+    return null
+  },
+  async provisionAnonymous() {
+    throw new Error('Not available at L0')
+  },
+  async claim() {
+    return { success: false, error: 'Not available at L0' }
+  },
+  async getSession() {
+    return { valid: false }
+  },
+  async validateApiKey() {
+    return { valid: false }
+  },
+  async createApiKey() {
+    throw new Error('Not available at L0')
+  },
+  async listApiKeys() {
+    return []
+  },
+  async revokeApiKey() {
+    return null
+  },
+  async checkRateLimit() {
+    return { allowed: true, remaining: 30, resetAt: Date.now() + 60_000 }
+  },
+  async verifyClaimToken() {
+    return { valid: false }
+  },
+  async freezeIdentity() {
+    throw new Error('Not available at L0')
+  },
+  async mcpSearch() {
+    return { results: [], total: 0, limit: 20, offset: 0 }
+  },
+  async mcpFetch() {
+    return { type: '', data: null }
+  },
+  async mcpDo() {
+    return { success: false, entity: '', verb: '', error: 'Not available at L0' }
+  },
+  async oauthStorageOp() {
+    return {}
+  },
   async writeAuditEvent() {},
-  async queryAuditLog() { return { events: [], hasMore: false } },
+  async queryAuditLog() {
+    return { events: [], hasMore: false }
+  },
 }
 
 // ============================================================================
@@ -1731,7 +1796,11 @@ function buildToolList(auth: MCPAuthResult): Array<{ name: string; description: 
       type: 'object',
       properties: {
         type: { type: 'string', description: 'Specific entity type to explore (e.g. Contact, Deal, Subscription). Omit for full system overview.' },
-        depth: { type: 'string', enum: ['summary', 'full'], description: 'Detail level: summary (names + verbs) or full (complete schemas with field types). Default: summary' },
+        depth: {
+          type: 'string',
+          enum: ['summary', 'full'],
+          description: 'Detail level: summary (names + verbs) or full (complete schemas with field types). Default: summary',
+        },
       },
     },
   })
@@ -1770,7 +1839,8 @@ function buildToolList(auth: MCPAuthResult): Array<{ name: string; description: 
   if (auth.level >= 1) {
     tools.push({
       name: 'try',
-      description: 'Execute-with-rollback. Run a sequence of operations and see the results WITHOUT persisting anything. Shows what would happen: entities created, events emitted, side effects triggered.',
+      description:
+        'Execute-with-rollback. Run a sequence of operations and see the results WITHOUT persisting anything. Shows what would happen: entities created, events emitted, side effects triggered.',
       inputSchema: {
         type: 'object',
         properties: {
