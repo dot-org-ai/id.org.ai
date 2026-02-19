@@ -18,3 +18,17 @@ export {
   getAdminPortalUrl,
 } from './scim'
 export type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from './scim'
+export {
+  FGA_RESOURCE_TYPES,
+  createWarrant,
+  deleteWarrant,
+  checkPermission,
+  batchCheck,
+  registerResource,
+  shareResource,
+  unshareResource,
+  listAccessible,
+  defineResourceTypes,
+  entityTypeToFGA,
+} from './fga'
+export type { FGAResourceType, FGARelation, FGAWarrant, FGACheckRequest } from './fga'

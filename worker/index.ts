@@ -53,6 +53,16 @@ import {
 } from '../src/workos/scim'
 import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '../src/workos/scim'
 import {
+  FGA_RESOURCE_TYPES,
+  defineResourceTypes,
+  checkPermission,
+  shareResource,
+  unshareResource,
+  listAccessible,
+  entityTypeToFGA,
+} from '../src/workos/fga'
+import type { FGACheckRequest, FGARelation } from '../src/workos/fga'
+import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
@@ -1598,6 +1608,57 @@ app.get('/admin-portal', async (c) => {
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.ServerError, err.message)
   }
+})
+
+// ── FGA (Fine-Grained Authorization) Endpoints ──────────────────────────────
+// Entity-level authorization using WorkOS FGA (Zanzibar-style).
+// Manages resource types, permission checks, and cross-tenant sharing.
+
+// POST /fga/setup — Initialize FGA resource types (admin only, run once)
+app.post('/fga/setup', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  await defineResourceTypes(c.env.WORKOS_API_KEY)
+  return c.json({ ok: true, resourceTypes: FGA_RESOURCE_TYPES.length })
+})
+
+// POST /fga/check — Check a permission
+app.post('/fga/check', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = (await c.req.json()) as FGACheckRequest
+  const authorized = await checkPermission(c.env.WORKOS_API_KEY, body)
+  return c.json({ authorized })
+})
+
+// POST /fga/share — Share a resource cross-tenant
+app.post('/fga/share', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
+  const fgaType = entityTypeToFGA(body.resourceType)
+  if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
+  await shareResource(c.env.WORKOS_API_KEY, fgaType, body.resourceId, body.targetTenant, (body.relation as FGARelation) || 'viewer')
+  return c.json({ ok: true })
+})
+
+// DELETE /fga/share — Revoke cross-tenant sharing
+app.delete('/fga/share', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
+  const fgaType = entityTypeToFGA(body.resourceType)
+  if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
+  await unshareResource(c.env.WORKOS_API_KEY, fgaType, body.resourceId, body.targetTenant, (body.relation as FGARelation) || 'viewer')
+  return c.json({ ok: true })
+})
+
+// GET /fga/accessible — List resources accessible by a user
+app.get('/fga/accessible', async (c) => {
+  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const resourceType = c.req.query('type')
+  const userId = c.req.query('user')
+  if (!resourceType || !userId) return c.json({ error: 'type and user query params required' }, 400)
+  const fgaType = entityTypeToFGA(resourceType)
+  if (!fgaType) return c.json({ error: `Unknown resource type: ${resourceType}` }, 400)
+  const resources = await listAccessible(c.env.WORKOS_API_KEY, fgaType, userId)
+  return c.json({ resources })
 })
 
 // ── GitHub webhook endpoint ───────────────────────────────────────────────
