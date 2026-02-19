@@ -695,7 +695,7 @@ app.get('/.well-known/openid-configuration', (c) => {
 
 app.get('/.well-known/jwks.json', async (c) => {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
-  const manager = new SigningKeyManager(oauthStub.oauthStorageOp.bind(oauthStub))
+  const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
   const jwks = await manager.getJWKS()
   return c.json(jwks, 200, {
     'Cache-Control': 'public, max-age=3600',
@@ -802,7 +802,7 @@ app.get('/callback', async (c) => {
   }
 
   // Sign our own JWT for the auth cookie
-  const signingManager = new SigningKeyManager(oauthStub.oauthStorageOp.bind(oauthStub))
+  const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
   const jwt = await signingManager.sign(
     {
       sub: shardKey,
