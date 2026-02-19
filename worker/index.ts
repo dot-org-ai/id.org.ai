@@ -40,6 +40,19 @@ import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginSt
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
+  ensureSCIMTables,
+  handleDSyncUserCreated,
+  handleDSyncUserUpdated,
+  handleDSyncUserDeleted,
+  handleDSyncGroupCreated,
+  handleDSyncGroupUpdated,
+  handleDSyncGroupDeleted,
+  handleDSyncGroupUserAdded,
+  handleDSyncGroupUserRemoved,
+  getAdminPortalUrl,
+} from '../src/workos/scim'
+import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '../src/workos/scim'
+import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
@@ -57,11 +70,13 @@ export { IdentityDO }
 interface Env {
   IDENTITY: DurableObjectNamespace
   SESSIONS: KVNamespace
+  DB: D1Database
   AUTH_SECRET: string
   JWKS_SECRET: string
   WORKOS_CLIENT_ID?: string
   WORKOS_API_KEY?: string
   WORKOS_COOKIE_PASSWORD?: string
+  WORKOS_WEBHOOK_SECRET?: string
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
@@ -1482,6 +1497,109 @@ app.get('/claim/:token', async (c) => {
   })
 })
 
+// ── WorkOS Directory Sync Webhooks ────────────────────────────────────────
+// POST /webhooks/workos — receive WorkOS Directory Sync (SCIM) events.
+// No auth middleware — WorkOS authenticates via webhook signature.
+
+app.post('/webhooks/workos', async (c) => {
+  const rawBody = await c.req.text()
+  let body: DSyncEvent
+
+  try {
+    body = JSON.parse(rawBody) as DSyncEvent
+  } catch {
+    return c.json({ error: 'Invalid JSON payload' }, 400)
+  }
+
+  if (!body.event || !body.data) {
+    return c.json({ error: 'Invalid webhook payload' }, 400)
+  }
+
+  // Verify webhook signature when WORKOS_WEBHOOK_SECRET is configured.
+  // WorkOS signs webhooks with HMAC-SHA256 using the webhook signing secret.
+  if (c.env.WORKOS_WEBHOOK_SECRET) {
+    const signature = c.req.header('workos-signature')
+    if (!signature) {
+      return c.json({ error: 'Missing webhook signature' }, 401)
+    }
+
+    const isValid = await verifyWorkOSWebhookSignature(
+      rawBody,
+      signature,
+      c.env.WORKOS_WEBHOOK_SECRET,
+    )
+    if (!isValid) {
+      return c.json({ error: 'Invalid webhook signature' }, 401)
+    }
+  }
+
+  try {
+    await ensureSCIMTables(c.env.DB)
+
+    switch (body.event) {
+      case 'dsync.user.created': {
+        const result = await handleDSyncUserCreated(body.data as DSyncUser, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.user.updated': {
+        const result = await handleDSyncUserUpdated(body.data as DSyncUser, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.user.deleted': {
+        const result = await handleDSyncUserDeleted(body.data as DSyncUser, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.group.created': {
+        const result = await handleDSyncGroupCreated(body.data as DSyncGroup, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.group.updated': {
+        const result = await handleDSyncGroupUpdated(body.data as DSyncGroup, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.group.deleted': {
+        const result = await handleDSyncGroupDeleted(body.data as DSyncGroup, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.group.user_added': {
+        const result = await handleDSyncGroupUserAdded(body.data as DSyncGroupMembership, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      case 'dsync.group.user_removed': {
+        const result = await handleDSyncGroupUserRemoved(body.data as DSyncGroupMembership, c.env.DB)
+        return c.json({ ok: true, ...result })
+      }
+      default:
+        return c.json({ ok: true, skipped: true, event: body.event })
+    }
+  } catch (err: any) {
+    console.error(`[webhooks/workos] Error handling ${body.event}:`, err)
+    return c.json({ error: 'Internal error processing webhook' }, 500)
+  }
+})
+
+// ── WorkOS Admin Portal ──────────────────────────────────────────────────
+// GET /admin-portal — Generate a WorkOS Admin Portal link for SCIM/SSO setup.
+// Enterprise IT admins use this to self-service their directory connection.
+
+app.get('/admin-portal', async (c) => {
+  const orgId = c.req.query('organization_id')
+  if (!orgId) {
+    return c.json({ error: 'organization_id query param required' }, 400)
+  }
+
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  try {
+    const result = await getAdminPortalUrl(orgId, c.env.WORKOS_API_KEY)
+    return c.json(result)
+  } catch (err: any) {
+    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  }
+})
+
 // ── GitHub webhook endpoint ───────────────────────────────────────────────
 
 app.post('/webhook/github', async (c) => {
@@ -1772,6 +1890,67 @@ const nullStub: IdentityStub = {
   async queryAuditLog() {
     return { events: [], hasMore: false }
   },
+}
+
+// ============================================================================
+// WorkOS Webhook Signature Verification
+// ============================================================================
+
+/**
+ * Verify a WorkOS webhook signature.
+ *
+ * WorkOS sends a `workos-signature` header containing a timestamp and
+ * HMAC-SHA256 signature. Format: `t={timestamp}, v1={signature}`
+ *
+ * Verification:
+ *   1. Parse the timestamp and signature from the header
+ *   2. Build the signed payload: `{timestamp}.{body}`
+ *   3. Compute HMAC-SHA256 with the webhook secret
+ *   4. Compare signatures in constant time
+ */
+async function verifyWorkOSWebhookSignature(
+  body: string,
+  signatureHeader: string,
+  secret: string,
+): Promise<boolean> {
+  try {
+    // Parse "t={timestamp}, v1={signature}" format
+    const parts: Record<string, string> = {}
+    for (const part of signatureHeader.split(',')) {
+      const [key, ...valueParts] = part.trim().split('=')
+      if (key && valueParts.length) {
+        parts[key.trim()] = valueParts.join('=').trim()
+      }
+    }
+
+    const timestamp = parts['t']
+    const expectedSig = parts['v1']
+    if (!timestamp || !expectedSig) return false
+
+    // Build the signed payload: "{timestamp}.{body}"
+    const signedPayload = `${timestamp}.${body}`
+
+    const encoder = new TextEncoder()
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    )
+    const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signedPayload))
+    const computedSig = Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('')
+
+    // Constant-time comparison
+    if (computedSig.length !== expectedSig.length) return false
+    let mismatch = 0
+    for (let i = 0; i < computedSig.length; i++) {
+      mismatch |= computedSig.charCodeAt(i) ^ expectedSig.charCodeAt(i)
+    }
+    return mismatch === 0
+  } catch {
+    return false
+  }
 }
 
 // ============================================================================
