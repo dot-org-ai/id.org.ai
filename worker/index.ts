@@ -159,7 +159,7 @@ function parseCookieValue(cookieHeader: string, name: string): string | null {
 
 // ── JWKS Cache ──────────────────────────────────────────────────────────
 // Module-level cache for JWKS verifiers (persists across requests within isolate)
-// Supports our own JWKS, WorkOS JWKS, and oauth.do (auth.apis.do) JWKS.
+// Supports our own JWKS and WorkOS JWKS (which also verifies oauth.do-issued JWTs).
 
 const jwksCache = new Map<string, { verifier: jose.JWTVerifyGetKey; expiry: number }>()
 
@@ -183,7 +183,7 @@ function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
 //   1. ses_* session tokens → KV + IdentityDO validation
 //   2. oai_*/hly_sk_* API keys → KV + IdentityDO validation
 //   3. sk_* WorkOS API keys → validated against WorkOS API
-//   4. JWTs → verified against id.org.ai JWKS, then oauth.do (auth.apis.do) JWKS, then WorkOS JWKS
+//   4. JWTs → verified against id.org.ai JWKS, then WorkOS JWKS (also covers oauth.do-issued JWTs)
 
 export class AuthService extends WorkerEntrypoint<Env> {
   // ── verifyToken ─────────────────────────────────────────────────────
@@ -256,16 +256,11 @@ export class AuthService extends WorkerEntrypoint<Env> {
     }
 
     // JWT — try our own JWKS first (login flow JWTs), then WorkOS JWKS
+    // WorkOS JWKS also covers oauth.do-issued JWTs (signed with WorkOS keys)
     const ownUser = await this.verifyOwnJWT(token)
     if (ownUser) {
       await cacheUser(token, ownUser)
       return { valid: true, user: ownUser }
-    }
-
-    const oauthDoUser = await this.verifyOAuthDoJWT(token)
-    if (oauthDoUser) {
-      await cacheUser(token, oauthDoUser)
-      return { valid: true, user: oauthDoUser }
     }
 
     const workosUser = await this.verifyWorkOSJWT(token)
@@ -367,9 +362,9 @@ export class AuthService extends WorkerEntrypoint<Env> {
   }
 
   // ── JWT Verification (private) ──────────────────────────────────────
-  // Verifies a JWT against our own JWKS first, then falls back to WorkOS.
-  // Our JWKS: JWTs issued by /callback (login flow) — signed by us
-  // WorkOS JWKS: JWTs issued directly by WorkOS AuthKit — SSO, social login
+  // Two-layer JWT verification:
+  //   1. Own JWKS: JWTs issued by /callback (login flow) — signed by us
+  //   2. WorkOS JWKS: JWTs issued by WorkOS AuthKit (SSO, social) OR oauth.do (auth.apis.do)
 
   private async verifyOwnJWT(token: string): Promise<AuthUser | null> {
     const ownJwksUri = 'https://id.org.ai/.well-known/jwks.json'
@@ -394,45 +389,11 @@ export class AuthService extends WorkerEntrypoint<Env> {
     }
   }
 
-  private async verifyOAuthDoJWT(token: string): Promise<AuthUser | null> {
-    // oauth.do (auth.apis.do) issues JWTs signed with WorkOS keys but with its own issuer.
-    // Verify against WorkOS JWKS with issuer constraint for auth.apis.do.
-    const clientId = this.env.WORKOS_CLIENT_ID
-    if (!clientId) return null
-
-    const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
-
-    try {
-      const jwks = getJwksVerifier(jwksUri)
-      const { payload } = await jose.jwtVerify(token, jwks, {
-        issuer: 'https://auth.apis.do',
-      })
-
-      // Normalize WorkOS scoped permissions (e.g. "admin:write") to platform permissions.
-      // oauth.do JWTs carry WorkOS-format permissions; downstream services expect simple ones.
-      const rawPerms = payload.permissions as string[] | undefined
-      const roles = payload.roles as string[] | undefined
-      const isAdmin = roles?.includes('admin') || rawPerms?.some((p) => p.startsWith('admin:'))
-      const permissions = isAdmin
-        ? ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim', ...(rawPerms || [])]
-        : [...(rawPerms || []), ...(rawPerms?.some((p) => p.includes(':write')) ? ['write'] : []), ...(rawPerms?.some((p) => p.includes(':read')) ? ['read'] : [])]
-
-      return {
-        id: payload.sub || '',
-        email: payload.email as string | undefined,
-        name: payload.name as string | undefined,
-        image: payload.picture as string | undefined,
-        organizationId: payload.org_id as string | undefined,
-        roles,
-        permissions,
-        metadata: payload.metadata as Record<string, unknown> | undefined,
-      }
-    } catch {
-      return null
-    }
-  }
-
   private async verifyWorkOSJWT(token: string): Promise<AuthUser | null> {
+    // Verifies JWTs signed with WorkOS keys. Accepts two types:
+    //   1. WorkOS-issued JWTs (aud === clientId) — SSO, social login
+    //   2. oauth.do-issued JWTs (iss === 'https://auth.apis.do') — signed with WorkOS keys
+    // Both are verified against the same WorkOS JWKS endpoint.
     const clientId = this.env.WORKOS_CLIENT_ID
     if (!clientId) return null
 
@@ -440,10 +401,38 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
     try {
       const jwks = getJwksVerifier(jwksUri)
-      const { payload } = await jose.jwtVerify(token, jwks, {
-        audience: clientId,
-      })
+      // Verify signature against WorkOS JWKS without audience/issuer constraints,
+      // then check either aud === clientId OR iss === 'https://auth.apis.do'
+      const { payload } = await jose.jwtVerify(token, jwks)
 
+      const isWorkOSIssued = payload.aud === clientId || (Array.isArray(payload.aud) && payload.aud.includes(clientId))
+      const isOAuthDoIssued = payload.iss === 'https://auth.apis.do'
+
+      if (!isWorkOSIssued && !isOAuthDoIssued) return null
+
+      // For oauth.do-issued JWTs, normalize WorkOS scoped permissions
+      // (e.g. "admin:write") to platform permissions.
+      if (isOAuthDoIssued) {
+        const rawPerms = payload.permissions as string[] | undefined
+        const roles = payload.roles as string[] | undefined
+        const isAdmin = roles?.includes('admin') || rawPerms?.some((p) => p.startsWith('admin:'))
+        const permissions = isAdmin
+          ? ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim', ...(rawPerms || [])]
+          : [...(rawPerms || []), ...(rawPerms?.some((p) => p.includes(':write')) ? ['write'] : []), ...(rawPerms?.some((p) => p.includes(':read')) ? ['read'] : [])]
+
+        return {
+          id: payload.sub || '',
+          email: payload.email as string | undefined,
+          name: payload.name as string | undefined,
+          image: payload.picture as string | undefined,
+          organizationId: payload.org_id as string | undefined,
+          roles,
+          permissions,
+          metadata: payload.metadata as Record<string, unknown> | undefined,
+        }
+      }
+
+      // WorkOS-issued JWT — pass through permissions as-is
       return {
         id: payload.sub || '',
         email: payload.email as string | undefined,
