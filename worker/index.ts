@@ -457,10 +457,14 @@ export class AuthService extends WorkerEntrypoint<Env> {
   //   2. WorkOS JWKS: JWTs issued by WorkOS AuthKit (SSO, social) OR oauth.do (auth.apis.do)
 
   private async verifyOwnJWT(token: string): Promise<AuthUser | null> {
-    const ownJwksUri = 'https://auth.headless.ly/.well-known/jwks.json'
+    // Verify JWTs signed by us using keys from DO storage directly.
+    // No HTTP round-trip — avoids circular self-fetch to our own JWKS endpoint.
     try {
-      const jwks = getJwksVerifier(ownJwksUri)
-      const { payload } = await jose.jwtVerify(token, jwks, {
+      const oauthStub = this.env.IDENTITY.get(this.env.IDENTITY.idFromName('oauth')) as unknown as IdentityStub
+      const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+      const jwksData = await manager.getJWKS()
+      const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
+      const { payload } = await jose.jwtVerify(token, localJWKS, {
         issuer: 'https://id.org.ai',
       })
 
