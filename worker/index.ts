@@ -457,7 +457,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
   //   2. WorkOS JWKS: JWTs issued by WorkOS AuthKit (SSO, social) OR oauth.do (auth.apis.do)
 
   private async verifyOwnJWT(token: string): Promise<AuthUser | null> {
-    const ownJwksUri = 'https://id.org.ai/.well-known/jwks.json'
+    const ownJwksUri = 'https://auth.headless.ly/.well-known/jwks.json'
     try {
       const jwks = getJwksVerifier(ownJwksUri)
       const { payload } = await jose.jwtVerify(token, jwks, {
