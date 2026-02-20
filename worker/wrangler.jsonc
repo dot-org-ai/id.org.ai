@@ -33,6 +33,10 @@
       "binding": "SESSIONS",
       "id": "0cbef6babc164069bb771a236ee70733"
     }
+  ],
+
+  "tail_consumers": [
+    { "service": "tail" }
   ]
 
   // Secrets (set via wrangler secret):
