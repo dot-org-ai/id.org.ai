@@ -357,6 +357,13 @@ export class AuthService extends WorkerEntrypoint<Env> {
       return { valid: true, user: workosUser }
     }
 
+    // Try oauth.do JWKS (tokens issued by oauth.do with iss: 'https://oauth.do')
+    const oauthDoUser = await this.verifyOAuthDoJWT(token)
+    if (oauthDoUser) {
+      await cacheUser(token, oauthDoUser)
+      return { valid: true, user: oauthDoUser }
+    }
+
     // Cache negative result to prevent repeated verification of bad tokens
     await cacheNegativeResult(token)
     return { valid: false, error: 'Unrecognized token format. Use ses_* (session), oai_*/hly_sk_* (API key), sk_* (WorkOS key), or a JWT.' }
@@ -531,6 +538,32 @@ export class AuthService extends WorkerEntrypoint<Env> {
       }
 
       // WorkOS-issued JWT — pass through permissions as-is
+      return {
+        id: payload.sub || '',
+        email: payload.email as string | undefined,
+        name: payload.name as string | undefined,
+        image: payload.picture as string | undefined,
+        organizationId: payload.org_id as string | undefined,
+        roles: payload.roles as string[] | undefined,
+        permissions: payload.permissions as string[] | undefined,
+        metadata: payload.metadata as Record<string, unknown> | undefined,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  private async verifyOAuthDoJWT(token: string): Promise<AuthUser | null> {
+    // Verifies JWTs signed by oauth.do (iss: 'https://oauth.do')
+    // Uses oauth.do's JWKS endpoint to fetch the public key.
+    const jwksUri = 'https://oauth.do/.well-known/jwks.json'
+
+    try {
+      const jwks = getJwksVerifier(jwksUri)
+      const { payload } = await jose.jwtVerify(token, jwks, {
+        issuer: 'https://oauth.do',
+      })
+
       return {
         id: payload.sub || '',
         email: payload.email as string | undefined,
