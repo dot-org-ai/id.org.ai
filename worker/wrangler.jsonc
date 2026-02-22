@@ -36,7 +36,8 @@
   ],
 
   "tail_consumers": [
-    { "service": "tail" }
+    { "service": "tail" },
+    { "service": "headlessly-tail" }
   ]
 
   // Secrets (set via wrangler secret):
