@@ -30,6 +30,7 @@ export interface WorkOSAuthResult {
   refresh_token?: string
   expires_in?: number
   user: WorkOSUser
+  organization_id?: string
 }
 
 // ============================================================================
@@ -87,7 +88,7 @@ export async function exchangeWorkOSCode(
 
   const data = (await response.json()) as WorkOSAuthResult
 
-  // Extract roles/permissions from the WorkOS JWT access_token
+  // Extract roles/permissions/org_id from the WorkOS JWT access_token
   try {
     const parts = data.access_token.split('.')
     if (parts.length === 3) {
@@ -95,6 +96,7 @@ export async function exchangeWorkOSCode(
       const role = payload.role as string | undefined
       const roles = payload.roles as string[] | undefined
       const permissions = payload.permissions as string[] | undefined
+      const orgId = payload.org_id as string | undefined
 
       if (role) {
         data.user.role = role
@@ -105,9 +107,18 @@ export async function exchangeWorkOSCode(
       if (permissions) {
         data.user.permissions = permissions
       }
+      // org_id from JWT payload takes precedence over top-level organization_id
+      if (orgId) {
+        data.user.organization_id = orgId
+      }
     }
   } catch {
     // JWT decode failed — continue without roles
+  }
+
+  // Propagate top-level organization_id to user if not already set from JWT
+  if (data.organization_id && !data.user.organization_id) {
+    data.user.organization_id = data.organization_id
   }
 
   return data

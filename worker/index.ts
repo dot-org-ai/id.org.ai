@@ -798,7 +798,7 @@ app.get('/callback', async (c) => {
         level: 2,
         claimStatus: 'claimed',
         workosUserId: authResult.user.id,
-        organizationId: authResult.user.organization_id,
+        organizationId: authResult.user.organization_id || authResult.organization_id,
         createdAt: Date.now(),
       },
     })
@@ -809,10 +809,10 @@ app.get('/callback', async (c) => {
   const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
   const jwt = await signingManager.sign(
     {
-      sub: shardKey,
+      sub: authResult.user.id,
       email: authResult.user.email,
       name: [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ') || undefined,
-      org_id: authResult.user.organization_id,
+      org_id: authResult.user.organization_id || authResult.organization_id,
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
     },
