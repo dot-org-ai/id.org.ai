@@ -1,10 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Currently deployed as "auth" — consumed via:
-  //   AUTH service binding (entrypoint: AuthRPC) by apps/api, events.do, apis.do
-  //   AUTH_HTTP service binding (default fetch) by apps/api, events.do
-  // Phase 5 plan: rename to "oauth" — this is the full identity + OAuth 2.1 server.
-  // The lightweight verifier (.do/oauth/workers/auth/) will then become "auth".
+  // Full identity + OAuth 2.1 server. Stays as "auth" because it owns the public routes
+  // (auth.headless.ly, id.org.ai, etc.). Consumed via:
+  //   AUTH_HTTP service binding (default fetch) by apps/api, apis.do — for /login, /callback, /oauth/*, etc.
+  // The lightweight verifier (.do/oauth/workers/auth/ "auth-verifier") handles AUTH RPC bindings.
   "name": "auth",
   "main": "index.ts",
   "compatibility_date": "2025-01-01",
