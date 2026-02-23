@@ -72,8 +72,31 @@ export {
   isStringArray,
   isIntrospectionResponse,
 } from './guards'
-export type { StripeWebhookEvent, IntrospectionResponseShape } from './guards'
+export type { StripeWebhookEvent as StripeWebhookEventGuard, IntrospectionResponseShape } from './guards'
 
 // Dev helpers for testing (canonical, from @dotdo/oauth)
 export { createTestHelpers, generateLoginFormHtml } from './dev'
 export type { DevModeConfig, DevUser, TestHelpers } from './dev'
+
+// Stripe identity linkage (canonical, from @dotdo/oauth)
+export {
+  ensureStripeCustomer,
+  getStripeCustomer,
+  linkStripeCustomer,
+  handleStripeWebhook,
+  verifyStripeWebhook,
+  createStripeClient,
+  parseStripeSignature,
+  computeStripeSignature,
+  timingSafeEqual,
+  verifyStripeWebhookAsync,
+} from './stripe'
+export type {
+  StripeCustomer,
+  StripeSubscription,
+  StripeWebhookEventType,
+  StripeWebhookEvent,
+  StripeStorage,
+  OAuthUserWithStripe,
+  StripeClient,
+} from './stripe'

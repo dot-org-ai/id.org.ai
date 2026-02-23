@@ -12,6 +12,7 @@ export default {
       'test/oauth-guards.test.ts',
       'test/oauth-dev.test.ts',
       'test/oauth-server.test.ts',
+      'test/oauth-stripe.test.ts',
     ],
     globals: true,
   },
