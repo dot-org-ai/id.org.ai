@@ -24,8 +24,28 @@
  *   consent:{identityId}:{clientId} → ConsentRecord
  */
 
+
 // ============================================================================
 // Types
+// ============================================================================
+//
+// NOTE: These types are INTERNAL to the OAuthProvider class, used with its
+// StorageLike (Durable Object KV) storage backend. They differ from the
+// canonical types in ./types.ts which define the public API contract:
+//
+// Provider (internal)         | types.ts (canonical API)         | Key Differences
+// ─────────────────────────── | ──────────────────────────────── | ─────────────────────────────────
+// AuthorizationCode           | OAuthAuthorizationCode           | identityId vs userId, scopes[] vs scope string, mandatory codeChallenge, nonce
+// AccessToken                 | OAuthAccessToken                 | identityId vs userId, scopes[] vs scope string, no tokenType
+// RefreshToken                | OAuthRefreshToken                | scopes[] vs scope string, family for rotation tracking, non-optional revoked
+// DeviceCode                  | OAuthDeviceCode                  | status enum vs authorized/denied booleans, scopes[] vs scope string
+// ConsentRecord               | OAuthConsent                     | minimal (scopes+createdAt) vs full (userId, clientId, updatedAt)
+// IdentityInfo                | OAuthUser                        | minimal display info vs full user record with roles/permissions/metadata
+// StorageLike                 | OAuthStorage                     | raw KV (get/put/delete/list) vs typed methods (getUser, saveClient, etc.)
+//
+// The provider types are intentionally simpler — they map directly to
+// Durable Object KV entries. The canonical types provide a richer,
+// more ergonomic API surface for external consumers.
 // ============================================================================
 
 export interface OAuthConfig {
@@ -55,6 +75,7 @@ export interface OAuthProviderClient {
   createdAt: number
 }
 
+// Internal storage type — see OAuthAuthorizationCode in ./types.ts for canonical API type
 interface AuthorizationCode {
   id: string                   // ac_xxx
   clientId: string
@@ -69,6 +90,7 @@ interface AuthorizationCode {
   createdAt: number
 }
 
+// Internal storage type — see OAuthAccessToken in ./types.ts for canonical API type
 interface AccessToken {
   id: string                   // at_xxx
   clientId: string
@@ -78,6 +100,7 @@ interface AccessToken {
   createdAt: number
 }
 
+// Internal storage type — see OAuthRefreshToken in ./types.ts for canonical API type
 interface RefreshToken {
   id: string                   // rt_xxx
   clientId: string
@@ -89,6 +112,7 @@ interface RefreshToken {
   createdAt: number
 }
 
+// Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
 interface DeviceCode {
   id: string                   // dc_xxx
   clientId: string
@@ -101,11 +125,13 @@ interface DeviceCode {
   createdAt: number
 }
 
+// Internal storage type — see OAuthConsent in ./types.ts for canonical API type
 interface ConsentRecord {
   scopes: string[]
   createdAt: number
 }
 
+// Internal display type — see OAuthUser in ./types.ts for canonical API type
 interface IdentityInfo {
   id: string
   name?: string
@@ -115,6 +141,7 @@ interface IdentityInfo {
   image?: string
 }
 
+// Internal storage abstraction — see OAuthStorage in ./storage.ts for canonical API type
 type StorageLike = {
   get<T = unknown>(key: string): Promise<T | undefined>
   put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void>
