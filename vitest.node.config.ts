@@ -11,6 +11,7 @@ export default {
       'test/oauth-consent.test.ts',
       'test/oauth-guards.test.ts',
       'test/oauth-dev.test.ts',
+      'test/oauth-server.test.ts',
     ],
     globals: true,
   },
