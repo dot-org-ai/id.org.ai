@@ -733,8 +733,9 @@ app.get('/auth-config.json', (c) => {
     clientId: c.env.WORKOS_CLIENT_ID,
     redirectUri: c.env.REDIRECT_URI || `https://${host}/callback`,
     appName: c.env.APP_NAME || host.split('.')[0],
-    appTagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
-    onUnauthenticated: 'signIn',
+    tagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
+    onUnauthenticated: 'landing',
+    providers: ['github', 'google', 'microsoft'],
   })
 })
 
@@ -783,7 +784,11 @@ app.get('/login', async (c) => {
   })
 
   const redirectUri = new URL('/callback', c.req.url).origin + '/callback'
-  const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state)
+  // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
+  const provider = c.req.query('provider') || undefined
+  const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
+  const safeProvider = provider && VALID_PROVIDERS.includes(provider) ? provider : undefined
+  const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider)
   return c.redirect(authUrl, 302)
 })
 

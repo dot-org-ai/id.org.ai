@@ -43,14 +43,15 @@ export interface WorkOSAuthResult {
  * @param clientId - WorkOS client ID
  * @param redirectUri - Where WorkOS should redirect after auth (e.g. https://id.org.ai/callback)
  * @param state - Opaque state parameter (CSRF + continue URL)
+ * @param provider - WorkOS provider (e.g. 'GitHubOAuth', 'GoogleOAuth'). Defaults to 'authkit' (all methods)
  */
-export function buildWorkOSAuthUrl(clientId: string, redirectUri: string, state: string): string {
+export function buildWorkOSAuthUrl(clientId: string, redirectUri: string, state: string, provider?: string): string {
   const url = new URL('https://api.workos.com/user_management/authorize')
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('redirect_uri', redirectUri)
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('state', state)
-  url.searchParams.set('provider', 'authkit')
+  url.searchParams.set('provider', provider || 'authkit')
   return url.toString()
 }
 
