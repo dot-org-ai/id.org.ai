@@ -166,6 +166,41 @@ export function extractGitHubId(user: WorkOSUser): string | null {
 }
 
 // ============================================================================
+// Update WorkOS User (external_id, metadata)
+// ============================================================================
+
+/**
+ * Update a WorkOS user's external_id and/or metadata.
+ * Use this to persist the GitHub numeric ID on the WorkOS side so it's
+ * available in JWT templates ({{ user.external_id }}) and searchable
+ * in the WorkOS dashboard.
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID
+ * @param updates - Fields to update (external_id, metadata, etc.)
+ * @returns true if update succeeded
+ */
+export async function updateWorkOSUser(
+  apiKey: string,
+  userId: string,
+  updates: { external_id?: string; metadata?: Record<string, string> },
+): Promise<boolean> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(updates),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+// ============================================================================
 // State Encoding (CSRF + continue URL)
 // ============================================================================
 

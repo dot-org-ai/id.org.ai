@@ -36,7 +36,7 @@ import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, updateWorkOSUser, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -881,6 +881,17 @@ app.get('/callback', async (c) => {
 
   // Resolve GitHub ID: prefer identity record (from claim flow), then WorkOS profile
   const githubId = identity?.githubUserId || githubIdFromWorkOS || undefined
+
+  // Persist GitHub ID to WorkOS as external_id (makes it available in JWT templates
+  // and searchable in WorkOS dashboard). Fire-and-forget — don't block the login flow.
+  if (githubId) {
+    c.executionCtx.waitUntil(
+      updateWorkOSUser(apiKey, authResult.user.id, {
+        external_id: githubId,
+        metadata: { github_id: githubId },
+      }),
+    )
+  }
 
   // Sign our own JWT for the auth cookie
   const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
@@ -2184,6 +2195,18 @@ async function handlePushWithSharding(
         level: result.identity?.level,
       },
     })
+
+    // Persist GitHub ID to WorkOS as external_id (if identity has a WorkOS user ID)
+    if (env.WORKOS_API_KEY && result.identity) {
+      const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${identityId}` })
+      const workosUserId = (stored.value as any)?.workosUserId
+      if (workosUserId) {
+        updateWorkOSUser(env.WORKOS_API_KEY, workosUserId, {
+          external_id: String(push.sender.id),
+          metadata: { github_id: String(push.sender.id), github_username: push.sender.login },
+        }).catch(() => {}) // Best-effort, don't fail the claim
+      }
+    }
 
     return {
       claimed: true,
