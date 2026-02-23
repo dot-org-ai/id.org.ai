@@ -58,6 +58,7 @@
     "test:workers": "vitest run",
     "test:node": "vitest run --config vitest.node.config.ts",
     "test:watch": "vitest",
+    "test:e2e": "vitest run --config test-e2e/vitest.config.ts",
     "deploy": "cd worker && wrangler deploy",
     "deploy:auth": "cd workers/auth && wrangler deploy",
     "deploy:all": "cd worker && wrangler deploy && cd ../workers/auth && wrangler deploy",
@@ -71,6 +72,7 @@
     "open": "^10.1.0"
   },
   "devDependencies": {
+    "playwright": "^1.50.0",
     "@cloudflare/vitest-pool-workers": "^0.12.12",
     "@cloudflare/workers-types": "^4.20250109.0",
     "@types/node": "^22.0.0",
