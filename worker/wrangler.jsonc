@@ -12,11 +12,21 @@
 
   "workers_dev": true,
 
+  // Static assets — serve prebuilt @mdxui/auth SPA (API keys, profile, sessions)
+  "assets": {
+    "directory": "../node_modules/@mdxui/auth/app",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+
   "vars": {
     "WORKOS_CLIENT_ID": "client_01JQYTRXK9ZPD8JPJTKDCRB656"
   },
 
   "routes": [
+    { "pattern": "oauth.do/*", "zone_name": "oauth.do" },
     { "pattern": "auth.headless.ly/*", "zone_name": "workers.do" },
     { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
     { "pattern": "api.id.org.ai/*", "zone_name": "workers.do" },

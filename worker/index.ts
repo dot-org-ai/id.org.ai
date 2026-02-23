@@ -103,6 +103,7 @@ interface Env {
   IDENTITY: DurableObjectNamespace
   SESSIONS: KVNamespace
   DB?: D1Database
+  ASSETS?: Fetcher
   AUTH_SECRET: string
   JWKS_SECRET: string
   WORKOS_CLIENT_ID?: string
@@ -112,6 +113,10 @@ interface Env {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
+  // Branding for @mdxui/auth SPA
+  APP_NAME?: string
+  APP_TAGLINE?: string
+  REDIRECT_URI?: string
 }
 
 type Variables = {
@@ -719,6 +724,19 @@ app.get('/health', (c) =>
     tagline: 'Humans. Agents. Identity.',
   }),
 )
+
+// ── Auth Config for @mdxui/auth SPA (no auth required) ───────────────────
+
+app.get('/auth-config.json', (c) => {
+  const host = c.req.header('host') || 'id.org.ai'
+  return c.json({
+    clientId: c.env.WORKOS_CLIENT_ID,
+    redirectUri: c.env.REDIRECT_URI || `https://${host}/callback`,
+    appName: c.env.APP_NAME || host.split('.')[0],
+    appTagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
+    onUnauthenticated: 'signIn',
+  })
+})
 
 // ── OIDC Discovery (no auth required) ─────────────────────────────────────
 
@@ -2020,9 +2038,16 @@ app.post('/webhook/github', async (c) => {
   })
 })
 
-// ── Fallback ──────────────────────────────────────────────────────────────
+// ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
 
-app.all('*', (c) => errorResponse(c, 404, ErrorCode.NotFound, 'The requested endpoint does not exist'))
+app.all('*', async (c) => {
+  // If ASSETS binding exists, serve static SPA files
+  if (c.env.ASSETS) {
+    const response = await c.env.ASSETS.fetch(c.req.raw)
+    if (response.status !== 404) return response
+  }
+  return errorResponse(c, 404, ErrorCode.NotFound, 'The requested endpoint does not exist')
+})
 
 export default app
 
