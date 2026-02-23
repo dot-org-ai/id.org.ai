@@ -43,3 +43,7 @@ export {
 
 // JWT signing + verification (re-exported from ../jwt for convenience)
 export * from '../jwt'
+
+// JWT verification with JWKS support (canonical, from @dotdo/oauth)
+export { verifyJWT, decodeJWT, isJWTExpired, clearJWKSCache } from './jwt-verify'
+export type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from './jwt-verify'
