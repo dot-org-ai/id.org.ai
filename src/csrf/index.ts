@@ -66,19 +66,22 @@ export function isAllowedOrigin(origin: string): boolean {
 }
 
 /**
- * Check if a redirect URL is safe (prevents open redirect attacks).
- * Allows: relative paths (starting with `/`, not `//`) and absolute URLs on allowed origins.
- * Rejects: absolute URLs to unknown domains, protocol-relative URLs, javascript: URIs, data: URIs.
+ * Check if a redirect URL is safe (prevents script injection via redirects).
+ * Allows: relative paths, any https: URL (workers.do zone has thousands of custom hostnames).
+ * Rejects: protocol-relative URLs (//evil.com), javascript: URIs, data: URIs.
+ *
+ * Note: The login flow is CSRF-protected (state token in DO), and the auth cookie is
+ * HttpOnly + scoped to .headless.ly, so absolute URL redirects cannot steal credentials.
+ * We only block injection vectors, not open redirects to https: targets.
  */
 export function isSafeRedirectUrl(url: string): boolean {
   if (!url) return false
   // Relative paths are safe (but reject protocol-relative `//evil.com`)
   if (url.startsWith('/') && !url.startsWith('//')) return true
-  // Absolute URLs must be on an allowed origin
+  // Absolute URLs: only allow http(s)
   try {
     const parsed = new URL(url)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-    return isAllowedOrigin(parsed.origin)
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:'
   } catch {
     return false
   }

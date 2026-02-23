@@ -353,18 +353,12 @@ describe('isSafeRedirectUrl', () => {
     expect(isSafeRedirectUrl('//evil.com/path')).toBe(false)
   })
 
-  it('allows absolute URLs on allowed origins', () => {
+  it('allows any https: URL (workers.do has thousands of custom hostnames)', () => {
     expect(isSafeRedirectUrl('https://headless.ly/dashboard')).toBe(true)
     expect(isSafeRedirectUrl('https://crm.headless.ly/contacts')).toBe(true)
-    expect(isSafeRedirectUrl('https://id.org.ai/settings')).toBe(true)
+    expect(isSafeRedirectUrl('https://app.customerdomain.com/callback')).toBe(true)
     expect(isSafeRedirectUrl('https://oauth.do/callback')).toBe(true)
     expect(isSafeRedirectUrl('http://localhost:3000/dev')).toBe(true)
-  })
-
-  it('rejects absolute URLs to unknown domains', () => {
-    expect(isSafeRedirectUrl('https://evil.com')).toBe(false)
-    expect(isSafeRedirectUrl('https://evil.com/phish')).toBe(false)
-    expect(isSafeRedirectUrl('https://headless.ly.evil.com/steal')).toBe(false)
   })
 
   it('rejects javascript: URIs', () => {
