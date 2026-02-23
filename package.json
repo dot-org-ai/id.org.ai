@@ -59,6 +59,8 @@
     "test:node": "vitest run --config vitest.node.config.ts",
     "test:watch": "vitest",
     "deploy": "cd worker && wrangler deploy",
+    "deploy:auth": "cd workers/auth && wrangler deploy",
+    "deploy:all": "cd worker && wrangler deploy && cd ../workers/auth && wrangler deploy",
     "types": "cd worker && wrangler types"
   },
   "dependencies": {

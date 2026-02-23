@@ -1,10 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Full identity + OAuth 2.1 server. Stays as "auth" because it owns the public routes
-  // (auth.headless.ly, id.org.ai, etc.). Consumed via:
+  // Full identity + OAuth 2.1 server. Handles /login, /logout, /callback, /oauth/*, provisioning, etc.
+  // Consumed via:
   //   AUTH_HTTP service binding (default fetch) by apps/api, apis.do — for /login, /callback, /oauth/*, etc.
-  // The lightweight verifier (.do/oauth/workers/auth/ "auth-verifier") handles AUTH RPC bindings.
-  "name": "auth",
+  //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser, etc.)
+  // The lightweight verifier (workers/auth/ "auth") handles AUTH RPC bindings for JWT/API key verification.
+  "name": "oauth",
   "main": "index.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -28,8 +29,14 @@
     ]
   },
 
+  // Migration chain: This worker takes over the "oauth" name from the old oauth.do worker.
+  // v1: OAuthDO was created by the old oauth.do worker (already applied to "oauth" name)
+  // v2: Delete OAuthDO (no longer needed — id.org.ai uses IdentityDO)
+  // v3: Create IdentityDO (id.org.ai's root Durable Object)
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["IdentityDO"] }
+    { "tag": "v1", "new_sqlite_classes": ["OAuthDO"] },
+    { "tag": "v2", "deleted_classes": ["OAuthDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["IdentityDO"] }
   ],
 
   "kv_namespaces": [

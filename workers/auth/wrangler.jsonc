@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Lightweight JWT/API key/cookie verification worker.
+  // Delegates session tokens (ses_*, oai_*, hly_sk_*, sk_*) to the "oauth" worker
+  // (id.org.ai's full identity + OAuth 2.1 server) via AuthService RPC.
+  "name": "auth",
+  "account_id": "b6641681fe423910342b9ffa1364c76d",
+  "main": "index.ts",
+  "compatibility_date": "2026-01-25",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Environment variables
+  "vars": {
+    "WORKOS_CLIENT_ID": "client_01JQYTRXK9ZPD8JPJTKDCRB656"
+  },
+
+  // Secrets (set via wrangler secret put):
+  // - WORKOS_API_KEY
+  // - ADMIN_TOKEN
+
+  // Service binding to id.org.ai (full identity server) for session/API key verification.
+  // Uses AuthService entrypoint for RPC (verifyToken, getUser, etc.)
+  "services": [
+    {
+      "binding": "OAUTH",
+      "service": "oauth",
+      "entrypoint": "AuthService"
+    }
+  ],
+
+  // Migrations: IdentityDO was created via dashboard, needs formal migration history to delete
+  "migrations": [
+    { "tag": "v1", "new_classes": ["IdentityDO"] },
+    { "tag": "v2", "deleted_classes": ["IdentityDO"] }
+  ]
+}
