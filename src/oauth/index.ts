@@ -17,6 +17,10 @@ export type {
   DeviceAuthorizationResponse,
 } from './types'
 
+// OAuth 2.1 Storage interface + in-memory implementation
+export { MemoryOAuthStorage } from './storage'
+export type { OAuthStorage, ListOptions } from './storage'
+
 // OAuth 2.1 Provider implementation
 export { OAuthProvider } from './provider'
 export type { OAuthConfig, OAuthProviderClient } from './provider'
