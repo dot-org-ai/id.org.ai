@@ -42,7 +42,7 @@ export async function validateWorkOSApiKey(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${workosApiKey}`,
       },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify({ value: apiKey }),
     })
 
     if (!response.ok) {
@@ -50,18 +50,21 @@ export async function validateWorkOSApiKey(
     }
 
     const data = (await response.json()) as {
-      id: string
-      name: string
-      organization_id?: string
-      permissions?: string[]
+      api_key: {
+        id: string
+        name: string
+        owner?: { type: string; id: string }
+        permissions?: string[]
+      }
     }
 
+    const key = data.api_key
     return {
       valid: true,
-      id: data.id,
-      name: data.name,
-      organization_id: data.organization_id,
-      permissions: data.permissions,
+      id: key.id,
+      name: key.name,
+      organization_id: key.owner?.id,
+      permissions: key.permissions,
     }
   } catch {
     return { valid: false }
