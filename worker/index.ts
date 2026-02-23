@@ -1348,6 +1348,35 @@ app.post('/api/freeze', async (c) => {
 // CRUD for API keys. Prefers WorkOS API keys when WORKOS_API_KEY is configured,
 // falls back to custom hly_sk_* keys for tenants without WorkOS. Requires L1+.
 
+/**
+ * Resolve the user's WorkOS org ID, creating a personal org if needed.
+ * Returns the org ID or null if WorkOS is not configured or resolution fails.
+ */
+async function resolveOrgForApiKeys(env: Env, identityId: string, stub: IdentityStub): Promise<string | null> {
+  if (!env.WORKOS_API_KEY) return null
+
+  // Extract WorkOS user ID from identity record
+  const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${identityId}` })
+  const record = stored.value as { workosUserId?: string; email?: string; name?: string; organizationId?: string } | null
+  if (!record?.workosUserId) return null
+
+  // If identity already has an org, use it
+  if (record.organizationId) return record.organizationId
+
+  // No org — ensure a personal org exists
+  const result = await ensurePersonalOrg(env.WORKOS_API_KEY, record.workosUserId, record.name, record.email || '')
+  if (!result) return null
+
+  // Persist org ID back to identity record so we don't re-check next time
+  await stub.oauthStorageOp({
+    op: 'put',
+    key: `identity:${identityId}`,
+    value: { ...record, organizationId: result.orgId },
+  })
+
+  return result.orgId
+}
+
 app.post('/api/keys', async (c) => {
   const auth = c.get('auth')
   if (!auth.authenticated || !auth.identityId) {
@@ -1372,8 +1401,10 @@ app.post('/api/keys', async (c) => {
   // Use WorkOS API keys when configured — WorkOS handles generation, rotation, validation
   if (c.env.WORKOS_API_KEY) {
     try {
+      const orgId = await resolveOrgForApiKeys(c.env, auth.identityId, stub)
       const result = await createWorkOSApiKey(c.env.WORKOS_API_KEY, {
         name: body.name,
+        organizationId: orgId || undefined,
         permissions: body.scopes,
         expiresAt: body.expiresAt,
       })
@@ -1416,16 +1447,16 @@ app.get('/api/keys', async (c) => {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
 
-  // Use WorkOS API keys when configured
+  // Use WorkOS API keys when configured — scoped to user's org
   if (c.env.WORKOS_API_KEY) {
     try {
-      const workosKeys = await listWorkOSApiKeys(c.env.WORKOS_API_KEY)
+      const orgId = await resolveOrgForApiKeys(c.env, auth.identityId, stub)
+      const workosKeys = await listWorkOSApiKeys(c.env.WORKOS_API_KEY, orgId || undefined)
       const keys = workosKeys.map((k) => ({
         id: k.id,
         name: k.name,
-        organization_id: k.organization_id,
-        created_at: k.created_at,
-        last_used_at: k.last_used_at,
+        createdAt: k.created_at,
+        lastUsedAt: k.last_used_at,
       }))
       return c.json({ keys })
     } catch (err: any) {
