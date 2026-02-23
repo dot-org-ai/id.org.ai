@@ -962,7 +962,7 @@ export function handleExplore(params: {
   }
 
   // Full system exploration — group by domain
-  const domains: Record<string, { description: string; entities: unknown[] }> = {}
+  const domains: Record<string, { description: string; entities: EntitySchema[] }> = {}
 
   for (const entity of ENTITY_SCHEMAS) {
     if (!domains[entity.domain]) {
@@ -981,7 +981,7 @@ export function handleExplore(params: {
         verbs: entity.verbs.map(v => v.name),
         relationships: entity.relationships.map(r => `${r.type} ${r.target}`),
         level: entity.level,
-      })
+      } as unknown as EntitySchema)
     }
   }
 

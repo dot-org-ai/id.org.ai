@@ -300,7 +300,7 @@ export function createStripeClient(secretKey: string): StripeClient {
           throw new Error('Invalid webhook signature')
         }
 
-        return event
+        return event as StripeWebhookEvent
       },
     },
   }
@@ -406,5 +406,5 @@ export async function verifyStripeWebhookAsync(payload: string, signature: strin
     throw new Error('Webhook timestamp too old')
   }
 
-  return event
+  return event as StripeWebhookEvent
 }

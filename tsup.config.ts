@@ -18,5 +18,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
-  external: ['open'],
+  external: ['open', 'drizzle-orm', 'drizzle-orm/sqlite-core', 'cloudflare:workers'],
 })
