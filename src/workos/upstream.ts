@@ -14,6 +14,12 @@
 // Types
 // ============================================================================
 
+export interface WorkOSIdentity {
+  type: string
+  provider: string
+  idp_id: string
+}
+
 export interface WorkOSUser {
   id: string
   email: string
@@ -23,6 +29,7 @@ export interface WorkOSUser {
   role?: string
   roles?: string[]
   permissions?: string[]
+  identities?: WorkOSIdentity[]
 }
 
 export interface WorkOSAuthResult {
@@ -123,6 +130,39 @@ export async function exchangeWorkOSCode(
   }
 
   return data
+}
+
+// ============================================================================
+// Fetch Full User Profile (includes linked identities)
+// ============================================================================
+
+/**
+ * Fetch a WorkOS user's full profile including linked identities.
+ * The identities array contains provider-specific IDs (e.g. GitHub numeric ID).
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID (from auth result)
+ * @returns WorkOS user with identities, or null on failure
+ */
+export async function fetchWorkOSUser(apiKey: string, userId: string): Promise<WorkOSUser | null> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSUser
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extract the GitHub numeric user ID from a WorkOS user's identities.
+ * Returns the idp_id for the GitHubOAuth identity, or null if not linked.
+ */
+export function extractGitHubId(user: WorkOSUser): string | null {
+  const github = user.identities?.find((i) => i.provider === 'GitHubOAuth')
+  return github?.idp_id ?? null
 }
 
 // ============================================================================

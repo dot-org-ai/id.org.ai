@@ -84,6 +84,8 @@ export interface Identity {
   claimStatus: ClaimStatus
   frozen?: boolean
   frozenAt?: number
+  githubUserId?: string
+  githubUsername?: string
 }
 
 export interface LinkedAccount {
@@ -197,6 +199,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       claimStatus: data.claimStatus ?? 'unclaimed',
       frozen: data.frozen ?? false,
       frozenAt: data.frozenAt,
+      githubUserId: data.githubUserId,
+      githubUsername: data.githubUsername,
     }
   }
 

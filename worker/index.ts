@@ -36,7 +36,7 @@ import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -834,6 +834,10 @@ app.get('/callback', async (c) => {
     return errorResponse(c, 502, ErrorCode.ServerError, err.message)
   }
 
+  // Fetch full WorkOS user profile (includes linked identities with provider IDs)
+  const workosUser = await fetchWorkOSUser(apiKey, authResult.user.id)
+  const githubIdFromWorkOS = workosUser ? extractGitHubId(workosUser) : null
+
   // Create or find identity for this human user
   const shardKey = `human:${authResult.user.id}`
   const stub = getStubForIdentity(c.env, shardKey)
@@ -857,11 +861,26 @@ app.get('/callback', async (c) => {
         claimStatus: 'claimed',
         workosUserId: authResult.user.id,
         organizationId: authResult.user.organization_id || authResult.organization_id,
+        ...(githubIdFromWorkOS ? { githubUserId: githubIdFromWorkOS } : {}),
         createdAt: Date.now(),
       },
     })
     identity = await stub.getIdentity(shardKey)
+  } else if (githubIdFromWorkOS && !identity.githubUserId) {
+    // Existing identity without GitHub ID — backfill from WorkOS profile
+    const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${shardKey}` })
+    if (stored.value) {
+      await stub.oauthStorageOp({
+        op: 'put',
+        key: `identity:${shardKey}`,
+        value: { ...(stored.value as object), githubUserId: githubIdFromWorkOS },
+      })
+      identity = await stub.getIdentity(shardKey)
+    }
   }
+
+  // Resolve GitHub ID: prefer identity record (from claim flow), then WorkOS profile
+  const githubId = identity?.githubUserId || githubIdFromWorkOS || undefined
 
   // Sign our own JWT for the auth cookie
   const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
@@ -871,6 +890,7 @@ app.get('/callback', async (c) => {
       email: authResult.user.email,
       name: [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ') || undefined,
       org_id: authResult.user.organization_id || authResult.organization_id,
+      github_id: githubId,
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
     },
