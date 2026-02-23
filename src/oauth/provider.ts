@@ -15,7 +15,7 @@
  *   - UserInfo Endpoint (OIDC Core)
  *
  * Storage key schema:
- *   client:{cid_xxx}         → OAuthClient
+ *   client:{cid_xxx}         → OAuthProviderClient
  *   code:{ac_xxx}            → AuthorizationCode
  *   access:{at_xxx}          → AccessToken
  *   refresh:{rt_xxx}         → RefreshToken
@@ -40,7 +40,7 @@ export interface OAuthConfig {
   jwksUri?: string
 }
 
-export interface OAuthClient {
+export interface OAuthProviderClient {
   id: string                   // cid_xxx
   name: string
   secret?: string              // hashed for confidential clients; absent for public
@@ -317,7 +317,7 @@ export class OAuthProvider {
     const isConfidential = tokenEndpointAuthMethod !== 'none'
     const clientSecret = isConfidential ? generateId('cs_') : undefined
 
-    const client: OAuthClient = {
+    const client: OAuthProviderClient = {
       id: clientId,
       name: clientName,
       secret: clientSecret,
@@ -326,7 +326,7 @@ export class OAuthProvider {
       responseTypes,
       scopes: scope.split(' '),
       trusted: false,
-      tokenEndpointAuthMethod: tokenEndpointAuthMethod as OAuthClient['tokenEndpointAuthMethod'],
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod as OAuthProviderClient['tokenEndpointAuthMethod'],
       logo: body.logo_uri as string | undefined,
       website: body.client_uri as string | undefined,
       createdAt: Date.now(),
@@ -1037,7 +1037,7 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private async issueAuthorizationCode(
-    client: OAuthClient,
+    client: OAuthProviderClient,
     identityId: string,
     params: {
       redirectUri: string
@@ -1130,9 +1130,9 @@ export class OAuthProvider {
   // PRIVATE: Client Lookup
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async getClient(clientId: string): Promise<OAuthClient | null> {
+  private async getClient(clientId: string): Promise<OAuthProviderClient | null> {
     if (!clientId) return null
-    const client = await this.storage.get<OAuthClient>(`client:${clientId}`)
+    const client = await this.storage.get<OAuthProviderClient>(`client:${clientId}`)
     return client ?? null
   }
 
@@ -1182,7 +1182,7 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private renderConsentPage(
-    client: OAuthClient,
+    client: OAuthProviderClient,
     params: {
       clientId: string
       redirectUri: string
