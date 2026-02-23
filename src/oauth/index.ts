@@ -47,3 +47,7 @@ export * from '../jwt'
 // JWT verification with JWKS support (canonical, from @dotdo/oauth)
 export { verifyJWT, decodeJWT, isJWTExpired, clearJWKSCache } from './jwt-verify'
 export type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from './jwt-verify'
+
+// Consent screen generation (canonical, from @dotdo/oauth)
+export { generateConsentScreenHtml, getScopeDescription, consentCoversScopes } from './consent'
+export type { ConsentScreenOptions } from './consent'

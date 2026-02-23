@@ -8,6 +8,7 @@ export default {
       'test/oauth-pkce.test.ts',
       'test/jwt-signing-parity.test.ts',
       'test/oauth-jwt-verify.test.ts',
+      'test/oauth-consent.test.ts',
     ],
     globals: true,
   },
