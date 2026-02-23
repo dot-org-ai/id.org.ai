@@ -786,6 +786,98 @@ app.get('/auth-config.json', (c) => {
   })
 })
 
+// ── User Info (GET /me) ──────────────────────────────────────────────────
+// Returns the authenticated user's profile. Compatible with oauth.do SDK's getUser().
+
+app.get('/me', async (c) => {
+  const authorization = c.req.header('Authorization')
+  const cookie = c.req.header('Cookie')
+
+  // Extract token: Bearer header first, then auth cookie
+  let token: string | null = null
+  if (authorization?.startsWith('Bearer ')) {
+    token = authorization.slice(7)
+  }
+  if (!token && cookie) {
+    token = parseCookieValue(cookie, 'auth') ?? parseCookieValue(cookie, 'wos-session') ?? null
+  }
+  if (!token) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  // Session token (ses_*) → KV lookup → DO
+  if (token.startsWith('ses_')) {
+    const identityId = await c.env.SESSIONS.get(`session:${token}`)
+    if (!identityId) return c.json({ error: 'Unauthorized' }, 401)
+    const stub = getStubForIdentity(c.env, identityId)
+    const session = await stub.getSession(token)
+    if (!session?.valid) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await stub.getIdentity(identityId)
+    return c.json({
+      id: identityId,
+      name: identity?.name,
+      email: identity?.email,
+      organizationId: identity?.name,
+    })
+  }
+
+  // API key (oai_* or hly_sk_*) → KV lookup → DO
+  if (token.startsWith('oai_') || token.startsWith('hly_sk_')) {
+    const identityId = await c.env.SESSIONS.get(`apikey:${token}`)
+    if (!identityId) return c.json({ error: 'Unauthorized' }, 401)
+    const stub = getStubForIdentity(c.env, identityId)
+    const result = await stub.validateApiKey(token)
+    if (!result?.valid) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await stub.getIdentity(identityId)
+    return c.json({
+      id: identityId,
+      name: identity?.name,
+      email: identity?.email,
+      organizationId: identity?.name,
+      permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
+    })
+  }
+
+  // JWT — verify against our own JWKS (id.org.ai-signed)
+  try {
+    const oauthStub = getStubForIdentity(c.env, 'oauth')
+    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const jwksData = await manager.getJWKS()
+    const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
+    const { payload } = await jose.jwtVerify(token, localJWKS, { issuer: 'https://id.org.ai' })
+    const org = payload.org as { id?: string } | undefined
+    return c.json({
+      id: payload.sub || '',
+      email: payload.email as string | undefined,
+      name: payload.name as string | undefined,
+      image: payload.image as string | undefined,
+      organizationId: org?.id || (payload.org_id as string | undefined),
+      roles: payload.roles as string[] | undefined,
+      permissions: payload.permissions as string[] | undefined,
+    })
+  } catch { /* not our JWT, try next */ }
+
+  // JWT — verify against WorkOS JWKS
+  const clientId = c.env.WORKOS_CLIENT_ID
+  if (clientId) {
+    try {
+      const jwks = getJwksVerifier(`https://api.workos.com/sso/jwks/${clientId}`)
+      const { payload } = await jose.jwtVerify(token, jwks)
+      return c.json({
+        id: payload.sub || '',
+        email: payload.email as string | undefined,
+        name: (payload.name || payload.first_name) as string | undefined,
+        image: payload.picture as string | undefined,
+        organizationId: payload.org_id as string | undefined,
+        roles: payload.roles as string[] | undefined,
+        permissions: payload.permissions as string[] | undefined,
+      })
+    } catch { /* not a WorkOS JWT */ }
+  }
+
+  return c.json({ error: 'Unauthorized' }, 401)
+})
+
 // ── OIDC Discovery (no auth required) ─────────────────────────────────────
 
 app.get('/.well-known/openid-configuration', (c) => {
