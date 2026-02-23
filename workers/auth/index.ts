@@ -436,11 +436,28 @@ app.get('/verify', async (c) => {
   return c.json(result)
 })
 
+/**
+ * Parse auth token from cookie header. Supports chunked cookies (auth.0, auth.1, ...).
+ */
+function parseAuthCookie(cookieHeader: string): string | null {
+  // Try single cookie first
+  const single = cookieHeader.match(/(?:^|;\s*)auth=([^;]+)/)?.[1]
+  if (single) return single
+  // Try chunked cookies
+  let result = ''
+  for (let i = 0; ; i++) {
+    const chunk = cookieHeader.match(new RegExp(`(?:^|;\\s*)auth\\.${i}=([^;]+)`))?.[1]
+    if (!chunk) break
+    result += chunk
+  }
+  return result || null
+}
+
 // Get user from token
 app.get('/me', async (c) => {
   const auth = c.req.header('Authorization')
   const cookieHeader = c.req.header('Cookie') || ''
-  const cookie = cookieHeader.match(/(?:^|;\s*)auth=([^;]+)/)?.[1]
+  const cookie = parseAuthCookie(cookieHeader)
   const token = auth?.startsWith('Bearer ') ? auth.slice(7) : cookie
 
   if (!token) {
@@ -548,10 +565,10 @@ export class AuthRPC extends WorkerEntrypoint<Env> {
     authorization?: string | null,
     cookie?: string | null
   ): Promise<AuthResult> {
-    // Extract token from Authorization header or cookie
+    // Extract token from Authorization header or cookie (supports chunked cookies)
     const token =
       authorization?.replace(/^Bearer\s+/i, '') ||
-      cookie?.match(/(?:^|;\s*)auth=([^;]+)/)?.[1]
+      (cookie ? parseAuthCookie(cookie) : null)
 
     if (!token) {
       return { ok: false, status: 401, error: 'No token provided' }

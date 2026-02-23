@@ -232,11 +232,68 @@ async function cacheNegativeResult(token: string): Promise<void> {
 
 // ── Cookie Parsing ──────────────────────────────────────────────────────
 // Simple cookie parser for extracting auth tokens from cookie headers.
+// Supports chunked cookies: if `auth` is not found, tries `auth.0` + `auth.1` + ...
 // Used by authenticate() when called with a raw cookie header string.
 
 function parseCookieValue(cookieHeader: string, name: string): string | null {
+  // Try single cookie first
   const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`))
-  return match ? decodeURIComponent(match[1]) : null
+  if (match) return decodeURIComponent(match[1])
+
+  // Try chunked cookies (name.0, name.1, ...)
+  let result = ''
+  for (let i = 0; ; i++) {
+    const chunk = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}\\.${i}=([^;]*)`))
+    if (!chunk) break
+    result += decodeURIComponent(chunk[1])
+  }
+  return result || null
+}
+
+/** Max bytes per cookie value (leave room for name + flags, ~200 bytes overhead) */
+const COOKIE_CHUNK_SIZE = 3800
+
+/**
+ * Build Set-Cookie headers for a JWT value. If the JWT exceeds COOKIE_CHUNK_SIZE,
+ * splits into chunked cookies (auth.0, auth.1, ...) with a auth.count marker.
+ * Otherwise sets a single `auth` cookie.
+ */
+function buildAuthCookieHeaders(
+  jwt: string,
+  opts: { secure: boolean; domain: string | null; maxAge: number },
+): string[] {
+  const flags = ['HttpOnly', 'Path=/', 'SameSite=Lax', `Max-Age=${opts.maxAge}`, ...(opts.secure ? ['Secure'] : []), ...(opts.domain ? [`Domain=${opts.domain}`] : [])]
+  const flagStr = flags.join('; ')
+
+  if (jwt.length <= COOKIE_CHUNK_SIZE) {
+    return [`auth=${jwt}; ${flagStr}`]
+  }
+
+  // Split into chunks
+  const cookies: string[] = []
+  const chunks = Math.ceil(jwt.length / COOKIE_CHUNK_SIZE)
+  for (let i = 0; i < chunks; i++) {
+    const chunk = jwt.slice(i * COOKIE_CHUNK_SIZE, (i + 1) * COOKIE_CHUNK_SIZE)
+    cookies.push(`auth.${i}=${chunk}; ${flagStr}`)
+  }
+  // Marker so readers know how many chunks to expect
+  cookies.push(`auth.count=${chunks}; ${flagStr}`)
+  return cookies
+}
+
+/**
+ * Build Set-Cookie headers to clear auth cookies (single + chunked).
+ */
+function buildClearAuthCookieHeaders(opts: { secure: boolean; domain: string | null }): string[] {
+  const flags = ['HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(opts.secure ? ['Secure'] : []), ...(opts.domain ? [`Domain=${opts.domain}`] : [])]
+  const flagStr = flags.join('; ')
+  // Clear both the single cookie and up to 10 potential chunks
+  const cookies = [`auth=; ${flagStr}`]
+  for (let i = 0; i < 10; i++) {
+    cookies.push(`auth.${i}=; ${flagStr}`)
+  }
+  cookies.push(`auth.count=; ${flagStr}`)
+  return cookies
 }
 
 // ── Cookie Domain Detection ──────────────────────────────────────────────
@@ -915,15 +972,13 @@ app.get('/callback', async (c) => {
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
-  const cookieFlags = [`auth=${jwt}`, 'HttpOnly', 'Path=/', `SameSite=Lax`, `Max-Age=3600`, ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
+  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 3600 })
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: continueUrl,
-      'Set-Cookie': cookieFlags,
-    },
-  })
+  const headers = new Headers({ Location: continueUrl })
+  for (const cookie of cookieHeaders) {
+    headers.append('Set-Cookie', cookie)
+  }
+  return new Response(null, { status: 302, headers })
 })
 
 // ── Logout ────────────────────────────────────────────────────────────────────
@@ -934,24 +989,26 @@ app.get('/logout', (c) => {
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
-  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
+  const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: returnUrl,
-      'Set-Cookie': clearCookie,
-    },
-  })
+  const headers = new Headers({ Location: returnUrl })
+  for (const cookie of clearCookies) {
+    headers.append('Set-Cookie', cookie)
+  }
+  return new Response(null, { status: 302, headers })
 })
 
 app.post('/logout', (c) => {
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
-  const clearCookie = ['auth=', 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0', ...(isSecure ? ['Secure'] : []), ...(domain ? [`Domain=${domain}`] : [])].join('; ')
+  const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
 
-  return c.json({ ok: true }, 200, { 'Set-Cookie': clearCookie })
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  for (const cookie of clearCookies) {
+    headers.append('Set-Cookie', cookie)
+  }
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers })
 })
 
 // ── Validate API Key Endpoint ────────────────────────────────────────────────
