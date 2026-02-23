@@ -130,21 +130,8 @@ type Variables = {
 // Exposes verifyToken() as an RPC method for other Cloudflare Workers.
 // Other workers bind to this as `env.AUTH` and call `env.AUTH.verifyToken(token)`.
 
-// AuthUser type matching oauth.do's canonical AuthUser interface
-type AuthUser = {
-  id: string
-  email?: string
-  name?: string
-  image?: string
-  organizationId?: string
-  roles?: string[]
-  permissions?: string[]
-  metadata?: Record<string, unknown>
-}
-
-type VerifyResult = { valid: true; user: AuthUser; cached?: boolean } | { valid: false; error: string }
-
-type AuthRPCResult = { ok: true; user: AuthUser } | { ok: false; status: number; error: string }
+import type { AuthUser, VerifyResult, AuthResult } from '../src/auth/index.js'
+type AuthRPCResult = AuthResult
 
 // ── Token Cache Helpers ─────────────────────────────────────────────────
 // Uses Cloudflare Cache API to cache verified tokens for 5 minutes.

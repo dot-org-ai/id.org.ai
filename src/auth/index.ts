@@ -17,3 +17,23 @@ export function buildAuthUrl(options: {
   if (options.state) url.searchParams.set('state', options.state)
   return url.toString()
 }
+
+// ── RPC Contract Types ─────────────────────────────────────────────────
+// Canonical types for the auth service binding RPC contract.
+// Consumed by oauth.do/rpc and @headlessly/types.
+
+export interface AuthUser {
+  id: string
+  email?: string
+  name?: string
+  image?: string
+  organizationId?: string
+  org?: string
+  roles?: string[]
+  permissions?: string[]
+  metadata?: Record<string, unknown>
+}
+
+export type VerifyResult = { valid: true; user: AuthUser; cached?: boolean } | { valid: false; error: string }
+
+export type AuthResult = { ok: true; user: AuthUser } | { ok: false; status: number; error: string }
