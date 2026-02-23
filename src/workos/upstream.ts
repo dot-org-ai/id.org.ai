@@ -207,6 +207,122 @@ export async function fetchOrgInfo(apiKey: string, orgId: string): Promise<OrgIn
 }
 
 // ============================================================================
+// Create Organization + Membership (personal org for every user)
+// ============================================================================
+
+/**
+ * Create a WorkOS organization.
+ *
+ * @param apiKey - WorkOS API key
+ * @param name - Organization name (e.g. "Nathan Clevenger")
+ * @param options - Optional: external_id, metadata
+ * @returns The created organization, or null on failure
+ */
+export async function createWorkOSOrganization(
+  apiKey: string,
+  name: string,
+  options?: { external_id?: string; metadata?: Record<string, string> },
+): Promise<WorkOSOrganization | null> {
+  try {
+    const body: Record<string, unknown> = { name }
+    if (options?.external_id) body.external_id = options.external_id
+    if (options?.metadata) body.metadata = options.metadata
+
+    const response = await fetch('https://api.workos.com/organizations', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSOrganization
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Add a user to a WorkOS organization with a given role.
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID
+ * @param organizationId - WorkOS organization ID
+ * @param roleSlug - Role slug (default: 'admin' for personal orgs)
+ * @returns true if membership was created
+ */
+export async function createWorkOSMembership(
+  apiKey: string,
+  userId: string,
+  organizationId: string,
+  roleSlug = 'admin',
+): Promise<boolean> {
+  try {
+    const response = await fetch('https://api.workos.com/user_management/organization_memberships', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        organization_id: organizationId,
+        role_slug: roleSlug,
+      }),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ensure a user has a personal organization in WorkOS.
+ * If they don't have an org, creates one named after them and adds them as admin.
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID
+ * @param userName - User's display name (for the org name)
+ * @param userEmail - User's email (fallback for org name)
+ * @returns The org ID (existing or newly created), or null on failure
+ */
+export async function ensurePersonalOrg(
+  apiKey: string,
+  userId: string,
+  userName: string | undefined,
+  userEmail: string,
+): Promise<{ orgId: string; created: boolean } | null> {
+  // Check if user already has org memberships
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=1`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (response.ok) {
+      const data = (await response.json()) as { data: Array<{ organization_id: string }> }
+      if (data.data.length > 0) {
+        return { orgId: data.data[0]!.organization_id, created: false }
+      }
+    }
+  } catch {
+    // Continue to create
+  }
+
+  // No existing org — create a personal one
+  const orgName = userName || userEmail.split('@')[0] || 'Personal'
+  const org = await createWorkOSOrganization(apiKey, orgName, {
+    metadata: { type: 'personal', owner: userId },
+  })
+  if (!org) return null
+
+  // Add user as admin of their personal org
+  const added = await createWorkOSMembership(apiKey, userId, org.id, 'admin')
+  if (!added) return null
+
+  return { orgId: org.id, created: true }
+}
+
+// ============================================================================
 // Update WorkOS User (external_id, metadata)
 // ============================================================================
 

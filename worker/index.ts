@@ -36,7 +36,7 @@ import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, fetchOrgInfo, updateWorkOSUser, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, fetchOrgInfo, updateWorkOSUser, ensurePersonalOrg, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -895,12 +895,24 @@ app.get('/callback', async (c) => {
   }
 
   // Fetch full WorkOS user profile + org info in parallel
-  const orgId = authResult.user.organization_id || authResult.organization_id
-  const [workosUser, orgInfo] = await Promise.all([
+  let orgId = authResult.user.organization_id || authResult.organization_id
+  const [workosUser, initialOrgInfo] = await Promise.all([
     fetchWorkOSUser(apiKey, authResult.user.id),
     orgId ? fetchOrgInfo(apiKey, orgId) : Promise.resolve(null),
   ])
   const githubIdFromWorkOS = workosUser ? extractGitHubId(workosUser) : null
+
+  // Ensure user has a personal org (required for API key management).
+  // If they already have an org from WorkOS, use that. Otherwise create one.
+  let orgInfo = initialOrgInfo
+  if (!orgId) {
+    const fullName = [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ')
+    const result = await ensurePersonalOrg(apiKey, authResult.user.id, fullName || undefined, authResult.user.email)
+    if (result) {
+      orgId = result.orgId
+      orgInfo = result.created ? { name: fullName || authResult.user.email.split('@')[0] || 'Personal', domains: [] } : await fetchOrgInfo(apiKey, result.orgId)
+    }
+  }
 
   // Create or find identity for this human user
   const shardKey = `human:${authResult.user.id}`
