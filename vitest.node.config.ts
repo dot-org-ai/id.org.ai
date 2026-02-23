@@ -9,6 +9,7 @@ export default {
       'test/jwt-signing-parity.test.ts',
       'test/oauth-jwt-verify.test.ts',
       'test/oauth-consent.test.ts',
+      'test/oauth-guards.test.ts',
     ],
     globals: true,
   },

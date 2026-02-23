@@ -51,3 +51,17 @@ export type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from '.
 // Consent screen generation (canonical, from @dotdo/oauth)
 export { generateConsentScreenHtml, getScopeDescription, consentCoversScopes } from './consent'
 export type { ConsentScreenOptions } from './consent'
+
+// Guards / validation (canonical, from @dotdo/oauth)
+export {
+  assertValid,
+  ValidationError,
+  isStripeWebhookEvent,
+  isStripeApiError,
+  isJWTHeader,
+  isJWTPayload,
+  isSerializedSigningKey,
+  isStringArray,
+  isIntrospectionResponse,
+} from './guards'
+export type { StripeWebhookEvent, IntrospectionResponseShape } from './guards'
