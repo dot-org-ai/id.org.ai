@@ -113,6 +113,8 @@ interface Env {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
+  // WorkOS Actions
+  WORKOS_ACTIONS_SECRET?: string
   // Branding for @mdxui/auth SPA
   APP_NAME?: string
   APP_TAGLINE?: string
@@ -2072,6 +2074,116 @@ app.post('/webhook/github', async (c) => {
     event,
     delivery: deliveryId,
   })
+})
+
+// ── WorkOS Actions ────────────────────────────────────────────────────────
+// Synchronous hooks called by WorkOS during authentication/registration.
+// These run BEFORE the user is redirected, so any user updates (external_id,
+// metadata) will be reflected in the WorkOS JWT template on this same request.
+
+/**
+ * Verify WorkOS action request signature (HMAC-SHA256).
+ * Header format: WorkOS-Signature: t=<timestamp_ms>,v1=<hex_signature>
+ */
+async function verifyActionSignature(rawBody: string, sigHeader: string, secret: string, toleranceMs = 300_000): Promise<boolean> {
+  const parts = Object.fromEntries(sigHeader.split(',').map((p) => p.split('=')).map(([k, ...v]) => [k, v.join('=')]))
+  const timestamp = parts['t']
+  const signature = parts['v1']
+  if (!timestamp || !signature) return false
+
+  // Replay protection
+  if (Math.abs(Date.now() - Number(timestamp)) > toleranceMs) return false
+
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${rawBody}`))
+  const expected = Array.from(new Uint8Array(mac))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  return expected === signature
+}
+
+/**
+ * Sign a WorkOS action response (HMAC-SHA256).
+ * Returns the full response envelope with signature.
+ */
+async function signActionResponse(
+  type: 'authentication' | 'user_registration',
+  verdict: 'Allow' | 'Deny',
+  secret: string,
+  errorMessage?: string,
+): Promise<object> {
+  const timestamp = Date.now()
+  const payload = { timestamp, verdict, error_message: errorMessage ?? null }
+  const payloadJson = JSON.stringify(payload)
+
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${payloadJson}`))
+  const signature = Array.from(new Uint8Array(mac))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  return { object: `${type}_action_response`, payload, signature }
+}
+
+/**
+ * Authentication Action — runs after user authenticates, before redirect.
+ * Enriches the WorkOS user with GitHub numeric ID as external_id + metadata
+ * so it's available in JWT templates on this same authentication request.
+ */
+app.post('/actions/authentication', async (c) => {
+  const secret = c.env.WORKOS_ACTIONS_SECRET
+  const apiKey = c.env.WORKOS_API_KEY
+  if (!secret) return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'Actions secret not configured')
+
+  const rawBody = await c.req.text()
+  const sigHeader = c.req.header('workos-signature') || c.req.header('WorkOS-Signature') || ''
+
+  if (!(await verifyActionSignature(rawBody, sigHeader, secret))) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid action signature')
+  }
+
+  const action = JSON.parse(rawBody)
+  const userId = action?.user?.id || action?.userData?.id
+
+  // Enrich user with GitHub ID if available
+  if (apiKey && userId) {
+    try {
+      const workosUser = await fetchWorkOSUser(apiKey, userId)
+      if (workosUser) {
+        const githubId = extractGitHubId(workosUser)
+        if (githubId) {
+          await updateWorkOSUser(apiKey, userId, {
+            external_id: githubId,
+            metadata: { github_id: githubId },
+          })
+        }
+      }
+    } catch {
+      // Don't block authentication on enrichment failure
+    }
+  }
+
+  return c.json(await signActionResponse('authentication', 'Allow', secret))
+})
+
+/**
+ * User Registration Action — runs after registration, before provisioning.
+ * Currently allows all registrations. Can be extended to enforce domain
+ * policies, block disposable emails, etc.
+ */
+app.post('/actions/registration', async (c) => {
+  const secret = c.env.WORKOS_ACTIONS_SECRET
+  if (!secret) return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'Actions secret not configured')
+
+  const rawBody = await c.req.text()
+  const sigHeader = c.req.header('workos-signature') || c.req.header('WorkOS-Signature') || ''
+
+  if (!(await verifyActionSignature(rawBody, sigHeader, secret))) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid action signature')
+  }
+
+  return c.json(await signActionResponse('user_registration', 'Allow', secret))
 })
 
 // ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
