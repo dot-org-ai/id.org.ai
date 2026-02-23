@@ -76,7 +76,8 @@ describe('Personal Org Auto-Creation', () => {
 
     await page.waitForURL((url) => {
       const u = url.toString()
-      return u.includes('id.org.ai') && !u.includes('/callback') && !u.includes('workos.com')
+      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
+        && !u.includes('/callback') && !u.includes('workos.com')
     }, { timeout: 30_000 })
 
     const jwt = await getAuthCookie(page)

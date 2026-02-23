@@ -62,10 +62,11 @@ describe('GitHub OAuth Login', () => {
       await authorizeBtn.click()
     }
 
-    // Wait for the redirect chain to complete back to id.org.ai
+    // Wait for the redirect chain to complete back to the identity worker
     await page.waitForURL((url) => {
       const u = url.toString()
-      return u.includes('id.org.ai') && !u.includes('/callback') && !u.includes('github.com')
+      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
+        && !u.includes('/callback') && !u.includes('github.com')
     }, { timeout: 30_000 })
 
     // Verify auth cookie was set

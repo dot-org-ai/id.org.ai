@@ -2,8 +2,8 @@
  * Flow 1: Email + Password Login via WorkOS AuthKit
  *
  * Tests the full browser-based login flow:
- *   1. Navigate to id.org.ai/login
- *   2. WorkOS AuthKit UI loads
+ *   1. Navigate to oauth.do/login
+ *   2. WorkOS AuthKit UI loads (hosted at api.workos.com)
  *   3. Enter test email and password
  *   4. WorkOS authenticates → redirects to /callback
  *   5. /callback sets auth cookie → redirects to /
@@ -21,6 +21,13 @@ const TEST_EMAIL = process.env.E2E_AUTH_EMAIL || 'e2e-auth-test@emails.do'
 const TEST_PASSWORD = process.env.E2E_AUTH_PASSWORD
 const WORKOS_API_KEY = process.env.WORKOS_API_KEY
 
+/** Check if a URL is "back home" — on the identity worker, past the callback */
+function isPostCallback(url: string): boolean {
+  return (url.includes('oauth.do') || url.includes('id.org.ai') || url.includes('auth.headless.ly'))
+    && !url.includes('/callback')
+    && !url.includes('workos.com')
+}
+
 describe('Email + Password Login', () => {
   let page: Page
 
@@ -30,7 +37,7 @@ describe('Email + Password Login', () => {
       return
     }
 
-    // Ensure test user exists in WorkOS
+    // If we have the WorkOS API key, ensure the test user exists
     if (WORKOS_API_KEY) {
       await ensureTestUser(WORKOS_API_KEY, TEST_EMAIL, TEST_PASSWORD)
     }
@@ -48,14 +55,12 @@ describe('Email + Password Login', () => {
     await page.goto(`${ID_URL}/login`)
 
     // WorkOS AuthKit redirects to api.workos.com for the login UI
-    // Wait for either WorkOS AuthKit page or our own login page
     await page.waitForURL(/workos\.com|authkit/, { timeout: 15_000 }).catch(() => {
-      // If no redirect, we might be on the @mdxui/auth SPA
+      // May be on the @mdxui/auth SPA instead
     })
 
     const url = page.url()
-    // Should be either on WorkOS AuthKit or our SPA that embeds it
-    expect(url).toMatch(/workos\.com|authkit|id\.org\.ai/)
+    expect(url).toMatch(/workos\.com|authkit|oauth\.do|id\.org\.ai/)
   })
 
   it('should authenticate with email and password', async () => {
@@ -69,11 +74,10 @@ describe('Email + Password Login', () => {
 
     if (url.includes('workos.com') || url.includes('authkit')) {
       // WorkOS AuthKit hosted UI — fill in email + password
-      // AuthKit has different form layouts depending on configuration
       await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10_000 })
       await page.fill('input[type="email"], input[name="email"]', TEST_EMAIL)
 
-      // Some AuthKit layouts show email first, then password
+      // Some AuthKit layouts show email first, then password on next step
       const passwordField = await page.$('input[type="password"]')
       if (passwordField) {
         await page.fill('input[type="password"]', TEST_PASSWORD)
@@ -87,12 +91,8 @@ describe('Email + Password Login', () => {
       }
     }
 
-    // Wait for the callback redirect chain to complete
-    // id.org.ai/callback sets the cookie and redirects to /
-    await page.waitForURL((url) => {
-      const u = url.toString()
-      return u.includes('id.org.ai') && !u.includes('/callback') && !u.includes('workos.com')
-    }, { timeout: 30_000 })
+    // Wait for callback redirect chain to complete
+    await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 30_000 })
 
     // Verify auth cookie was set
     const jwt = await getAuthCookie(page)
@@ -110,8 +110,6 @@ describe('Email + Password Login', () => {
 
     // Email should match our test user
     expect(claims.email).toBe(TEST_EMAIL)
-
-    // Name should be set (even if just email prefix)
     expect(claims.sub).toBeTruthy()
   })
 
