@@ -10,6 +10,7 @@ export default {
       'test/oauth-jwt-verify.test.ts',
       'test/oauth-consent.test.ts',
       'test/oauth-guards.test.ts',
+      'test/oauth-dev.test.ts',
     ],
     globals: true,
   },

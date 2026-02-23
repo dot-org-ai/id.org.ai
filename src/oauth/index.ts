@@ -65,3 +65,7 @@ export {
   isIntrospectionResponse,
 } from './guards'
 export type { StripeWebhookEvent, IntrospectionResponseShape } from './guards'
+
+// Dev helpers for testing (canonical, from @dotdo/oauth)
+export { createTestHelpers, generateLoginFormHtml } from './dev'
+export type { DevModeConfig, DevUser, TestHelpers } from './dev'
