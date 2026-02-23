@@ -52,7 +52,7 @@ const CSRF_COOKIE_MAX_AGE = 1800 // 30 minutes
 export const ALLOWED_ORIGIN_PATTERNS = [
   /^https?:\/\/([a-z0-9-]+\.)*headless\.ly$/,
   /^https?:\/\/([a-z0-9-]+\.)*org\.ai$/,
-  /^https?:\/\/([a-z0-9-]+\.)*\.do$/,
+  /^https?:\/\/([a-z0-9-]+\.)*[a-z0-9-]+\.do$/,
   /^https?:\/\/localhost(:\d+)?$/,
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
 ]
@@ -63,6 +63,25 @@ export const ALLOWED_ORIGIN_PATTERNS = [
 export function isAllowedOrigin(origin: string): boolean {
   if (!origin) return false
   return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))
+}
+
+/**
+ * Check if a redirect URL is safe (prevents open redirect attacks).
+ * Allows: relative paths (starting with `/`, not `//`) and absolute URLs on allowed origins.
+ * Rejects: absolute URLs to unknown domains, protocol-relative URLs, javascript: URIs, data: URIs.
+ */
+export function isSafeRedirectUrl(url: string): boolean {
+  if (!url) return false
+  // Relative paths are safe (but reject protocol-relative `//evil.com`)
+  if (url.startsWith('/') && !url.startsWith('//')) return true
+  // Absolute URLs must be on an allowed origin
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    return isAllowedOrigin(parsed.origin)
+  } catch {
+    return false
+  }
 }
 
 /**

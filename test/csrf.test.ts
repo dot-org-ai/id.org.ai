@@ -13,6 +13,7 @@ import {
   buildCSRFCookie,
   extractCSRFFromCookie,
   isAllowedOrigin,
+  isSafeRedirectUrl,
   getCorsOrigin,
   validateOrigin,
   CSRF_COOKIE_NAME,
@@ -216,6 +217,23 @@ describe('isAllowedOrigin', () => {
     // headless.ly.evil.com should NOT match
     expect(isAllowedOrigin('https://headless.ly.evil.com')).toBe(false)
   })
+
+  it('allows .do domains', () => {
+    expect(isAllowedOrigin('https://oauth.do')).toBe(true)
+    expect(isAllowedOrigin('https://events.do')).toBe(true)
+    expect(isAllowedOrigin('https://database.do')).toBe(true)
+    expect(isAllowedOrigin('https://functions.do')).toBe(true)
+    expect(isAllowedOrigin('https://agents.do')).toBe(true)
+  })
+
+  it('allows subdomains of .do domains', () => {
+    expect(isAllowedOrigin('https://api.events.do')).toBe(true)
+    expect(isAllowedOrigin('https://sub.oauth.do')).toBe(true)
+  })
+
+  it('rejects bare .do without name', () => {
+    expect(isAllowedOrigin('https://.do')).toBe(false)
+  })
 })
 
 describe('getCorsOrigin', () => {
@@ -318,5 +336,50 @@ describe('validateOrigin', () => {
     const body = await response.json() as { error: string; message: string }
     expect(body.error).toBe('forbidden')
     expect(body.message).toBe('Origin not allowed')
+  })
+})
+
+// ── Safe Redirect URL Validation ────────────────────────────────────────
+
+describe('isSafeRedirectUrl', () => {
+  it('allows relative paths', () => {
+    expect(isSafeRedirectUrl('/')).toBe(true)
+    expect(isSafeRedirectUrl('/dashboard')).toBe(true)
+    expect(isSafeRedirectUrl('/~acme/settings')).toBe(true)
+  })
+
+  it('rejects protocol-relative URLs (//evil.com)', () => {
+    expect(isSafeRedirectUrl('//evil.com')).toBe(false)
+    expect(isSafeRedirectUrl('//evil.com/path')).toBe(false)
+  })
+
+  it('allows absolute URLs on allowed origins', () => {
+    expect(isSafeRedirectUrl('https://headless.ly/dashboard')).toBe(true)
+    expect(isSafeRedirectUrl('https://crm.headless.ly/contacts')).toBe(true)
+    expect(isSafeRedirectUrl('https://id.org.ai/settings')).toBe(true)
+    expect(isSafeRedirectUrl('https://oauth.do/callback')).toBe(true)
+    expect(isSafeRedirectUrl('http://localhost:3000/dev')).toBe(true)
+  })
+
+  it('rejects absolute URLs to unknown domains', () => {
+    expect(isSafeRedirectUrl('https://evil.com')).toBe(false)
+    expect(isSafeRedirectUrl('https://evil.com/phish')).toBe(false)
+    expect(isSafeRedirectUrl('https://headless.ly.evil.com/steal')).toBe(false)
+  })
+
+  it('rejects javascript: URIs', () => {
+    expect(isSafeRedirectUrl('javascript:alert(1)')).toBe(false)
+  })
+
+  it('rejects data: URIs', () => {
+    expect(isSafeRedirectUrl('data:text/html,<h1>pwned</h1>')).toBe(false)
+  })
+
+  it('rejects empty string', () => {
+    expect(isSafeRedirectUrl('')).toBe(false)
+  })
+
+  it('rejects malformed URLs', () => {
+    expect(isSafeRedirectUrl('not a url at all')).toBe(false)
   })
 })

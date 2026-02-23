@@ -90,6 +90,7 @@ import {
   decodeStateWithCSRF,
   extractCSRFFromCookie,
   isAllowedOrigin,
+  isSafeRedirectUrl,
   validateOrigin,
 } from '../src/csrf'
 import { AUDIT_EVENTS } from '../src/audit'
@@ -749,7 +750,8 @@ app.get('/login', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
-  const continueUrl = c.req.query('continue') || c.req.query('redirect_uri') || '/'
+  const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/'
+  const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/'
   const csrf = crypto.randomUUID()
   const state = encodeLoginState(csrf, continueUrl)
 
@@ -852,8 +854,8 @@ app.get('/callback', async (c) => {
     { issuer: 'https://id.org.ai', expiresIn: 3600 },
   )
 
-  // Build redirect response with auth cookie
-  const continueUrl = decoded.continue || '/'
+  // Build redirect response with auth cookie (validate redirect target)
+  const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? (decoded.continue || '/') : '/'
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
@@ -871,7 +873,8 @@ app.get('/callback', async (c) => {
 // ── Logout ────────────────────────────────────────────────────────────────────
 
 app.get('/logout', (c) => {
-  const returnUrl = c.req.query('return_url') || '/'
+  const rawReturnUrl = c.req.query('return_url') || '/'
+  const returnUrl = isSafeRedirectUrl(rawReturnUrl) ? rawReturnUrl : '/'
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
