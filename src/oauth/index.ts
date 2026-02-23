@@ -1,3 +1,26 @@
+/**
+ * id.org.ai/oauth — Complete OAuth 2.1 Primitive Set
+ *
+ * This module re-exports the full suite of OAuth 2.1 primitives that have
+ * been moved from @dotdo/oauth into id.org.ai as the canonical location.
+ *
+ * Modules:
+ *   - types        — Core data structures (OAuthUser, OAuthClient, tokens, grants, etc.)
+ *   - storage      — OAuthStorage interface + MemoryOAuthStorage implementation
+ *   - provider     — OAuthProvider class (DO-backed authorization server)
+ *   - server       — createOAuth21Server factory + Hono route modules
+ *   - helpers      — Shared server context, issuer resolution, scope validation
+ *   - pkce         — PKCE + crypto utilities (code challenge, hashing, token gen)
+ *   - jwt          — JWT signing (SigningKeyManager, signAccessToken, signIdToken)
+ *   - jwt-verify   — JWT verification with JWKS support (verifyJWT, decodeJWT)
+ *   - consent      — Consent screen HTML generation + scope descriptions
+ *   - guards       — Runtime type guards for JSON validation
+ *   - dev          — Dev/test helpers (test users, login forms)
+ *   - stripe       — Stripe identity linkage (customer mapping, webhook handling)
+ *
+ * @module oauth
+ */
+
 // Core OAuth 2.1 types (canonical, from @dotdo/oauth)
 export type {
   OAuthUser,
