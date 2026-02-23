@@ -1,2 +1,12 @@
-export { SigningKeyManager, signJWT, generateSigningKey, exportKeysToJWKS, exportPublicKeyToJWKS } from './signing'
-export type { SigningKey, SerializedSigningKey, JWKS, JWKSPublicKey, AccessTokenClaims } from './signing'
+export {
+  SigningKeyManager,
+  signJWT,
+  signAccessToken,
+  verifyJWTWithKeyManager,
+  generateSigningKey,
+  exportKeysToJWKS,
+  exportPublicKeyToJWKS,
+  serializeSigningKey,
+  deserializeSigningKey,
+} from './signing'
+export type { SigningKey, SerializedSigningKey, JWKS, JWKSPublicKey, AccessTokenClaims, VerifyJWTOptions } from './signing'

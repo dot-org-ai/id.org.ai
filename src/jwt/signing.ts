@@ -5,6 +5,7 @@
  * Keys are persisted in Durable Object storage and cached in memory.
  *
  * Ported from @dotdo/oauth jwt-signing.ts — adapted for DO storage.
+ * Reconciled to maintain full API parity with @dotdo/oauth.
  */
 
 // ============================================================================
@@ -51,6 +52,18 @@ export interface AccessTokenClaims {
   [key: string]: unknown
 }
 
+/**
+ * Options for verifyJWTWithKeyManager
+ */
+export interface VerifyJWTOptions {
+  /** Expected issuer claim */
+  issuer?: string
+  /** Expected audience claim */
+  audience?: string | string[]
+  /** Clock tolerance in seconds (default: 60) */
+  clockTolerance?: number
+}
+
 // ============================================================================
 // Base64URL Utilities
 // ============================================================================
@@ -62,12 +75,21 @@ function base64UrlEncode(buffer: ArrayBuffer): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
+function base64UrlDecode(str: string): ArrayBuffer {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+  while (base64.length % 4 !== 0) base64 += '='
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes.buffer as ArrayBuffer
+}
+
 // ============================================================================
 // Key Generation & Serialization
 // ============================================================================
 
 export async function generateSigningKey(kid?: string): Promise<SigningKey> {
-  const keyPair = await crypto.subtle.generateKey(
+  const keyPair = (await crypto.subtle.generateKey(
     {
       name: 'RSASSA-PKCS1-v1_5',
       modulusLength: 2048,
@@ -76,7 +98,7 @@ export async function generateSigningKey(kid?: string): Promise<SigningKey> {
     },
     true,
     ['sign', 'verify'],
-  ) as CryptoKeyPair
+  )) as CryptoKeyPair
 
   if (!kid) {
     const jwk = (await crypto.subtle.exportKey('jwk', keyPair.publicKey)) as JsonWebKey
@@ -177,6 +199,103 @@ export async function signJWT(
   return `${data}.${signatureB64}`
 }
 
+/**
+ * Alias for signJWT — matches @dotdo/oauth's signAccessToken API
+ */
+export const signAccessToken = signJWT
+
+// ============================================================================
+// JWT Verification with SigningKeyManager
+// ============================================================================
+
+/**
+ * Verify a JWT using a SigningKeyManager's keys.
+ *
+ * Tries all keys in the manager (to support key rotation).
+ * Validates signature, exp, iss, and optionally aud claims.
+ *
+ * @param token - The JWT string to verify
+ * @param keyManager - SigningKeyManager with keys to verify against
+ * @param options - Optional issuer/audience validation
+ * @returns Decoded payload on success, or null on failure
+ */
+export async function verifyJWTWithKeyManager(
+  token: string,
+  keyManager: SigningKeyManager,
+  options: VerifyJWTOptions = {},
+): Promise<(AccessTokenClaims & Record<string, unknown>) | null> {
+  const { issuer, audience, clockTolerance = 60 } = options
+
+  try {
+    // Parse the JWT
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+
+    const [headerB64, payloadB64, signatureB64] = parts
+
+    let header: { alg: string; kid?: string }
+    let payload: Record<string, unknown>
+    try {
+      header = JSON.parse(atob(headerB64!.replace(/-/g, '+').replace(/_/g, '/')))
+      payload = JSON.parse(atob(payloadB64!.replace(/-/g, '+').replace(/_/g, '/')))
+    } catch {
+      return null
+    }
+
+    if (header.alg !== 'RS256') return null
+
+    // Try all keys in the manager (supports rotation)
+    const keys = keyManager.getAllKeys()
+    if (keys.length === 0) return null
+
+    const encoder = new TextEncoder()
+    const data = encoder.encode(`${headerB64}.${payloadB64}`)
+    const sigBytes = base64UrlDecode(signatureB64!)
+
+    let signatureValid = false
+    for (const key of keys) {
+      // If header has kid, only try matching key
+      if (header.kid && key.kid !== header.kid) continue
+      try {
+        const valid = await crypto.subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, key.publicKey, sigBytes, data)
+        if (valid) {
+          signatureValid = true
+          break
+        }
+      } catch {
+        continue
+      }
+    }
+
+    if (!signatureValid) return null
+
+    const now = Math.floor(Date.now() / 1000)
+
+    // Validate exp
+    if (typeof payload['exp'] === 'number' && now > payload['exp'] + clockTolerance) {
+      return null
+    }
+
+    // Validate iss
+    if (issuer !== undefined && payload['iss'] !== issuer) {
+      return null
+    }
+
+    // Validate aud
+    if (audience !== undefined) {
+      const tokenAud = Array.isArray(payload['aud']) ? payload['aud'] : payload['aud'] ? [payload['aud']] : []
+      const expectedAud = Array.isArray(audience) ? audience : [audience]
+      if (!expectedAud.some((a) => tokenAud.includes(a))) {
+        return null
+      }
+    }
+
+    return payload as AccessTokenClaims & Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 // ============================================================================
 // SigningKeyManager — DO-backed key storage with in-memory cache
 // ============================================================================
@@ -232,17 +351,46 @@ export class SigningKeyManager {
     return this.keys[this.keys.length - 1]!
   }
 
+  /**
+   * Get all keys (for JWKS endpoint and verification).
+   * Synchronous — returns empty array if not yet loaded.
+   */
+  getAllKeys(): SigningKey[] {
+    return [...this.keys]
+  }
+
   async getJWKS(): Promise<JWKS> {
     await this.ensureLoaded()
     return exportKeysToJWKS(this.keys)
   }
 
-  async sign(
-    claims: AccessTokenClaims,
-    options: { issuer: string; audience?: string; expiresIn?: number },
-  ): Promise<string> {
+  async sign(claims: AccessTokenClaims, options: { issuer: string; audience?: string; expiresIn?: number }): Promise<string> {
     const key = await this.getCurrentKey()
     return signJWT(key, claims, options)
+  }
+
+  /**
+   * Alias for sign() — matches @dotdo/oauth's SigningKeyManager.signAccessToken API
+   */
+  async signAccessToken(claims: AccessTokenClaims, options: { issuer: string; audience?: string; expiresIn?: number }): Promise<string> {
+    return this.sign(claims, options)
+  }
+
+  /**
+   * Load keys from serialized format (e.g. from external storage).
+   * Replaces any previously loaded keys.
+   */
+  async loadKeys(serializedKeys: SerializedSigningKey[]): Promise<void> {
+    this.keys = await Promise.all(serializedKeys.map(deserializeSigningKey))
+    this.loaded = true
+  }
+
+  /**
+   * Export keys to serializable format for external storage
+   */
+  async exportKeys(): Promise<SerializedSigningKey[]> {
+    await this.ensureLoaded()
+    return Promise.all(this.keys.map(serializeSigningKey))
   }
 
   async rotateKey(): Promise<SigningKey> {

@@ -40,3 +40,6 @@ export {
   base64UrlDecode,
   constantTimeEqual,
 } from './pkce'
+
+// JWT signing + verification (re-exported from ../jwt for convenience)
+export * from '../jwt'
