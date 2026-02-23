@@ -166,6 +166,47 @@ export function extractGitHubId(user: WorkOSUser): string | null {
 }
 
 // ============================================================================
+// Fetch Organization (includes domains)
+// ============================================================================
+
+export interface WorkOSOrganization {
+  id: string
+  name: string
+  external_id?: string
+  metadata?: Record<string, string>
+  domains?: Array<{ domain: string; state: string }>
+}
+
+export interface OrgInfo {
+  name: string
+  domains: string[]
+}
+
+/**
+ * Fetch a WorkOS organization's name and verified domains.
+ * Domains are the namespace in our data model — they define tenant context.
+ *
+ * @param apiKey - WorkOS API key
+ * @param orgId - WorkOS organization ID
+ * @returns Org name + verified domain strings, or null on failure
+ */
+export async function fetchOrgInfo(apiKey: string, orgId: string): Promise<OrgInfo | null> {
+  try {
+    const response = await fetch(`https://api.workos.com/organizations/${orgId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    const org = (await response.json()) as WorkOSOrganization
+    return {
+      name: org.name,
+      domains: (org.domains ?? []).filter((d) => d.state === 'verified').map((d) => d.domain),
+    }
+  } catch {
+    return null
+  }
+}
+
+// ============================================================================
 // Update WorkOS User (external_id, metadata)
 // ============================================================================
 

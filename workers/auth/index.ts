@@ -259,7 +259,9 @@ async function verifyJWT(token: string, env: Env): Promise<VerifyResult> {
 }
 
 function jwtPayloadToUser(payload: jose.JWTPayload): AuthUser {
-  const orgId = payload.org_id as string | undefined
+  // Support both new nested org format (id.org.ai) and legacy flat org_id (WorkOS, oauth.do)
+  const org = payload.org as { id?: string; name?: string; domains?: string[] } | undefined
+  const orgId = org?.id || (payload.org_id as string | undefined)
   return {
     id: payload.sub || '',
     email: payload.email as string | undefined,

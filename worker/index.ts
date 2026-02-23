@@ -36,7 +36,7 @@ import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, updateWorkOSUser, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, fetchOrgInfo, updateWorkOSUser, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -540,12 +540,13 @@ export class AuthService extends WorkerEntrypoint<Env> {
         issuer: 'https://id.org.ai',
       })
 
+      const org = payload.org as { id?: string; name?: string; domains?: string[] } | undefined
       return {
         id: payload.sub || '',
         email: payload.email as string | undefined,
         name: payload.name as string | undefined,
         image: payload.image as string | undefined,
-        organizationId: payload.org_id as string | undefined,
+        organizationId: org?.id || (payload.org_id as string | undefined),
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         metadata: payload.metadata as Record<string, unknown> | undefined,
@@ -893,8 +894,12 @@ app.get('/callback', async (c) => {
     return errorResponse(c, 502, ErrorCode.ServerError, err.message)
   }
 
-  // Fetch full WorkOS user profile (includes linked identities with provider IDs)
-  const workosUser = await fetchWorkOSUser(apiKey, authResult.user.id)
+  // Fetch full WorkOS user profile + org info in parallel
+  const orgId = authResult.user.organization_id || authResult.organization_id
+  const [workosUser, orgInfo] = await Promise.all([
+    fetchWorkOSUser(apiKey, authResult.user.id),
+    orgId ? fetchOrgInfo(apiKey, orgId) : Promise.resolve(null),
+  ])
   const githubIdFromWorkOS = workosUser ? extractGitHubId(workosUser) : null
 
   // Create or find identity for this human user
@@ -952,15 +957,15 @@ app.get('/callback', async (c) => {
     )
   }
 
-  // Sign our own JWT for the auth cookie
+  // Sign our own JWT for the auth cookie (camelCase claims, nested org object)
   const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
   const jwt = await signingManager.sign(
     {
       sub: authResult.user.id,
       email: authResult.user.email,
       name: [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ') || undefined,
-      org_id: authResult.user.organization_id || authResult.organization_id,
-      github_id: githubId,
+      githubId: githubId,
+      org: orgId ? { id: orgId, name: orgInfo?.name, domains: orgInfo?.domains?.length ? orgInfo.domains : undefined } : undefined,
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
     },
