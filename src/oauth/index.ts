@@ -24,3 +24,19 @@ export type { OAuthStorage, ListOptions } from './storage'
 // OAuth 2.1 Provider implementation
 export { OAuthProvider } from './provider'
 export type { OAuthConfig, OAuthProviderClient } from './provider'
+
+// PKCE + crypto utilities (canonical, from @dotdo/oauth)
+export {
+  generateCodeVerifier,
+  generateCodeChallenge,
+  verifyCodeChallenge,
+  generatePkce,
+  generateState,
+  generateToken,
+  generateAuthorizationCode,
+  hashClientSecret,
+  verifyClientSecret,
+  base64UrlEncode,
+  base64UrlDecode,
+  constantTimeEqual,
+} from './pkce'
