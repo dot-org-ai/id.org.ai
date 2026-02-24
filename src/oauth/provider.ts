@@ -224,7 +224,7 @@ function oauthError(error: string, description: string, status = 400): Response 
 // Token Lifetimes (seconds)
 // ============================================================================
 
-const ACCESS_TOKEN_TTL = 3600              // 1 hour
+const ACCESS_TOKEN_TTL = 30 * 24 * 3600    // 30 days
 const REFRESH_TOKEN_TTL = 30 * 24 * 3600   // 30 days
 const AUTH_CODE_TTL = 600                   // 10 minutes
 const DEVICE_CODE_TTL = 1800               // 30 minutes

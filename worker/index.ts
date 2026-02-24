@@ -911,7 +911,11 @@ app.get('/login', async (c) => {
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/'
   const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/'
   const csrf = crypto.randomUUID()
-  const state = encodeLoginState(csrf, continueUrl)
+
+  // Capture the requesting origin so the callback can redirect back and set the cookie
+  // on the correct domain (e.g. apis.do, not oauth.do)
+  const requestOrigin = new URL(c.req.url).origin
+  const state = encodeLoginState(csrf, continueUrl, requestOrigin)
 
   // Store CSRF token for validation on callback (5 min TTL)
   const oauthStub = getStubForIdentity(c.env, 'oauth')
@@ -922,7 +926,10 @@ app.get('/login', async (c) => {
     options: { expirationTtl: 300 },
   })
 
-  const redirectUri = new URL('/callback', c.req.url).origin + '/callback'
+  // Use the common callback URL registered with WorkOS — NOT the requesting domain.
+  // All *.do domains route through this worker via AUTH_HTTP service binding, so we
+  // use a single registered redirect URI and bounce back to the original domain after.
+  const redirectUri = c.env.REDIRECT_URI || 'https://oauth.do/callback'
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
@@ -931,7 +938,49 @@ app.get('/login', async (c) => {
   return c.redirect(authUrl, 302)
 })
 
+// ── /callback — Origin callback: exchange one-time auth code for JWT cookie ──
+// When login is initiated from a different domain (e.g. apis.do), the server-side
+// /api/callback creates a one-time code and redirects here so the cookie is set
+// on the correct domain. This route is proxied via AUTH_HTTP from *.do domains.
+// Without _auth_code, falls through to ASSETS for the SPA client-side callback.
 app.get('/callback', async (c) => {
+  const authCode = c.req.query('_auth_code')
+  if (!authCode) {
+    // No auth code — let the SPA handle it
+    return c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing _auth_code parameter')
+  }
+
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const stored = await oauthStub.oauthStorageOp({ op: 'get', key: `auth-code:${authCode}` })
+  if (!stored.value) {
+    return errorResponse(c, 400, ErrorCode.InvalidGrant, 'Invalid or expired auth code')
+  }
+  // Consume one-time code
+  await oauthStub.oauthStorageOp({ op: 'delete', key: `auth-code:${authCode}` })
+
+  const { jwt, continueUrl } = stored.value as { jwt: string; continueUrl: string }
+
+  // Set cookie on the requesting domain (e.g. apis.do)
+  const reqUrl = new URL(c.req.url)
+  const isSecure = reqUrl.protocol === 'https:'
+  const domain = getRootDomain(reqUrl.hostname)
+  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
+
+  const redirectTo = isSafeRedirectUrl(continueUrl) ? continueUrl : '/'
+  const headers = new Headers({ Location: redirectTo })
+  for (const cookie of cookieHeaders) {
+    headers.append('Set-Cookie', cookie)
+  }
+  return new Response(null, { status: 302, headers })
+})
+
+// ── /api/callback — Server-side WorkOS callback ─────────────────────────────
+// WorkOS redirects the browser here after authentication (registered redirect_uri).
+// Exchanges the code, signs a JWT, then either:
+//   - Cross-origin: stores one-time code → redirects to origin's /callback
+//   - Same-origin: sets cookie directly
+app.get('/api/callback', async (c) => {
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
   const clientId = c.env.WORKOS_CLIENT_ID
   const apiKey = c.env.WORKOS_API_KEY
   if (!clientId || !apiKey) {
@@ -957,7 +1006,6 @@ app.get('/callback', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid state parameter')
   }
 
-  const oauthStub = getStubForIdentity(c.env, 'oauth')
   const csrfData = await oauthStub.oauthStorageOp({ op: 'get', key: `login-csrf:${decoded.csrf}` })
   if (!csrfData.value) {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
@@ -1063,12 +1111,32 @@ app.get('/callback', async (c) => {
     { issuer: 'https://id.org.ai', expiresIn: 3600 },
   )
 
-  // Build redirect response with auth cookie (validate redirect target)
   const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? (decoded.continue || '/') : '/'
+
+  // ── Cross-origin redirect: bounce to the requesting domain to set cookie ─
+  // If the login was initiated from a different domain (e.g. apis.do), we can't
+  // set the cookie from oauth.do. Store a one-time code and redirect to the
+  // origin's /callback so the cookie is set on the correct domain.
+  const currentOrigin = new URL(c.req.url).origin
+  if (decoded.origin && decoded.origin !== currentOrigin) {
+    const oneTimeCode = crypto.randomUUID()
+    await oauthStub.oauthStorageOp({
+      op: 'put',
+      key: `auth-code:${oneTimeCode}`,
+      value: { jwt, continueUrl },
+      options: { expirationTtl: 60 },
+    })
+
+    const callbackUrl = new URL('/callback', decoded.origin)
+    callbackUrl.searchParams.set('_auth_code', oneTimeCode)
+    return c.redirect(callbackUrl.toString(), 302)
+  }
+
+  // ── Same-origin (oauth.do/login directly): set cookie directly ───────────
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
-  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 3600 })
+  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
 
   const headers = new Headers({ Location: continueUrl })
   for (const cookie of cookieHeaders) {

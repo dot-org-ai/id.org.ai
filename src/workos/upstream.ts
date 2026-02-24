@@ -365,20 +365,20 @@ export async function updateWorkOSUser(
  * Encode a state parameter with a CSRF token and optional continue URL.
  * Format: base64url({ csrf, continue })
  */
-export function encodeLoginState(csrf: string, continueUrl?: string): string {
-  const payload = JSON.stringify({ csrf, continue: continueUrl })
+export function encodeLoginState(csrf: string, continueUrl?: string, origin?: string): string {
+  const payload = JSON.stringify({ csrf, continue: continueUrl, origin })
   return btoa(payload).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
 /**
  * Decode a state parameter back to its components.
  */
-export function decodeLoginState(state: string): { csrf: string; continue?: string } | null {
+export function decodeLoginState(state: string): { csrf: string; continue?: string; origin?: string } | null {
   try {
     const padded = state.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - (state.length % 4)) % 4)
     const payload = JSON.parse(atob(padded))
     if (!payload.csrf) return null
-    return { csrf: payload.csrf, continue: payload.continue }
+    return { csrf: payload.csrf, continue: payload.continue, origin: payload.origin }
   } catch {
     return null
   }

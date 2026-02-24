@@ -78,7 +78,7 @@ function buildAuthCookie(jwt: string, isSecure: boolean): string {
     'HttpOnly',
     'Path=/',
     'SameSite=Lax',
-    'Max-Age=3600',
+    'Max-Age=2592000',
     ...(isSecure ? ['Secure'] : []),
   ].join('; ')
 }
@@ -294,9 +294,9 @@ describe('Cookie Building', () => {
       expect(cookie).toContain('Path=/')
     })
 
-    it('contains Max-Age=3600', () => {
+    it('contains Max-Age=2592000 (30 days)', () => {
       const cookie = buildAuthCookie('jwt_token', true)
-      expect(cookie).toContain('Max-Age=3600')
+      expect(cookie).toContain('Max-Age=2592000')
     })
 
     it('includes Secure flag on HTTPS', () => {
@@ -327,14 +327,14 @@ describe('Cookie Building', () => {
       expect(parts).toContain('HttpOnly')
       expect(parts).toContain('SameSite=Lax')
       expect(parts).toContain('Path=/')
-      expect(parts).toContain('Max-Age=3600')
+      expect(parts).toContain('Max-Age=2592000')
       expect(parts).toContain('Secure')
     })
 
     it('HTTPS cookie has exactly 6 parts', () => {
       const cookie = buildAuthCookie('jwt', true)
       const parts = cookie.split('; ')
-      expect(parts).toHaveLength(6) // auth=jwt, HttpOnly, Path=/, SameSite=Lax, Max-Age=3600, Secure
+      expect(parts).toHaveLength(6) // auth=jwt, HttpOnly, Path=/, SameSite=Lax, Max-Age=2592000, Secure
     })
 
     it('HTTP cookie has exactly 5 parts (no Secure)', () => {
@@ -741,7 +741,7 @@ describe('End-to-End Cookie Auth Flows', () => {
     const setCookie = buildAuthCookie(jwt, true)
     expect(setCookie).toContain('HttpOnly')
     expect(setCookie).toContain('Secure')
-    expect(setCookie).toContain('Max-Age=3600')
+    expect(setCookie).toContain('Max-Age=2592000')
 
     // 3. Simulate browser sending cookie back in request
     const cookieHeader = `auth=${jwt}; theme=dark; _ga=GA1.2.xxx`
