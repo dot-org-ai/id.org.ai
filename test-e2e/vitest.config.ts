@@ -2,11 +2,12 @@ import { defineConfig } from 'vitest/config'
 import { resolve } from 'path'
 import { existsSync, readFileSync } from 'fs'
 
-// Load .env from test-e2e/, .org.ai/id/, or root project
+// Load .env from test-e2e/, .org.ai/id/, root project, and .do/db/ (for ClickHouse credentials)
 const envFiles = [
   resolve(__dirname, '.env'),
   resolve(__dirname, '..', '.env'),
   resolve(__dirname, '..', '..', '..', '.env'),
+  resolve(__dirname, '..', '..', '..', '.do', 'db', '.env'),
 ].filter(existsSync)
 
 // Parse .env file into key=value pairs (dotenv-compatible)

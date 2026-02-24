@@ -1,21 +1,16 @@
 /**
  * Flow 1: Email + Password Login via WorkOS AuthKit
  *
- * Self-bootstrapping: on first run, signs up the test user via AuthKit
- * (with email verification through emails.do). On subsequent runs, just logs in.
- *
  * Steps:
- *   1. Navigate to oauth.do/login
- *   2. AuthKit login UI loads (login.oauth.do → login.org.ai)
- *   3. Attempt login — if user doesn't exist, sign up first
- *   4. AuthKit authenticates → redirects to /callback
- *   5. /callback sets auth cookie → redirects to /
- *   6. Verify: cookie exists, JWT decodes with correct camelCase claims
+ *   1. Navigate to oauth.do/login → AuthKit (login.oauth.do)
+ *   2. Fill email + password
+ *   3. Handle email verification if required (poll ClickHouse for 6-digit code)
+ *   4. AuthKit authenticates → redirects to /callback → sets auth cookie
+ *   5. Verify: cookie exists, JWT decodes with correct camelCase claims + nested org
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials } from './helpers/browser'
-import { waitForEmail } from './helpers/email'
+import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials, handleEmailVerification } from './helpers/browser'
 import { decodeJwtPayload, assertJwtClaims } from './helpers/jwt'
 import type { Page } from 'playwright'
 
@@ -25,6 +20,7 @@ const TEST_PASSWORD = process.env.E2E_AUTH_PASSWORD
 
 describe('Email + Password Login', () => {
   let page: Page
+  let authJwt: string | null = null
 
   beforeAll(async () => {
     if (!TEST_PASSWORD) {
@@ -38,122 +34,87 @@ describe('Email + Password Login', () => {
     await closeBrowser()
   })
 
-  it('should navigate to login and see AuthKit', async () => {
+  it('should authenticate with email and password via AuthKit', async () => {
     if (!TEST_PASSWORD) return
 
-    await page.goto(`${ID_URL}/login`)
+    // Navigate to login — handle ERR_ABORTED from redirect gracefully
+    await page.goto(`${ID_URL}/login`, { waitUntil: 'domcontentloaded' }).catch(() => {})
     await page.waitForTimeout(3000)
 
-    const url = page.url()
+    let url = page.url()
     expect(isAuthKitUrl(url) || url.includes('oauth.do') || url.includes('id.org.ai')).toBe(true)
-  })
 
-  it('should authenticate with email and password (signs up on first run)', async () => {
-    if (!TEST_PASSWORD) return
+    // If already on the app (logged in from previous session), skip auth
+    if (isPostCallback(url)) {
+      authJwt = await getAuthCookie(page)
+      expect(authJwt).toBeTruthy()
+      return
+    }
 
-    const signupStartTs = Date.now()
-
-    // Navigate fresh to login
-    await page.goto(`${ID_URL}/login`)
-    await page.waitForTimeout(3000)
-
-    const url = page.url()
+    // Fill AuthKit credentials
     if (isAuthKitUrl(url)) {
       await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
     }
 
-    // Wait for either: success redirect, or an error (user not found)
-    const landed = await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 15_000 })
-      .then(() => true)
-      .catch(() => false)
+    // Wait for either: success redirect or email verification
+    await page.waitForTimeout(3000)
+    url = page.url()
 
-    if (landed) {
-      const jwt = await getAuthCookie(page)
-      expect(jwt).toBeTruthy()
-      return
-    }
+    // Handle email verification if required
+    if (url.includes('email-verification')) {
+      const verified = await handleEmailVerification(page, TEST_EMAIL, { timeoutMs: 90_000 })
+      expect(verified).toBe(true)
 
-    // Login failed — user may not exist yet. Try sign-up flow.
-    console.log('Login failed — attempting sign-up for', TEST_EMAIL)
-
-    const signUpLink = await page.$('text=Sign up')
-      ?? await page.$('text=Create account')
-      ?? await page.$("text=Don't have an account")
-      ?? await page.$('[data-testid="sign-up-link"]')
-      ?? await page.$('a[href*="sign-up"]')
-
-    if (signUpLink) {
-      await signUpLink.click()
-      await page.waitForTimeout(1000)
-    } else {
-      await page.goto(`${ID_URL}/login`)
-      await page.waitForTimeout(3000)
-    }
-
-    // Fill sign-up form
-    const currentUrl = page.url()
-    if (isAuthKitUrl(currentUrl)) {
-      const signUpBtn = await page.$('text=Sign up') ?? await page.$('text=Create account')
-      if (signUpBtn) {
-        await signUpBtn.click()
-        await page.waitForTimeout(1000)
+      // Wait for the final redirect after verification
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(2000)
+        url = page.url()
+        if (isPostCallback(url)) break
       }
-      await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
-      await page.waitForTimeout(3000)
     }
 
-    // AuthKit may require email verification
-    const signedUpDirectly = await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 10_000 })
-      .then(() => true)
-      .catch(() => false)
+    // If still on AuthKit (e.g., user doesn't exist), try sign-up
+    if (isAuthKitUrl(url) && !url.includes('email-verification')) {
+      const signUpLink = await page.$('text=Sign up')
+      if (signUpLink) {
+        await signUpLink.click()
+        await page.waitForTimeout(2000)
 
-    if (!signedUpDirectly) {
-      try {
-        const email = await waitForEmail(TEST_EMAIL, { timeoutMs: 60_000, afterTs: signupStartTs })
-        const verifyMatch = email.html_body?.match(/href="(https:\/\/[^"]*(?:verify|confirm|activate)[^"]*)"/)
-          ?? email.html_body?.match(/href="(https:\/\/[^"]*workos[^"]*)"/)
-          ?? email.text_body?.match(/(https:\/\/\S*(?:verify|confirm|activate)\S*)/)
-        if (verifyMatch) {
-          await page.goto(verifyMatch[1])
-          await page.waitForTimeout(3000)
-        }
-      } catch {
-        console.warn('No verification email received — may already be verified')
-      }
+        const firstNameField = await page.$('input[name="firstName"], input[name="first_name"]')
+        if (firstNameField) await page.fill('input[name="firstName"], input[name="first_name"]', 'E2E')
+        const lastNameField = await page.$('input[name="lastName"], input[name="last_name"]')
+        if (lastNameField) await page.fill('input[name="lastName"], input[name="last_name"]', 'Test')
 
-      // After verification, login again
-      await page.goto(`${ID_URL}/login`)
-      await page.waitForTimeout(3000)
-      const loginUrl = page.url()
-      if (isAuthKitUrl(loginUrl)) {
         await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
+        await page.waitForTimeout(3000)
+
+        if (page.url().includes('email-verification')) {
+          await handleEmailVerification(page, TEST_EMAIL, { timeoutMs: 90_000 })
+          for (let i = 0; i < 20; i++) {
+            await page.waitForTimeout(2000)
+            if (isPostCallback(page.url())) break
+          }
+        }
       }
-      await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 30_000 })
     }
 
-    const jwt = await getAuthCookie(page)
-    expect(jwt).toBeTruthy()
+    authJwt = await getAuthCookie(page)
+    expect(authJwt).toBeTruthy()
   }, 120_000)
 
   it('should have correct JWT claims (camelCase, nested org)', async () => {
-    if (!TEST_PASSWORD) return
+    if (!TEST_PASSWORD || !authJwt) return
 
-    const jwt = await getAuthCookie(page)
-    expect(jwt).toBeTruthy()
-
-    const claims = decodeJwtPayload(jwt!)
+    const claims = decodeJwtPayload(authJwt)
     assertJwtClaims(claims)
     expect(claims.email).toBe(TEST_EMAIL)
     expect(claims.sub).toBeTruthy()
   })
 
   it('should have org claim (personal org auto-created)', async () => {
-    if (!TEST_PASSWORD) return
+    if (!TEST_PASSWORD || !authJwt) return
 
-    const jwt = await getAuthCookie(page)
-    expect(jwt).toBeTruthy()
-
-    const claims = decodeJwtPayload(jwt!)
+    const claims = decodeJwtPayload(authJwt)
     if (claims.org) {
       const org = claims.org as Record<string, unknown>
       expect(org.id).toBeTruthy()

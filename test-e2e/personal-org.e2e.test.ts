@@ -14,8 +14,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials } from './helpers/browser'
-import { waitForEmail } from './helpers/email'
+import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials, handleEmailVerification } from './helpers/browser'
 import { decodeJwtPayload, assertJwtClaims, assertNestedOrgClaim } from './helpers/jwt'
 import type { Page } from 'playwright'
 
@@ -42,13 +41,14 @@ describe('Personal Org Auto-Creation', () => {
     await closeBrowser()
   })
 
-  it('should sign up as a new user via AuthKit', async () => {
+  it('should sign up as a new user and complete email verification', async () => {
     if (!TEST_PASSWORD) return
 
-    await page.goto(`${ID_URL}/login`)
+    // Navigate to login — handle ERR_ABORTED from redirect gracefully
+    await page.goto(`${ID_URL}/login`, { waitUntil: 'domcontentloaded' }).catch(() => {})
     await page.waitForTimeout(3000)
 
-    const url = page.url()
+    let url = page.url()
 
     if (isAuthKitUrl(url)) {
       // Click "Sign up" link
@@ -63,41 +63,37 @@ describe('Personal Org Auto-Creation', () => {
         await page.waitForTimeout(1000)
       }
 
+      // Fill in name fields if present (sign-up form)
+      const firstNameField = await page.$('input[name="firstName"], input[name="first_name"]')
+      if (firstNameField) await page.fill('input[name="firstName"], input[name="first_name"]', 'E2E')
+      const lastNameField = await page.$('input[name="lastName"], input[name="last_name"]')
+      if (lastNameField) await page.fill('input[name="lastName"], input[name="last_name"]', 'PersonalOrg')
+
       await fillAuthKitCredentials(page, FRESH_USER_EMAIL, TEST_PASSWORD)
       await page.waitForTimeout(3000)
     }
-  }, 30_000)
 
-  it('should complete email verification if required', async () => {
-    if (!TEST_PASSWORD) return
+    url = page.url()
 
-    const url = page.url()
+    // Handle email verification if required (6-digit code via ClickHouse)
+    if (url.includes('email-verification') || url.includes('verify')) {
+      const verified = await handleEmailVerification(page, FRESH_USER_EMAIL, { timeoutMs: 90_000 })
+      expect(verified).toBe(true)
 
-    // Check if we landed back home (no verification needed)
-    if (isPostCallback(url)) {
-      const jwt = await getAuthCookie(page)
-      if (jwt) return
-    }
-
-    // AuthKit may have sent a verification email — poll for it
-    try {
-      const email = await waitForEmail(FRESH_USER_EMAIL, {
-        timeoutMs: 30_000,
-        afterTs: testStartTs,
-      })
-
-      const verifyMatch = email.html_body?.match(/href="(https:\/\/[^"]*(?:verify|confirm|activate)[^"]*)"/)
-        ?? email.html_body?.match(/href="(https:\/\/[^"]*workos[^"]*)"/)
-        ?? email.text_body?.match(/(https:\/\/\S*(?:verify|confirm|activate)\S*)/)
-
-      if (verifyMatch) {
-        await page.goto(verifyMatch[1])
-        await page.waitForTimeout(3000)
+      // Wait for the final redirect after verification
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(2000)
+        url = page.url()
+        if (isPostCallback(url)) break
       }
-    } catch {
-      console.warn('No verification email received — AuthKit may auto-verify')
     }
-  }, 60_000)
+
+    // Check if we landed home or still need more steps
+    if (isPostCallback(page.url())) {
+      const jwt = await getAuthCookie(page)
+      if (jwt) return // Already authenticated
+    }
+  }, 120_000)
 
   it('should log in as the new user and get a JWT', async () => {
     if (!TEST_PASSWORD) return
@@ -106,19 +102,32 @@ describe('Personal Org Auto-Creation', () => {
     const existingJwt = await getAuthCookie(page)
     if (existingJwt) return
 
-    await page.goto(`${ID_URL}/login`)
+    await page.goto(`${ID_URL}/login`, { waitUntil: 'domcontentloaded' }).catch(() => {})
     await page.waitForTimeout(3000)
 
-    const url = page.url()
+    let url = page.url()
     if (isAuthKitUrl(url)) {
       await fillAuthKitCredentials(page, FRESH_USER_EMAIL, TEST_PASSWORD)
+      await page.waitForTimeout(3000)
     }
 
-    await page.waitForURL((url) => isPostCallback(url.toString()), { timeout: 30_000 })
+    url = page.url()
+
+    // Handle email verification if required
+    if (url.includes('email-verification') || url.includes('verify')) {
+      const verified = await handleEmailVerification(page, FRESH_USER_EMAIL, { timeoutMs: 90_000 })
+      expect(verified).toBe(true)
+
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(2000)
+        url = page.url()
+        if (isPostCallback(url)) break
+      }
+    }
 
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
-  }, 60_000)
+  }, 120_000)
 
   it('should have auto-created a personal org in the JWT', async () => {
     if (!TEST_PASSWORD) return
