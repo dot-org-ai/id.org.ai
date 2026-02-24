@@ -1108,7 +1108,7 @@ app.get('/api/callback', async (c) => {
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
     },
-    { issuer: 'https://id.org.ai', expiresIn: 3600 },
+    { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
 
   const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? (decoded.continue || '/') : '/'
