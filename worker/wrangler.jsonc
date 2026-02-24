@@ -25,7 +25,9 @@
     "WORKOS_CLIENT_ID": "client_01JQYTRXK9ZPD8JPJTKDCRB656",
     // Common callback URL registered with WorkOS — used for ALL domains (apis.do, etc.)
     // After WorkOS auth, we redirect to the original domain to set the cookie there.
-    "REDIRECT_URI": "https://oauth.do/api/callback"
+    "REDIRECT_URI": "https://oauth.do/api/callback",
+    // The WorkOS org that owns the platform — users in this org get platformRole: 'superadmin' in their JWT
+    "PLATFORM_ORG_ID": "org_01K05B2AERNQ8N0QVSRFBSCNMS"
   },
 
   "routes": [

@@ -115,6 +115,8 @@ interface Env {
   GITHUB_WEBHOOK_SECRET?: string
   // WorkOS Actions
   WORKOS_ACTIONS_SECRET?: string
+  // Platform org — users in this org get platformRole: 'superadmin'
+  PLATFORM_ORG_ID?: string
   // Branding for @mdxui/auth SPA
   APP_NAME?: string
   APP_TAGLINE?: string
@@ -1097,6 +1099,8 @@ app.get('/api/callback', async (c) => {
   }
 
   // Sign our own JWT for the auth cookie (camelCase claims, nested org object)
+  const platformOrgId = c.env.PLATFORM_ORG_ID
+  const isSuperadmin = !!(platformOrgId && orgId && orgId === platformOrgId)
   const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
   const jwt = await signingManager.sign(
     {
@@ -1107,6 +1111,7 @@ app.get('/api/callback', async (c) => {
       org: orgId ? { id: orgId, name: orgInfo?.name, domains: orgInfo?.domains?.length ? orgInfo.domains : undefined } : undefined,
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
+      ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
     },
     { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
