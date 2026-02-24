@@ -5,12 +5,12 @@
  *   1. Navigate to id.org.ai/login?provider=GitHubOAuth
  *   2. Redirects to GitHub consent screen
  *   3. Log in with test GitHub account
- *   4. GitHub redirects back → WorkOS → /callback
+ *   4. GitHub redirects back → AuthKit → /callback
  *   5. Verify: JWT includes githubId claim
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie } from './helpers/browser'
+import { newPage, closeBrowser, getAuthCookie, isPostCallback } from './helpers/browser'
 import { decodeJwtPayload, assertJwtClaims, assertGitHubIdClaim } from './helpers/jwt'
 import type { Page } from 'playwright'
 
@@ -39,7 +39,7 @@ describe('GitHub OAuth Login', () => {
 
     await page.goto(`${ID_URL}/login?provider=GitHubOAuth`)
 
-    // Should redirect through WorkOS to GitHub
+    // Should redirect through AuthKit to GitHub
     await page.waitForURL(/github\.com/, { timeout: 15_000 })
     expect(page.url()).toMatch(/github\.com/)
   })
@@ -56,20 +56,14 @@ describe('GitHub OAuth Login', () => {
     }
 
     // Handle potential 2FA or consent screen
-    // If the app was already authorized, GitHub auto-redirects
     const authorizeBtn = await page.$('#js-oauth-authorize-btn').catch(() => null)
     if (authorizeBtn) {
       await authorizeBtn.click()
     }
 
     // Wait for the redirect chain to complete back to the identity worker
-    await page.waitForURL((url) => {
-      const u = url.toString()
-      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
-        && !u.includes('/callback') && !u.includes('github.com')
-    }, { timeout: 30_000 })
+    await page.waitForURL((url) => isPostCallback(url.toString()), { timeout: 30_000 })
 
-    // Verify auth cookie was set
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
   }, 60_000)

@@ -1,32 +1,27 @@
 /**
  * Flow 1: Email + Password Login via WorkOS AuthKit
  *
- * Tests the full browser-based login flow:
+ * Self-bootstrapping: on first run, signs up the test user via AuthKit
+ * (with email verification through emails.do). On subsequent runs, just logs in.
+ *
+ * Steps:
  *   1. Navigate to oauth.do/login
- *   2. WorkOS AuthKit UI loads (hosted at api.workos.com)
- *   3. Enter test email and password
- *   4. WorkOS authenticates → redirects to /callback
+ *   2. AuthKit login UI loads (login.oauth.do → login.org.ai)
+ *   3. Attempt login — if user doesn't exist, sign up first
+ *   4. AuthKit authenticates → redirects to /callback
  *   5. /callback sets auth cookie → redirects to /
  *   6. Verify: cookie exists, JWT decodes with correct camelCase claims
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie } from './helpers/browser'
+import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials } from './helpers/browser'
+import { waitForEmail } from './helpers/email'
 import { decodeJwtPayload, assertJwtClaims } from './helpers/jwt'
-import { ensureTestUser } from './helpers/workos-setup'
 import type { Page } from 'playwright'
 
 const ID_URL = process.env.ID_URL || 'https://oauth.do'
 const TEST_EMAIL = process.env.E2E_AUTH_EMAIL || 'e2e-auth-test@emails.do'
 const TEST_PASSWORD = process.env.E2E_AUTH_PASSWORD
-const WORKOS_API_KEY = process.env.WORKOS_API_KEY
-
-/** Check if a URL is "back home" — on the identity worker, past the callback */
-function isPostCallback(url: string): boolean {
-  return (url.includes('oauth.do') || url.includes('id.org.ai') || url.includes('auth.headless.ly'))
-    && !url.includes('/callback')
-    && !url.includes('workos.com')
-}
 
 describe('Email + Password Login', () => {
   let page: Page
@@ -36,12 +31,6 @@ describe('Email + Password Login', () => {
       console.warn('Skipping email+password tests: E2E_AUTH_PASSWORD not set')
       return
     }
-
-    // If we have the WorkOS API key, ensure the test user exists
-    if (WORKOS_API_KEY) {
-      await ensureTestUser(WORKOS_API_KEY, TEST_EMAIL, TEST_PASSWORD)
-    }
-
     page = await newPage()
   }, 30_000)
 
@@ -49,55 +38,102 @@ describe('Email + Password Login', () => {
     await closeBrowser()
   })
 
-  it('should navigate to login and see WorkOS AuthKit', async () => {
+  it('should navigate to login and see AuthKit', async () => {
     if (!TEST_PASSWORD) return
 
     await page.goto(`${ID_URL}/login`)
-
-    // WorkOS AuthKit redirects to api.workos.com for the login UI
-    await page.waitForURL(/workos\.com|authkit/, { timeout: 15_000 }).catch(() => {
-      // May be on the @mdxui/auth SPA instead
-    })
+    await page.waitForTimeout(3000)
 
     const url = page.url()
-    expect(url).toMatch(/workos\.com|authkit|oauth\.do|id\.org\.ai/)
+    expect(isAuthKitUrl(url) || url.includes('oauth.do') || url.includes('id.org.ai')).toBe(true)
   })
 
-  it('should authenticate with email and password', async () => {
+  it('should authenticate with email and password (signs up on first run)', async () => {
     if (!TEST_PASSWORD) return
+
+    const signupStartTs = Date.now()
 
     // Navigate fresh to login
     await page.goto(`${ID_URL}/login`)
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(3000)
 
     const url = page.url()
-
-    if (url.includes('workos.com') || url.includes('authkit')) {
-      // WorkOS AuthKit hosted UI — fill in email + password
-      await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10_000 })
-      await page.fill('input[type="email"], input[name="email"]', TEST_EMAIL)
-
-      // Some AuthKit layouts show email first, then password on next step
-      const passwordField = await page.$('input[type="password"]')
-      if (passwordField) {
-        await page.fill('input[type="password"]', TEST_PASSWORD)
-        await page.click('button[type="submit"]')
-      } else {
-        // Click continue/next to get to password step
-        await page.click('button[type="submit"]')
-        await page.waitForSelector('input[type="password"]', { timeout: 10_000 })
-        await page.fill('input[type="password"]', TEST_PASSWORD)
-        await page.click('button[type="submit"]')
-      }
+    if (isAuthKitUrl(url)) {
+      await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
     }
 
-    // Wait for callback redirect chain to complete
-    await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 30_000 })
+    // Wait for either: success redirect, or an error (user not found)
+    const landed = await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false)
 
-    // Verify auth cookie was set
+    if (landed) {
+      const jwt = await getAuthCookie(page)
+      expect(jwt).toBeTruthy()
+      return
+    }
+
+    // Login failed — user may not exist yet. Try sign-up flow.
+    console.log('Login failed — attempting sign-up for', TEST_EMAIL)
+
+    const signUpLink = await page.$('text=Sign up')
+      ?? await page.$('text=Create account')
+      ?? await page.$("text=Don't have an account")
+      ?? await page.$('[data-testid="sign-up-link"]')
+      ?? await page.$('a[href*="sign-up"]')
+
+    if (signUpLink) {
+      await signUpLink.click()
+      await page.waitForTimeout(1000)
+    } else {
+      await page.goto(`${ID_URL}/login`)
+      await page.waitForTimeout(3000)
+    }
+
+    // Fill sign-up form
+    const currentUrl = page.url()
+    if (isAuthKitUrl(currentUrl)) {
+      const signUpBtn = await page.$('text=Sign up') ?? await page.$('text=Create account')
+      if (signUpBtn) {
+        await signUpBtn.click()
+        await page.waitForTimeout(1000)
+      }
+      await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
+      await page.waitForTimeout(3000)
+    }
+
+    // AuthKit may require email verification
+    const signedUpDirectly = await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false)
+
+    if (!signedUpDirectly) {
+      try {
+        const email = await waitForEmail(TEST_EMAIL, { timeoutMs: 60_000, afterTs: signupStartTs })
+        const verifyMatch = email.html_body?.match(/href="(https:\/\/[^"]*(?:verify|confirm|activate)[^"]*)"/)
+          ?? email.html_body?.match(/href="(https:\/\/[^"]*workos[^"]*)"/)
+          ?? email.text_body?.match(/(https:\/\/\S*(?:verify|confirm|activate)\S*)/)
+        if (verifyMatch) {
+          await page.goto(verifyMatch[1])
+          await page.waitForTimeout(3000)
+        }
+      } catch {
+        console.warn('No verification email received — may already be verified')
+      }
+
+      // After verification, login again
+      await page.goto(`${ID_URL}/login`)
+      await page.waitForTimeout(3000)
+      const loginUrl = page.url()
+      if (isAuthKitUrl(loginUrl)) {
+        await fillAuthKitCredentials(page, TEST_EMAIL, TEST_PASSWORD)
+      }
+      await page.waitForURL((u) => isPostCallback(u.toString()), { timeout: 30_000 })
+    }
+
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
-  }, 60_000)
+  }, 120_000)
 
   it('should have correct JWT claims (camelCase, nested org)', async () => {
     if (!TEST_PASSWORD) return
@@ -107,8 +143,6 @@ describe('Email + Password Login', () => {
 
     const claims = decodeJwtPayload(jwt!)
     assertJwtClaims(claims)
-
-    // Email should match our test user
     expect(claims.email).toBe(TEST_EMAIL)
     expect(claims.sub).toBeTruthy()
   })
@@ -120,8 +154,6 @@ describe('Email + Password Login', () => {
     expect(jwt).toBeTruthy()
 
     const claims = decodeJwtPayload(jwt!)
-
-    // Personal org should have been auto-created during login
     if (claims.org) {
       const org = claims.org as Record<string, unknown>
       expect(org.id).toBeTruthy()

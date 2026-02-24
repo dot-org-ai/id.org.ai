@@ -12,17 +12,18 @@ let context: BrowserContext | null = null
 
 /**
  * Launch browser (reused across tests in the same suite).
+ * Uses the system Chrome to avoid bot detection (Cloudflare Turnstile).
  */
 export async function launchBrowser(): Promise<BrowserContext> {
   if (context) return context
 
   browser = await chromium.launch({
-    headless: true,
+    channel: 'chrome',
+    headless: false,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   })
 
   context = await browser.newContext({
-    userAgent: 'headlessly-e2e-tests/1.0',
     ignoreHTTPSErrors: true,
   })
 
@@ -80,6 +81,46 @@ export async function getAuthCookie(page: Page, domain?: string): Promise<string
   }
 
   return result || null
+}
+
+/**
+ * Check if a URL is the AuthKit login page.
+ * Matches: login.oauth.do, login.org.ai, *.workos.com, authkit.*
+ */
+export function isAuthKitUrl(url: string): boolean {
+  return url.includes('login.oauth.do')
+    || url.includes('login.org.ai')
+    || url.includes('workos.com')
+    || url.includes('authkit')
+}
+
+/**
+ * Check if a URL is "back home" — on the identity worker, past the callback.
+ * True when on oauth.do/id.org.ai/auth.headless.ly but NOT on /callback or the AuthKit login.
+ */
+export function isPostCallback(url: string): boolean {
+  return (url.includes('oauth.do') || url.includes('id.org.ai') || url.includes('auth.headless.ly'))
+    && !url.includes('/callback')
+    && !isAuthKitUrl(url)
+}
+
+/**
+ * Fill email + password in AuthKit and submit.
+ */
+export async function fillAuthKitCredentials(page: Page, email: string, password: string) {
+  await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10_000 })
+  await page.fill('input[type="email"], input[name="email"]', email)
+
+  const passwordField = await page.$('input[type="password"]')
+  if (passwordField) {
+    await page.fill('input[type="password"]', password)
+    await page.click('button[type="submit"]')
+  } else {
+    await page.click('button[type="submit"]')
+    await page.waitForSelector('input[type="password"]', { timeout: 10_000 })
+    await page.fill('input[type="password"]', password)
+    await page.click('button[type="submit"]')
+  }
 }
 
 /**

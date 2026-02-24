@@ -1,91 +1,127 @@
 /**
  * Flow 5: Personal Org Auto-Creation
  *
- * Tests that new users without an org membership
- * automatically get a personal org created during login.
+ * Tests that a brand-new user who signs up through AuthKit
+ * automatically gets a personal org created during the callback.
  *
- * Steps:
- *   1. Create a fresh test user in WorkOS (no org membership)
- *   2. Log in via email+password
- *   3. Verify JWT org claim exists with { id, name }
+ * Uses the real sign-up flow (no direct WorkOS API calls):
+ *   1. Navigate to AuthKit sign-up with a fresh @emails.do address
+ *   2. Create account with email + password
+ *   3. AuthKit sends verification email → poll emails.do
+ *   4. Follow verification link → complete sign-up
+ *   5. Login with the new account
+ *   6. Verify JWT org claim exists with { id, name }
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie } from './helpers/browser'
+import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback, fillAuthKitCredentials } from './helpers/browser'
+import { waitForEmail } from './helpers/email'
 import { decodeJwtPayload, assertJwtClaims, assertNestedOrgClaim } from './helpers/jwt'
-import { ensureTestUser, deleteTestUser, removeUserFromAllOrgs } from './helpers/workos-setup'
 import type { Page } from 'playwright'
 
 const ID_URL = process.env.ID_URL || 'https://oauth.do'
-const WORKOS_API_KEY = process.env.WORKOS_API_KEY
-const TEST_PASSWORD = process.env.E2E_AUTH_PASSWORD || 'E2eTest!Passw0rd'
+const TEST_PASSWORD = process.env.E2E_AUTH_PASSWORD
 
-// Unique email for this test to avoid collision with other test suites
+// Unique email for this test — each run creates a brand new user
 const FRESH_USER_EMAIL = `e2e-personal-org-${Date.now()}@emails.do`
 
 describe('Personal Org Auto-Creation', () => {
   let page: Page
-  let freshUserId: string | null = null
+  let testStartTs: number
 
   beforeAll(async () => {
-    if (!WORKOS_API_KEY) {
-      console.warn('Skipping personal org tests: WORKOS_API_KEY not set')
+    if (!TEST_PASSWORD) {
+      console.warn('Skipping personal org tests: E2E_AUTH_PASSWORD not set')
       return
     }
-
-    // Create a fresh user with no org memberships
-    freshUserId = await ensureTestUser(WORKOS_API_KEY, FRESH_USER_EMAIL, TEST_PASSWORD)
-
-    // Remove from any orgs that may have been auto-assigned
-    await removeUserFromAllOrgs(WORKOS_API_KEY, freshUserId)
-
+    testStartTs = Date.now()
     page = await newPage()
   }, 30_000)
 
   afterAll(async () => {
-    // Clean up the test user
-    if (WORKOS_API_KEY && freshUserId) {
-      await deleteTestUser(WORKOS_API_KEY, freshUserId).catch(() => {})
-    }
     await closeBrowser()
   })
 
-  it('should log in as a user with no existing org', async () => {
-    if (!WORKOS_API_KEY) return
+  it('should sign up as a new user via AuthKit', async () => {
+    if (!TEST_PASSWORD) return
 
     await page.goto(`${ID_URL}/login`)
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(3000)
 
     const url = page.url()
 
-    if (url.includes('workos.com') || url.includes('authkit')) {
-      await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10_000 })
-      await page.fill('input[type="email"], input[name="email"]', FRESH_USER_EMAIL)
+    if (isAuthKitUrl(url)) {
+      // Click "Sign up" link
+      const signUpLink = await page.$('text=Sign up')
+        ?? await page.$('text=Create account')
+        ?? await page.$("text=Don't have an account")
+        ?? await page.$('[data-testid="sign-up-link"]')
+        ?? await page.$('a[href*="sign-up"]')
 
-      const passwordField = await page.$('input[type="password"]')
-      if (passwordField) {
-        await page.fill('input[type="password"]', TEST_PASSWORD)
-        await page.click('button[type="submit"]')
-      } else {
-        await page.click('button[type="submit"]')
-        await page.waitForSelector('input[type="password"]', { timeout: 10_000 })
-        await page.fill('input[type="password"]', TEST_PASSWORD)
-        await page.click('button[type="submit"]')
+      if (signUpLink) {
+        await signUpLink.click()
+        await page.waitForTimeout(1000)
       }
+
+      await fillAuthKitCredentials(page, FRESH_USER_EMAIL, TEST_PASSWORD)
+      await page.waitForTimeout(3000)
+    }
+  }, 30_000)
+
+  it('should complete email verification if required', async () => {
+    if (!TEST_PASSWORD) return
+
+    const url = page.url()
+
+    // Check if we landed back home (no verification needed)
+    if (isPostCallback(url)) {
+      const jwt = await getAuthCookie(page)
+      if (jwt) return
     }
 
-    await page.waitForURL((url) => {
-      const u = url.toString()
-      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
-        && !u.includes('/callback') && !u.includes('workos.com')
-    }, { timeout: 30_000 })
+    // AuthKit may have sent a verification email — poll for it
+    try {
+      const email = await waitForEmail(FRESH_USER_EMAIL, {
+        timeoutMs: 30_000,
+        afterTs: testStartTs,
+      })
+
+      const verifyMatch = email.html_body?.match(/href="(https:\/\/[^"]*(?:verify|confirm|activate)[^"]*)"/)
+        ?? email.html_body?.match(/href="(https:\/\/[^"]*workos[^"]*)"/)
+        ?? email.text_body?.match(/(https:\/\/\S*(?:verify|confirm|activate)\S*)/)
+
+      if (verifyMatch) {
+        await page.goto(verifyMatch[1])
+        await page.waitForTimeout(3000)
+      }
+    } catch {
+      console.warn('No verification email received — AuthKit may auto-verify')
+    }
+  }, 60_000)
+
+  it('should log in as the new user and get a JWT', async () => {
+    if (!TEST_PASSWORD) return
+
+    // If already authenticated from sign-up flow, skip
+    const existingJwt = await getAuthCookie(page)
+    if (existingJwt) return
+
+    await page.goto(`${ID_URL}/login`)
+    await page.waitForTimeout(3000)
+
+    const url = page.url()
+    if (isAuthKitUrl(url)) {
+      await fillAuthKitCredentials(page, FRESH_USER_EMAIL, TEST_PASSWORD)
+    }
+
+    await page.waitForURL((url) => isPostCallback(url.toString()), { timeout: 30_000 })
 
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
   }, 60_000)
 
   it('should have auto-created a personal org in the JWT', async () => {
-    if (!WORKOS_API_KEY) return
+    if (!TEST_PASSWORD) return
 
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
@@ -93,12 +129,11 @@ describe('Personal Org Auto-Creation', () => {
     const claims = decodeJwtPayload(jwt!)
     assertJwtClaims(claims)
 
-    // The key assertion: org should exist even though user had no org
+    // The key assertion: org should exist for a brand-new user
     assertNestedOrgClaim(claims)
 
     const org = claims.org as Record<string, unknown>
     expect(org.id).toBeTruthy()
-    // Personal org name is typically the user's name or email prefix
     if (org.name) {
       expect(typeof org.name).toBe('string')
     }

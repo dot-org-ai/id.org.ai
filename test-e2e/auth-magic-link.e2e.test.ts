@@ -1,14 +1,14 @@
 /**
  * Flow 2: Magic Link Login via .do/email catch-all
  *
- * Tests the magic link auth flow using only Playwright + email polling:
+ * Tests the magic link auth flow using Playwright + email polling:
  *   1. Navigate to oauth.do/login
- *   2. WorkOS AuthKit UI loads
- *   3. Enter test email, choose magic link option
- *   4. WorkOS sends magic link email to catch-all @emails.do
+ *   2. AuthKit login UI loads (login.oauth.do → login.org.ai)
+ *   3. Enter test email, choose magic link / email code option
+ *   4. AuthKit sends email to catch-all @emails.do
  *   5. Poll email.dotdo.workers.dev for the email
  *   6. Extract magic link URL from email HTML
- *   7. Navigate to magic link → WorkOS validates → /callback → cookie
+ *   7. Navigate to magic link → AuthKit validates → /callback → cookie
  *   8. Verify authenticated, JWT claims correct
  *
  * Prerequisites:
@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie } from './helpers/browser'
+import { newPage, closeBrowser, getAuthCookie, isAuthKitUrl, isPostCallback } from './helpers/browser'
 import { waitForEmail, extractMagicLink } from './helpers/email'
 import { decodeJwtPayload, assertJwtClaims } from './helpers/jwt'
 import type { Page } from 'playwright'
@@ -49,31 +49,39 @@ describe('Magic Link Login', () => {
     if (!TEST_PASSWORD) return
 
     await page.goto(`${ID_URL}/login`)
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(3000)
 
     const url = page.url()
 
-    if (url.includes('workos.com') || url.includes('authkit')) {
-      // WorkOS AuthKit hosted UI — enter email
+    if (isAuthKitUrl(url)) {
       await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 10_000 })
       await page.fill('input[type="email"], input[name="email"]', TEST_EMAIL)
 
-      // Look for magic link / email link option
-      // AuthKit may show "Sign in with email link", "Magic link", or similar
+      // Look for magic link / email code option
       const magicLinkBtn = await page.$('text=magic link')
         ?? await page.$('text=email link')
         ?? await page.$('text=Email me a sign-in link')
         ?? await page.$('text=Sign in with email')
+        ?? await page.$('text=E-pos aanmeldkode')
         ?? await page.$('[data-testid="magic-link"]')
 
       if (magicLinkBtn) {
         await magicLinkBtn.click()
       } else {
-        // Submit the form — AuthKit may auto-send a magic link depending on config
+        // Submit email — AuthKit may show magic link option on next step
         await page.click('button[type="submit"]')
+        await page.waitForTimeout(2000)
+
+        // Check for email code / magic link button on the password page
+        const emailCodeBtn = await page.$('text=email code')
+          ?? await page.$('text=email link')
+          ?? await page.$('text=E-pos aanmeldkode')
+          ?? await page.$('text=aanmeldkode')
+        if (emailCodeBtn) {
+          await emailCodeBtn.click()
+        }
       }
 
-      // Wait for email to be dispatched
       await page.waitForTimeout(3000)
     }
   }, 30_000)
@@ -104,15 +112,9 @@ describe('Magic Link Login', () => {
     // Navigate to the magic link in the browser
     await page.goto(magicLinkUrl)
 
-    // Wait for the redirect chain: WorkOS → /callback → set cookie → /
-    await page.waitForURL((url) => {
-      const u = url.toString()
-      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
-        && !u.includes('/callback')
-        && !u.includes('workos.com')
-    }, { timeout: 30_000 })
+    // Wait for the redirect chain: AuthKit → /callback → set cookie → /
+    await page.waitForURL((url) => isPostCallback(url.toString()), { timeout: 30_000 })
 
-    // Verify auth cookie was set
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
 

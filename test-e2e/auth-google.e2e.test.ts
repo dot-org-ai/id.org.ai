@@ -5,12 +5,12 @@
  *   1. Navigate to id.org.ai/login?provider=GoogleOAuth
  *   2. Redirects to Google consent screen
  *   3. Log in with test Google account
- *   4. Google redirects back → WorkOS → /callback
+ *   4. Google redirects back → AuthKit → /callback
  *   5. Verify: JWT claims correct, email matches test Google account
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { newPage, closeBrowser, getAuthCookie } from './helpers/browser'
+import { newPage, closeBrowser, getAuthCookie, isPostCallback } from './helpers/browser'
 import { decodeJwtPayload, assertJwtClaims } from './helpers/jwt'
 import type { Page } from 'playwright'
 
@@ -39,7 +39,7 @@ describe('Google OAuth Login', () => {
 
     await page.goto(`${ID_URL}/login?provider=GoogleOAuth`)
 
-    // Should redirect through WorkOS to Google
+    // Should redirect through AuthKit to Google
     await page.waitForURL(/accounts\.google\.com/, { timeout: 15_000 })
     expect(page.url()).toMatch(/accounts\.google\.com/)
   })
@@ -47,7 +47,6 @@ describe('Google OAuth Login', () => {
   it('should authenticate with Google credentials', async () => {
     if (!GOOGLE_EMAIL || !GOOGLE_PASSWORD) return
 
-    // Fill in Google login form
     // Google's login is a multi-step flow: email → password
     await page.waitForSelector('input[type="email"]', { timeout: 10_000 })
     await page.fill('input[type="email"]', GOOGLE_EMAIL)
@@ -64,13 +63,8 @@ describe('Google OAuth Login', () => {
     }
 
     // Wait for the redirect chain to complete back to the identity worker
-    await page.waitForURL((url) => {
-      const u = url.toString()
-      return (u.includes('oauth.do') || u.includes('id.org.ai') || u.includes('auth.headless.ly'))
-        && !u.includes('/callback') && !u.includes('google.com')
-    }, { timeout: 30_000 })
+    await page.waitForURL((url) => isPostCallback(url.toString()), { timeout: 30_000 })
 
-    // Verify auth cookie was set
     const jwt = await getAuthCookie(page)
     expect(jwt).toBeTruthy()
   }, 60_000)
@@ -83,8 +77,6 @@ describe('Google OAuth Login', () => {
 
     const claims = decodeJwtPayload(jwt!)
     assertJwtClaims(claims)
-
-    // Email should match the Google account
     expect(claims.email).toBe(GOOGLE_EMAIL)
   })
 })
