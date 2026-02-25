@@ -105,10 +105,9 @@ const TOKEN_CACHE_TTL = 5 * 60 // 5 minutes for valid tokens
 const NEGATIVE_CACHE_TTL = 60 // 60 seconds for invalid tokens
 const CACHE_URL_PREFIX = 'https://auth.oauth.do/_cache/'
 
-// JWKS cache (module-level)
-let jwksCache: jose.JWTVerifyGetKey | null = null
-let jwksCacheExpiry = 0
-const JWKS_CACHE_TTL = 60 * 60 * 1000 // 1 hour
+// JWKS — module memory (warm) or Cache API (cold start)
+const JWKS_CACHE_KEY = 'https://auth.oauth.do/_jwks/all'
+let jwks: jose.JWTVerifyGetKey | null = null
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Utilities
@@ -170,51 +169,43 @@ async function cacheResult(token: string, result: VerifyResult): Promise<void> {
   }
 }
 
-// id.org.ai JWKS cache (for tokens signed by the identity provider)
-let idOrgAiJwksCache: jose.JWTVerifyGetKey | null = null
-let idOrgAiJwksCacheExpiry = 0
+async function getJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
+  if (jwks) return jwks
 
-async function getIdOrgAiJwks(): Promise<jose.JWTVerifyGetKey> {
-  const now = Date.now()
-  if (idOrgAiJwksCache && idOrgAiJwksCacheExpiry > now) {
-    return idOrgAiJwksCache
-  }
+  // Try Cache API
+  try {
+    const cached = await caches.default.match(new Request(JWKS_CACHE_KEY))
+    if (cached) {
+      jwks = jose.createLocalJWKSet({ keys: (await cached.json()) as jose.JWK[] })
+      return jwks
+    }
+  } catch { /* fall through */ }
 
-  // auth.headless.ly is the same worker as id.org.ai — DNS for id.org.ai
-  // currently points to Vercel, so we use auth.headless.ly (workers.do zone)
-  const jwksUri = 'https://auth.headless.ly/.well-known/jwks.json'
-  idOrgAiJwksCache = jose.createRemoteJWKSet(new URL(jwksUri))
-  idOrgAiJwksCacheExpiry = now + JWKS_CACHE_TTL
-  return idOrgAiJwksCache
-}
+  // Fetch all providers in parallel (CDN-cached via cf options)
+  const cfCache = { cf: { cacheEverything: true, cacheTtl: 86400 } } as RequestInit
+  const [idKeys, workosKeys] = await Promise.all([
+    fetch('https://auth.headless.ly/.well-known/jwks.json', cfCache).then((r) => r.json()).then((j: { keys: jose.JWK[] }) => j.keys).catch(() => []),
+    fetch(`https://api.workos.com/sso/jwks/${clientId}`, cfCache).then((r) => r.json()).then((j: { keys: jose.JWK[] }) => j.keys).catch(() => []),
+  ])
+  const seen = new Set<string>()
+  const allKeys = [...(idKeys as jose.JWK[]), ...(workosKeys as jose.JWK[])].filter((k) => {
+    if (!k.kid || seen.has(k.kid)) return false
+    seen.add(k.kid)
+    return true
+  })
+  console.log(`[auth] JWKS fetched: ${allKeys.length} keys`)
 
-// oauth.do JWKS cache (for tokens issued by oauth.do)
-let oauthJwksCache: jose.JWTVerifyGetKey | null = null
-let oauthJwksCacheExpiry = 0
+  jwks = jose.createLocalJWKSet({ keys: allKeys })
 
-async function getOAuthJwks(): Promise<jose.JWTVerifyGetKey> {
-  const now = Date.now()
-  if (oauthJwksCache && oauthJwksCacheExpiry > now) {
-    return oauthJwksCache
-  }
+  // Cache for 24h
+  try {
+    await caches.default.put(
+      new Request(JWKS_CACHE_KEY),
+      new Response(JSON.stringify(allKeys), { headers: { 'Cache-Control': 'max-age=86400' } }),
+    )
+  } catch { /* non-fatal */ }
 
-  const jwksUri = 'https://oauth.do/.well-known/jwks.json'
-  oauthJwksCache = jose.createRemoteJWKSet(new URL(jwksUri))
-  oauthJwksCacheExpiry = now + JWKS_CACHE_TTL
-  return oauthJwksCache
-}
-
-// WorkOS JWKS cache (for tokens issued directly by WorkOS)
-async function getWorkosJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
-  const now = Date.now()
-  if (jwksCache && jwksCacheExpiry > now) {
-    return jwksCache
-  }
-
-  const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
-  jwksCache = jose.createRemoteJWKSet(new URL(jwksUri))
-  jwksCacheExpiry = now + JWKS_CACHE_TTL
-  return jwksCache
+  return jwks
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -222,40 +213,31 @@ async function getWorkosJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function verifyJWT(token: string, env: Env): Promise<VerifyResult> {
-  // Verification order: id.org.ai → oauth.do → WorkOS
-  // id.org.ai is the primary issuer (login flow JWTs), oauth.do is legacy,
-  // WorkOS covers tokens issued directly by WorkOS (device flow, etc.)
-
-  const errors: string[] = []
-
-  // 1. Try id.org.ai JWKS (primary — tokens from login flow, iss: 'https://id.org.ai')
+  const t0 = performance.now()
   try {
-    const idJwks = await getIdOrgAiJwks()
-    const { payload } = await jose.jwtVerify(token, idJwks)
+    const keys = await getJwks(env.WORKOS_CLIENT_ID)
+    const { payload } = await jose.jwtVerify(token, keys)
+    const ms = Math.round(performance.now() - t0)
+    if (ms > 5) console.log(`[auth] JWT verified in ${ms}ms`)
     return { valid: true, user: jwtPayloadToUser(payload) }
   } catch (err) {
-    errors.push(`id.org.ai: ${err instanceof Error ? err.message : 'failed'}`)
+    // On failure, clear cache and retry once (key rotation)
+    if (jwks) {
+      jwks = null
+      try { await caches.default.delete(new Request(JWKS_CACHE_KEY)) } catch { /* */ }
+      try {
+        const keys = await getJwks(env.WORKOS_CLIENT_ID)
+        const { payload } = await jose.jwtVerify(token, keys)
+        const ms = Math.round(performance.now() - t0)
+        console.log(`[auth] JWT verified after refresh in ${ms}ms`)
+        return { valid: true, user: jwtPayloadToUser(payload) }
+      } catch { /* still failed */ }
+    }
+    const ms = Math.round(performance.now() - t0)
+    const msg = err instanceof Error ? err.message : 'unknown'
+    if (ms > 5) console.log(`[auth] JWT failed in ${ms}ms: ${msg}`)
+    return { valid: false, error: `JWT verification failed: ${msg}` }
   }
-
-  // 2. Try oauth.do JWKS (legacy tokens, iss: 'https://oauth.do')
-  try {
-    const oauthJwks = await getOAuthJwks()
-    const { payload } = await jose.jwtVerify(token, oauthJwks)
-    return { valid: true, user: jwtPayloadToUser(payload) }
-  } catch (err) {
-    errors.push(`oauth.do: ${err instanceof Error ? err.message : 'failed'}`)
-  }
-
-  // 3. Try WorkOS JWKS (tokens issued directly by WorkOS)
-  try {
-    const workosJwks = await getWorkosJwks(env.WORKOS_CLIENT_ID)
-    const { payload } = await jose.jwtVerify(token, workosJwks)
-    return { valid: true, user: jwtPayloadToUser(payload) }
-  } catch (err) {
-    errors.push(`WorkOS: ${err instanceof Error ? err.message : 'failed'}`)
-  }
-
-  return { valid: false, error: `JWT verification failed (${errors.join(', ')})` }
 }
 
 function jwtPayloadToUser(payload: jose.JWTPayload): AuthUser {
@@ -337,29 +319,28 @@ async function verifyAdminToken(token: string, env: Env): Promise<VerifyResult> 
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function verifyToken(token: string, env: Env): Promise<VerifyResult> {
-  // Check cache first
+  const t0 = performance.now()
+
+  // Check token result cache
   const cached = await getCachedResult(token)
   if (cached) return cached
 
   let result: VerifyResult
 
-  // Try different verification methods based on token format
   if (token.startsWith('ses_') || token.startsWith('oai_') || token.startsWith('hly_sk_') || token.startsWith('sk_')) {
-    // Session tokens, custom API keys, and WorkOS API keys — delegate to id.org.ai AuthService
     result = await delegateToOAuth(token, env)
   } else if (token.includes('.')) {
-    // JWTs contain dots (header.payload.signature)
     result = await verifyJWT(token, env)
   } else if (env.ADMIN_TOKEN) {
-    // For other tokens, try admin token verification if configured
     result = await verifyAdminToken(token, env)
   } else {
     result = { valid: false, error: 'Invalid token format' }
   }
 
-  // Cache results (valid tokens: 5 min, invalid tokens: 60 sec)
-  await cacheResult(token, result)
+  const ms = Math.round(performance.now() - t0)
+  if (ms > 5) console.log(`[auth] verify: ${ms}ms (valid: ${result.valid})`)
 
+  await cacheResult(token, result)
   return result
 }
 
@@ -540,7 +521,6 @@ export class AuthRPC extends WorkerEntrypoint<Env> {
    */
   async verifyToken(token: string): Promise<VerifyResult> {
     try {
-      // Check required environment
       if (!this.env.WORKOS_CLIENT_ID) {
         return { valid: false, error: 'WORKOS_CLIENT_ID not configured' }
       }
@@ -608,6 +588,43 @@ export class AuthRPC extends WorkerEntrypoint<Env> {
    */
   async isAdmin(token: string): Promise<boolean> {
     return this.hasRoles(token, ['admin'])
+  }
+
+  /**
+   * Get a WorkOS organization by ID (org_*)
+   * Cached in Cache API for 1 hour
+   */
+  async getOrganization(orgId: string): Promise<Record<string, unknown> | null> {
+    if (!orgId.startsWith('org_')) return null
+    if (!this.env.WORKOS_API_KEY) return null
+
+    // Check cache
+    const cacheKey = new Request(`${CACHE_URL_PREFIX}org/${orgId}`)
+    try {
+      const cached = await caches.default.match(cacheKey)
+      if (cached) return await cached.json() as Record<string, unknown>
+    } catch { /* fall through */ }
+
+    // Fetch from WorkOS
+    try {
+      const resp = await fetch(`https://api.workos.com/organizations/${orgId}`, {
+        headers: { Authorization: `Bearer ${this.env.WORKOS_API_KEY}` },
+        cf: { cacheEverything: true, cacheTtl: 3600 } as RequestInitCfProperties,
+      })
+      if (!resp.ok) return null
+      const org = await resp.json() as Record<string, unknown>
+
+      // Cache for 1 hour
+      try {
+        await caches.default.put(cacheKey, new Response(JSON.stringify(org), {
+          headers: { 'Cache-Control': 'max-age=3600' },
+        }))
+      } catch { /* non-fatal */ }
+
+      return org
+    } catch {
+      return null
+    }
   }
 
   /**
