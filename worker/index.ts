@@ -42,6 +42,7 @@ import {
   exchangeWorkOSCode,
   fetchWorkOSUser,
   extractGitHubId,
+  fetchGitHubUsername,
   fetchOrgInfo,
   updateWorkOSUser,
   ensurePersonalOrg,
@@ -1083,15 +1084,21 @@ app.get('/api/callback', async (c) => {
   ])
   const githubIdFromWorkOS = workosUser ? extractGitHubId(workosUser) : null
 
+  // Fetch GitHub username from numeric ID (public API, no auth needed)
+  const githubUsername = githubIdFromWorkOS ? await fetchGitHubUsername(githubIdFromWorkOS) : null
+
   // Ensure user has a personal org (required for API key management).
   // If they already have an org from WorkOS, use that. Otherwise create one.
   let orgInfo = initialOrgInfo
   if (!orgId) {
     const fullName = [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ')
-    const result = await ensurePersonalOrg(apiKey, authResult.user.id, fullName || undefined, authResult.user.email)
+    const orgName = githubUsername || fullName || undefined
+    const result = await ensurePersonalOrg(apiKey, authResult.user.id, orgName, authResult.user.email)
     if (result) {
       orgId = result.orgId
-      orgInfo = result.created ? { name: fullName || authResult.user.email.split('@')[0] || 'Personal', domains: [] } : await fetchOrgInfo(apiKey, result.orgId)
+      orgInfo = result.created ? { name: orgName || authResult.user.email.split('@')[0] || 'Personal', domains: [] } : await fetchOrgInfo(apiKey, result.orgId)
+    } else {
+      console.error(`[callback] ensurePersonalOrg returned null for user=${authResult.user.id} email=${authResult.user.email}`)
     }
   }
 
@@ -1139,13 +1146,16 @@ app.get('/api/callback', async (c) => {
   // Resolve GitHub ID: prefer identity record (from claim flow), then WorkOS profile
   const githubId = identity?.githubUserId || githubIdFromWorkOS || undefined
 
-  // Persist GitHub ID to WorkOS as external_id (makes it available in JWT templates
-  // and searchable in WorkOS dashboard). Fire-and-forget — don't block the login flow.
+  // Persist GitHub ID + username to WorkOS as external_id + metadata.
+  // Fire-and-forget — don't block the login flow.
   if (githubId) {
     c.executionCtx.waitUntil(
       updateWorkOSUser(apiKey, authResult.user.id, {
         external_id: githubId,
-        metadata: { github_id: githubId },
+        metadata: {
+          github_id: githubId,
+          ...(githubUsername ? { github_username: githubUsername } : {}),
+        },
       }),
     )
   }
@@ -1160,6 +1170,7 @@ app.get('/api/callback', async (c) => {
       email: authResult.user.email,
       name: [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ') || undefined,
       githubId: githubId,
+      githubUsername: githubUsername || undefined,
       org: orgId ? { id: orgId, name: orgInfo?.name, domains: orgInfo?.domains?.length ? orgInfo.domains : undefined } : undefined,
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
@@ -2601,33 +2612,51 @@ async function signActionResponse(
 app.post('/actions/authentication', async (c) => {
   const secret = c.env.WORKOS_ACTIONS_SECRET
   const apiKey = c.env.WORKOS_API_KEY
-  if (!secret) return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'Actions secret not configured')
+
+  // WorkOS requires a valid action response format — errorResponse() returns
+  // standard JSON which WorkOS can't parse, causing "Endpoint response invalid".
+  // Always return a signed Allow response; log errors for debugging.
+  if (!secret) {
+    console.error('[actions/authentication] WORKOS_ACTIONS_SECRET not configured')
+    return c.json({ object: 'authentication_action_response', payload: { timestamp: Date.now(), verdict: 'Allow', error_message: null }, signature: '' })
+  }
 
   const rawBody = await c.req.text()
   const sigHeader = c.req.header('workos-signature') || c.req.header('WorkOS-Signature') || ''
 
   if (!(await verifyActionSignature(rawBody, sigHeader, secret))) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid action signature')
+    console.error('[actions/authentication] Invalid signature — allowing with fail-open')
+    return c.json(await signActionResponse('authentication', 'Allow', secret))
   }
 
-  const action = JSON.parse(rawBody)
-  const userId = action?.user?.id || action?.userData?.id
+  let action: Record<string, unknown> = {}
+  try {
+    action = JSON.parse(rawBody)
+  } catch {
+    console.error('[actions/authentication] Failed to parse body')
+    return c.json(await signActionResponse('authentication', 'Allow', secret))
+  }
+  const userId = (action?.user as Record<string, unknown>)?.id || (action?.userData as Record<string, unknown>)?.id
 
-  // Enrich user with GitHub ID if available
+  // Enrich user with GitHub ID + username if available
   if (apiKey && userId) {
     try {
-      const workosUser = await fetchWorkOSUser(apiKey, userId)
+      const workosUser = await fetchWorkOSUser(apiKey, userId as string)
       if (workosUser) {
         const githubId = extractGitHubId(workosUser)
         if (githubId) {
-          await updateWorkOSUser(apiKey, userId, {
+          const githubUsername = await fetchGitHubUsername(githubId)
+          await updateWorkOSUser(apiKey, userId as string, {
             external_id: githubId,
-            metadata: { github_id: githubId },
+            metadata: {
+              github_id: githubId,
+              ...(githubUsername ? { github_username: githubUsername } : {}),
+            },
           })
         }
       }
-    } catch {
-      // Don't block authentication on enrichment failure
+    } catch (err) {
+      console.error('[actions/authentication] Enrichment failed:', err)
     }
   }
 
@@ -2641,13 +2670,18 @@ app.post('/actions/authentication', async (c) => {
  */
 app.post('/actions/registration', async (c) => {
   const secret = c.env.WORKOS_ACTIONS_SECRET
-  if (!secret) return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'Actions secret not configured')
+
+  if (!secret) {
+    console.error('[actions/registration] WORKOS_ACTIONS_SECRET not configured')
+    return c.json({ object: 'user_registration_action_response', payload: { timestamp: Date.now(), verdict: 'Allow', error_message: null }, signature: '' })
+  }
 
   const rawBody = await c.req.text()
   const sigHeader = c.req.header('workos-signature') || c.req.header('WorkOS-Signature') || ''
 
   if (!(await verifyActionSignature(rawBody, sigHeader, secret))) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid action signature')
+    console.error('[actions/registration] Invalid signature — allowing with fail-open')
+    return c.json(await signActionResponse('user_registration', 'Allow', secret))
   }
 
   return c.json(await signActionResponse('user_registration', 'Allow', secret))

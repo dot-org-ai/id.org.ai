@@ -166,6 +166,30 @@ export function extractGitHubId(user: WorkOSUser): string | null {
 }
 
 // ============================================================================
+// Fetch GitHub Username (public API, no auth needed)
+// ============================================================================
+
+/**
+ * Fetch a GitHub user's login (username) from their numeric user ID.
+ * Uses the public GitHub API — no authentication required.
+ *
+ * @param githubId - GitHub numeric user ID (from WorkOS identity)
+ * @returns GitHub username (login), or null on failure
+ */
+export async function fetchGitHubUsername(githubId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.github.com/user/${githubId}`, {
+      headers: { 'User-Agent': 'id.org.ai', Accept: 'application/json' },
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { login?: string }
+    return data.login ?? null
+  } catch {
+    return null
+  }
+}
+
+// ============================================================================
 // Fetch Organization (includes domains)
 // ============================================================================
 
@@ -236,9 +260,14 @@ export async function createWorkOSOrganization(
       },
       body: JSON.stringify(body),
     })
-    if (!response.ok) return null
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '')
+      console.error(`[createWorkOSOrganization] ${response.status} for "${name}":`, errorBody)
+      return null
+    }
     return (await response.json()) as WorkOSOrganization
-  } catch {
+  } catch (err) {
+    console.error('[createWorkOSOrganization] exception:', err)
     return null
   }
 }
@@ -271,8 +300,13 @@ export async function createWorkOSMembership(
         role_slug: roleSlug,
       }),
     })
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '')
+      console.error(`[createWorkOSMembership] ${response.status} for user=${userId} org=${organizationId}:`, errorBody)
+    }
     return response.ok
-  } catch {
+  } catch (err) {
+    console.error('[createWorkOSMembership] exception:', err)
     return false
   }
 }
@@ -303,8 +337,11 @@ export async function ensurePersonalOrg(
       if (data.data.length > 0) {
         return { orgId: data.data[0]!.organization_id, created: false }
       }
+    } else {
+      console.error(`[ensurePersonalOrg] membership check failed: ${response.status}`, await response.text().catch(() => ''))
     }
-  } catch {
+  } catch (err) {
+    console.error('[ensurePersonalOrg] membership check exception:', err)
     // Continue to create
   }
 
@@ -313,11 +350,17 @@ export async function ensurePersonalOrg(
   const org = await createWorkOSOrganization(apiKey, orgName, {
     metadata: { type: 'personal', owner: userId },
   })
-  if (!org) return null
+  if (!org) {
+    console.error(`[ensurePersonalOrg] failed to create org for user=${userId} name="${orgName}"`)
+    return null
+  }
 
   // Add user as admin of their personal org
   const added = await createWorkOSMembership(apiKey, userId, org.id, 'admin')
-  if (!added) return null
+  if (!added) {
+    console.error(`[ensurePersonalOrg] failed to add membership for user=${userId} org=${org.id}`)
+    return null
+  }
 
   return { orgId: org.id, created: true }
 }

@@ -46,6 +46,8 @@ export async function validateWorkOSApiKey(
     })
 
     if (!response.ok) {
+      const errBody = await response.text().catch(() => '')
+      console.error(`[validateWorkOSApiKey] WorkOS returned ${response.status}: ${errBody}`)
       return { valid: false }
     }
 
