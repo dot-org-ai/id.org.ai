@@ -157,6 +157,57 @@ describe('CLI Token Storage', () => {
     })
   })
 
+  describe('default path compatibility', () => {
+    let tmpHome: string
+    let originalHome: string | undefined
+    let defaultStorage: SecureFileTokenStorage
+
+    beforeEach(async () => {
+      const os = await import('os')
+      const path = await import('path')
+      const fs = await import('fs/promises')
+      tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'id-org-ai-home-'))
+      originalHome = process.env.HOME
+      process.env.HOME = tmpHome
+      defaultStorage = new SecureFileTokenStorage()
+    })
+
+    afterEach(async () => {
+      const fs = await import('fs/promises')
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      await fs.rm(tmpHome, { recursive: true, force: true })
+    })
+
+    it('writes both canonical and legacy token paths by default', async () => {
+      const path = await import('path')
+      const fs = await import('fs/promises')
+
+      await defaultStorage.setToken('compat_token')
+
+      const canonicalPath = path.join(tmpHome, '.id.org.ai', 'token')
+      const legacyPath = path.join(tmpHome, '.oauth.do', 'token')
+      const [canonicalRaw, legacyRaw] = await Promise.all([fs.readFile(canonicalPath, 'utf-8'), fs.readFile(legacyPath, 'utf-8')])
+
+      expect(JSON.parse(canonicalRaw).accessToken).toBe('compat_token')
+      expect(JSON.parse(legacyRaw).accessToken).toBe('compat_token')
+    })
+
+    it('reads the legacy oauth.do token when canonical storage is absent', async () => {
+      const path = await import('path')
+      const fs = await import('fs/promises')
+
+      const legacyPath = path.join(tmpHome, '.oauth.do', 'token')
+      await fs.mkdir(path.dirname(legacyPath), { recursive: true, mode: 0o700 })
+      await fs.writeFile(legacyPath, JSON.stringify({ accessToken: 'legacy_only' }), { encoding: 'utf-8', mode: 0o600 })
+
+      expect(await defaultStorage.getToken()).toBe('legacy_only')
+    })
+  })
+
   describe('createStorage', () => {
     it('returns a SecureFileTokenStorage instance', () => {
       const s = createStorage()

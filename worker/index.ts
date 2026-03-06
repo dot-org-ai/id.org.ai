@@ -36,7 +36,18 @@ import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
 import { SigningKeyManager } from '../src/jwt/signing'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, fetchWorkOSUser, extractGitHubId, fetchOrgInfo, updateWorkOSUser, ensurePersonalOrg, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { DEFAULT_CALLBACK_URL, LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/auth'
+import {
+  buildWorkOSAuthUrl,
+  exchangeWorkOSCode,
+  fetchWorkOSUser,
+  extractGitHubId,
+  fetchOrgInfo,
+  updateWorkOSUser,
+  ensurePersonalOrg,
+  encodeLoginState,
+  decodeLoginState,
+} from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -52,15 +63,7 @@ import {
   getAdminPortalUrl,
 } from '../src/workos/scim'
 import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '../src/workos/scim'
-import {
-  FGA_RESOURCE_TYPES,
-  defineResourceTypes,
-  checkPermission,
-  shareResource,
-  unshareResource,
-  listAccessible,
-  entityTypeToFGA,
-} from '../src/workos/fga'
+import { FGA_RESOURCE_TYPES, defineResourceTypes, checkPermission, shareResource, unshareResource, listAccessible, entityTypeToFGA } from '../src/workos/fga'
 import type { FGACheckRequest, FGARelation } from '../src/workos/fga'
 import {
   createVaultSecret,
@@ -74,14 +77,7 @@ import {
   interpolateSecrets,
 } from '../src/workos/vault'
 import type { CreateSecretOptions, UpdateSecretOptions } from '../src/workos/vault'
-import {
-  PIPES_PROVIDERS,
-  getAccessToken,
-  listConnections,
-  getConnection,
-  disconnectConnection,
-  getConnectionStatus,
-} from '../src/workos/pipes'
+import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../src/workos/pipes'
 import type { PipesProvider } from '../src/workos/pipes'
 import {
   generateCSRFToken,
@@ -247,11 +243,15 @@ const COOKIE_CHUNK_SIZE = 3800
  * splits into chunked cookies (auth.0, auth.1, ...) with a auth.count marker.
  * Otherwise sets a single `auth` cookie.
  */
-function buildAuthCookieHeaders(
-  jwt: string,
-  opts: { secure: boolean; domain: string | null; maxAge: number },
-): string[] {
-  const flags = ['HttpOnly', 'Path=/', 'SameSite=Lax', `Max-Age=${opts.maxAge}`, ...(opts.secure ? ['Secure'] : []), ...(opts.domain ? [`Domain=${opts.domain}`] : [])]
+function buildAuthCookieHeaders(jwt: string, opts: { secure: boolean; domain: string | null; maxAge: number }): string[] {
+  const flags = [
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${opts.maxAge}`,
+    ...(opts.secure ? ['Secure'] : []),
+    ...(opts.domain ? [`Domain=${opts.domain}`] : []),
+  ]
   const flagStr = flags.join('; ')
 
   if (jwt.length <= COOKIE_CHUNK_SIZE) {
@@ -548,7 +548,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
   private async verifyWorkOSJWT(token: string): Promise<AuthUser | null> {
     // Verifies JWTs signed with WorkOS keys. Accepts two types:
     //   1. WorkOS-issued JWTs (aud === clientId) — SSO, social login
-    //   2. oauth.do-issued JWTs (iss === 'https://auth.apis.do') — signed with WorkOS keys
+    //   2. Legacy oauth.do bridge JWTs (iss === 'https://auth.apis.do') — signed with WorkOS keys
     // Both are verified against the same WorkOS JWKS endpoint.
     const clientId = this.env.WORKOS_CLIENT_ID
     if (!clientId) return null
@@ -562,7 +562,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
       const { payload } = await jose.jwtVerify(token, jwks)
 
       const isWorkOSIssued = payload.aud === clientId || (Array.isArray(payload.aud) && payload.aud.includes(clientId))
-      const isOAuthDoIssued = payload.iss === 'https://auth.apis.do'
+      const isOAuthDoIssued = payload.iss === LEGACY_WORKOS_BRIDGE_ISSUER
 
       if (!isWorkOSIssued && !isOAuthDoIssued) return null
 
@@ -609,14 +609,13 @@ export class AuthService extends WorkerEntrypoint<Env> {
   }
 
   private async verifyOAuthDoJWT(token: string): Promise<AuthUser | null> {
-    // Verifies JWTs signed by oauth.do (iss: 'https://oauth.do')
-    // Uses oauth.do's JWKS endpoint to fetch the public key.
-    const jwksUri = 'https://oauth.do/.well-known/jwks.json'
+    // Verifies JWTs signed by the legacy oauth.do compatibility surface.
+    const jwksUri = LEGACY_JWKS_URL
 
     try {
       const jwks = getJwksVerifier(jwksUri)
       const { payload } = await jose.jwtVerify(token, jwks, {
-        issuer: 'https://oauth.do',
+        issuer: LEGACY_AUTH_ORIGIN,
       })
 
       return {
@@ -780,7 +779,7 @@ app.get('/auth-config.json', (c) => {
   const host = c.req.header('host') || 'id.org.ai'
   return c.json({
     clientId: c.env.WORKOS_CLIENT_ID,
-    redirectUri: c.env.REDIRECT_URI || `https://${host}/callback`,
+    redirectUri: c.env.REDIRECT_URI || DEFAULT_CALLBACK_URL,
     appName: c.env.APP_NAME || host.split('.')[0],
     tagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
     onUnauthenticated: 'landing',
@@ -857,7 +856,9 @@ app.get('/me', async (c) => {
       roles: payload.roles as string[] | undefined,
       permissions: payload.permissions as string[] | undefined,
     })
-  } catch { /* not our JWT, try next */ }
+  } catch {
+    /* not our JWT, try next */
+  }
 
   // JWT — verify against WorkOS JWKS
   const clientId = c.env.WORKOS_CLIENT_ID
@@ -874,7 +875,9 @@ app.get('/me', async (c) => {
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
       })
-    } catch { /* not a WorkOS JWT */ }
+    } catch {
+      /* not a WorkOS JWT */
+    }
   }
 
   return c.json({ error: 'Unauthorized' }, 401)
@@ -915,7 +918,7 @@ app.get('/login', async (c) => {
   const csrf = crypto.randomUUID()
 
   // Capture the requesting origin so the callback can redirect back and set the cookie
-  // on the correct domain (e.g. apis.do, not oauth.do)
+  // on the correct domain (e.g. app origin, not the shared auth domain).
   const requestOrigin = new URL(c.req.url).origin
   const state = encodeLoginState(csrf, continueUrl, requestOrigin)
 
@@ -928,10 +931,10 @@ app.get('/login', async (c) => {
     options: { expirationTtl: 300 },
   })
 
-  // Use the common callback URL registered with WorkOS — NOT the requesting domain.
-  // All *.do domains route through this worker via AUTH_HTTP service binding, so we
-  // use a single registered redirect URI and bounce back to the original domain after.
-  const redirectUri = c.env.REDIRECT_URI || 'https://oauth.do/callback'
+  // Use the shared callback URL registered with WorkOS — not the requesting domain.
+  // Both id.org.ai and oauth.do route here, then we bounce back to the origin that
+  // initiated login so the auth cookie is set on the right host.
+  const redirectUri = c.env.REDIRECT_URI || DEFAULT_CALLBACK_URL
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
@@ -1116,7 +1119,7 @@ app.get('/api/callback', async (c) => {
     { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
 
-  const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? (decoded.continue || '/') : '/'
+  const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? decoded.continue || '/' : '/'
 
   // ── Cross-origin redirect: bounce to the requesting domain to set cookie ─
   // If the login was initiated from a different domain (e.g. apis.do), we can't
@@ -1137,7 +1140,7 @@ app.get('/api/callback', async (c) => {
     return c.redirect(callbackUrl.toString(), 302)
   }
 
-  // ── Same-origin (oauth.do/login directly): set cookie directly ───────────
+  // ── Same-origin (id.org.ai or oauth.do direct login): set cookie directly ─
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
@@ -1965,11 +1968,7 @@ app.post('/webhooks/workos', async (c) => {
       return c.json({ error: 'Missing webhook signature' }, 401)
     }
 
-    const isValid = await verifyWorkOSWebhookSignature(
-      rawBody,
-      signature,
-      c.env.WORKOS_WEBHOOK_SECRET,
-    )
+    const isValid = await verifyWorkOSWebhookSignature(rawBody, signature, c.env.WORKOS_WEBHOOK_SECRET)
     if (!isValid) {
       return c.json({ error: 'Invalid webhook signature' }, 401)
     }
@@ -2343,7 +2342,12 @@ app.post('/webhook/github', async (c) => {
  * Header format: WorkOS-Signature: t=<timestamp_ms>,v1=<hex_signature>
  */
 async function verifyActionSignature(rawBody: string, sigHeader: string, secret: string, toleranceMs = 300_000): Promise<boolean> {
-  const parts = Object.fromEntries(sigHeader.split(',').map((p) => p.split('=')).map(([k, ...v]) => [k, v.join('=')]))
+  const parts = Object.fromEntries(
+    sigHeader
+      .split(',')
+      .map((p) => p.split('='))
+      .map(([k, ...v]) => [k, v.join('=')]),
+  )
   const timestamp = parts['t']
   const signature = parts['v1']
   if (!timestamp || !signature) return false
@@ -2701,11 +2705,7 @@ const nullStub: IdentityStub = {
  *   3. Compute HMAC-SHA256 with the webhook secret
  *   4. Compare signatures in constant time
  */
-async function verifyWorkOSWebhookSignature(
-  body: string,
-  signatureHeader: string,
-  secret: string,
-): Promise<boolean> {
+async function verifyWorkOSWebhookSignature(body: string, signatureHeader: string, secret: string): Promise<boolean> {
   try {
     // Parse "t={timestamp}, v1={signature}" format
     const parts: Record<string, string> = {}
@@ -2724,13 +2724,7 @@ async function verifyWorkOSWebhookSignature(
     const signedPayload = `${timestamp}.${body}`
 
     const encoder = new TextEncoder()
-    const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    )
+    const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
     const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signedPayload))
     const computedSig = Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('')
 

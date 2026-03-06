@@ -1,9 +1,11 @@
 /**
  * CLI Token Storage for id.org.ai
  *
- * Stores token data in ~/.id.org.ai/token with restricted permissions (0600).
- * Compatible with oauth.do storage patterns.
+ * Stores token data in ~/.id.org.ai/token and mirrors the legacy oauth.do path
+ * for migration compatibility.
  */
+
+import { COMPATIBLE_TOKEN_DIRNAMES, TOKEN_FILE_NAME } from '../auth/index.js'
 
 export interface StoredTokenData {
   accessToken: string
@@ -20,8 +22,7 @@ export interface TokenStorage {
 }
 
 export class SecureFileTokenStorage implements TokenStorage {
-  private tokenPath: string | null = null
-  private configDir: string | null = null
+  private tokenPaths: string[] = []
   private initialized = false
   private customPath?: string
 
@@ -30,26 +31,42 @@ export class SecureFileTokenStorage implements TokenStorage {
   }
 
   private async init(): Promise<boolean> {
-    if (this.initialized) return this.tokenPath !== null
+    if (this.initialized) return this.tokenPaths.length > 0
     this.initialized = true
 
     try {
       const os = await import('os')
       const path = await import('path')
+      const homeDir = os.homedir()
 
       if (this.customPath) {
-        const expandedPath = this.customPath.startsWith('~/')
-          ? path.join(os.homedir(), this.customPath.slice(2))
-          : this.customPath
-        this.tokenPath = expandedPath
-        this.configDir = path.dirname(expandedPath)
+        const expandedPath = this.customPath.startsWith('~/') ? path.join(homeDir, this.customPath.slice(2)) : this.customPath
+        this.tokenPaths = [expandedPath]
       } else {
-        this.configDir = path.join(os.homedir(), '.id.org.ai')
-        this.tokenPath = path.join(this.configDir, 'token')
+        this.tokenPaths = [...COMPATIBLE_TOKEN_DIRNAMES].map((dirname) => path.join(homeDir, dirname, TOKEN_FILE_NAME))
       }
-      return true
+      return this.tokenPaths.length > 0
     } catch {
       return false
+    }
+  }
+
+  private getPrimaryTokenPath(): string | null {
+    return this.tokenPaths[0] ?? null
+  }
+
+  private async readTokenData(pathname: string): Promise<StoredTokenData | null> {
+    try {
+      const fs = await import('fs/promises')
+      const content = await fs.readFile(pathname, 'utf-8')
+      const trimmed = content.trim()
+
+      if (trimmed.startsWith('{')) {
+        return JSON.parse(trimmed) as StoredTokenData
+      }
+      return trimmed ? { accessToken: trimmed } : null
+    } catch {
+      return null
     }
   }
 
@@ -63,47 +80,47 @@ export class SecureFileTokenStorage implements TokenStorage {
   }
 
   async getTokenData(): Promise<StoredTokenData | null> {
-    if (!(await this.init()) || !this.tokenPath) return null
+    if (!(await this.init()) || this.tokenPaths.length === 0) return null
 
-    try {
-      const fs = await import('fs/promises')
-      const content = await fs.readFile(this.tokenPath, 'utf-8')
-      const trimmed = content.trim()
-
-      if (trimmed.startsWith('{')) {
-        return JSON.parse(trimmed) as StoredTokenData
-      }
-      return { accessToken: trimmed }
-    } catch {
-      return null
+    for (const tokenPath of this.tokenPaths) {
+      const data = await this.readTokenData(tokenPath)
+      if (data) return data
     }
+
+    return null
   }
 
   async setTokenData(data: StoredTokenData): Promise<void> {
-    if (!(await this.init()) || !this.tokenPath || !this.configDir) {
+    if (!(await this.init()) || this.tokenPaths.length === 0) {
       throw new Error('File storage not available')
     }
 
     const fs = await import('fs/promises')
-    await fs.mkdir(this.configDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(this.tokenPath, JSON.stringify(data), { encoding: 'utf-8', mode: 0o600 })
-    await fs.chmod(this.tokenPath, 0o600)
+    const path = await import('path')
+    for (const tokenPath of this.tokenPaths) {
+      const configDir = path.dirname(tokenPath)
+      await fs.mkdir(configDir, { recursive: true, mode: 0o700 })
+      await fs.writeFile(tokenPath, JSON.stringify(data), { encoding: 'utf-8', mode: 0o600 })
+      await fs.chmod(tokenPath, 0o600)
+    }
   }
 
   async removeToken(): Promise<void> {
-    if (!(await this.init()) || !this.tokenPath) return
+    if (!(await this.init()) || this.tokenPaths.length === 0) return
 
-    try {
-      const fs = await import('fs/promises')
-      await fs.unlink(this.tokenPath)
-    } catch {
-      // Ignore if file doesn't exist
+    const fs = await import('fs/promises')
+    for (const tokenPath of this.tokenPaths) {
+      try {
+        await fs.unlink(tokenPath)
+      } catch {
+        // Ignore if file doesn't exist
+      }
     }
   }
 
   async getStoragePath(): Promise<string | null> {
     await this.init()
-    return this.tokenPath
+    return this.getPrimaryTokenPath()
   }
 }
 

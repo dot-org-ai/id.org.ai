@@ -18,16 +18,16 @@
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application",
-    "run_worker_first": true
+    "run_worker_first": true,
   },
 
   "vars": {
     "WORKOS_CLIENT_ID": "client_01JQYTRXK9ZPD8JPJTKDCRB656",
     // Common callback URL registered with WorkOS — used for ALL domains (apis.do, etc.)
     // After WorkOS auth, we redirect to the original domain to set the cookie there.
-    "REDIRECT_URI": "https://oauth.do/api/callback",
+    "REDIRECT_URI": "https://id.org.ai/api/callback",
     // The WorkOS org that owns the platform — users in this org get platformRole: 'superadmin' in their JWT
-    "PLATFORM_ORG_ID": "org_01K05B2AERNQ8N0QVSRFBSCNMS"
+    "PLATFORM_ORG_ID": "org_01K05B2AERNQ8N0QVSRFBSCNMS",
   },
 
   "routes": [
@@ -35,13 +35,11 @@
     { "pattern": "auth.headless.ly/*", "zone_name": "workers.do" },
     { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
     { "pattern": "api.id.org.ai/*", "zone_name": "workers.do" },
-    { "pattern": "auth.org.ai/*", "zone_name": "workers.do" }
+    { "pattern": "auth.org.ai/*", "zone_name": "workers.do" },
   ],
 
   "durable_objects": {
-    "bindings": [
-      { "name": "IDENTITY", "class_name": "IdentityDO" }
-    ]
+    "bindings": [{ "name": "IDENTITY", "class_name": "IdentityDO" }],
   },
 
   // Migration chain: This worker takes over the "oauth" name from the old oauth.do worker.
@@ -51,19 +49,17 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["OAuthDO"] },
     { "tag": "v2", "deleted_classes": ["OAuthDO"] },
-    { "tag": "v3", "new_sqlite_classes": ["IdentityDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["IdentityDO"] },
   ],
 
   "kv_namespaces": [
     {
       "binding": "SESSIONS",
-      "id": "0cbef6babc164069bb771a236ee70733"
-    }
+      "id": "0cbef6babc164069bb771a236ee70733",
+    },
   ],
 
-  "tail_consumers": [
-    { "service": "tail" }
-  ]
+  "tail_consumers": [{ "service": "tail" }],
 
   // Secrets (set via wrangler secret):
   // WORKOS_API_KEY              — WorkOS API key (client secret for code exchange + sk_* validation)

@@ -4,6 +4,8 @@
  * Uses id.org.ai's own OAuth device flow endpoint.
  */
 
+import { CANONICAL_API_ORIGIN } from '../auth/index.js'
+
 export interface DeviceAuthorizationResponse {
   device_code: string
   user_code: string
@@ -23,7 +25,7 @@ export interface TokenResponse {
 
 export type TokenError = 'authorization_pending' | 'slow_down' | 'access_denied' | 'expired_token' | 'unknown'
 
-const API_BASE = process.env.ID_ORG_AI_URL || 'https://id.org.ai'
+const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 
 /**
  * Initiate device authorization flow
@@ -49,12 +51,7 @@ export async function authorizeDevice(clientId: string): Promise<DeviceAuthoriza
 /**
  * Poll for tokens after device authorization
  */
-export async function pollForTokens(
-  clientId: string,
-  deviceCode: string,
-  interval: number = 5,
-  expiresIn: number = 600,
-): Promise<TokenResponse> {
+export async function pollForTokens(clientId: string, deviceCode: string, interval: number = 5, expiresIn: number = 600): Promise<TokenResponse> {
   const startTime = Date.now()
   const timeout = expiresIn * 1000
   let currentInterval = interval * 1000

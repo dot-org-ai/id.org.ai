@@ -2,7 +2,9 @@
  * Auth API calls for id.org.ai CLI
  */
 
-const API_BASE = process.env.ID_ORG_AI_URL || 'https://id.org.ai'
+import { CANONICAL_API_ORIGIN } from '../auth/index.js'
+
+const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 
 export interface User {
   id: string
