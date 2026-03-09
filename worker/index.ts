@@ -722,6 +722,50 @@ async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<s
   return env.SESSIONS.get(`claim:${claimToken}`)
 }
 
+// ── WorkOS JWT verification ──────────────────────────────────────────────────
+// Used by /api/orgs/* endpoints to accept browser JWTs forwarded via service binding.
+// The standard authenticateRequest flow only handles ses_* and API keys.
+
+let _localJwks: jose.JWTVerifyGetKey | null = null
+let _jwksFetchedAt = 0
+const JWKS_TTL_MS = 10 * 60 * 1000 // 10 minutes
+
+/** Fetch and cache JWKS keys locally (same pattern as auth verifier worker). */
+async function getLocalJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
+  if (_localJwks && Date.now() - _jwksFetchedAt < JWKS_TTL_MS) return _localJwks
+
+  const keys = await fetch(`https://api.workos.com/sso/jwks/${clientId}`)
+    .then((r) => r.json() as Promise<{ keys: jose.JWK[] }>)
+    .then((j) => j.keys)
+  _localJwks = jose.createLocalJWKSet({ keys })
+  _jwksFetchedAt = Date.now()
+  return _localJwks
+}
+
+/** Verify a WorkOS JWT from Authorization header. Returns sub (WorkOS user ID) or null. */
+async function extractWorkOSUserFromJWT(request: Request, env: Env): Promise<{ sub: string; orgId?: string; email?: string } | null> {
+  const auth = request.headers.get('authorization')
+  if (!auth?.startsWith('Bearer ')) return null
+  const token = auth.slice(7)
+  // Must be a JWT (contains dots), not a session token or API key
+  if (!token.includes('.') || token.startsWith('ses_') || isApiKeyPrefix(token)) return null
+  if (!env.WORKOS_CLIENT_ID) return null
+
+  try {
+    const jwks = await getLocalJwks(env.WORKOS_CLIENT_ID)
+    const { payload } = await jose.jwtVerify(token, jwks)
+    const org = payload.org as { id?: string } | undefined
+    return {
+      sub: payload.sub!,
+      orgId: org?.id || (payload.org_id as string | undefined),
+      email: payload.email as string | undefined,
+    }
+  } catch {
+    _localJwks = null // Clear cache on failure (key rotation)
+    return null
+  }
+}
+
 // ── CORS ──────────────────────────────────────────────────────────────────
 // Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
 // The origin callback dynamically checks against the allowlist.
@@ -1694,18 +1738,8 @@ async function resolveWorkOSUserId(stub: IdentityStub, identityId: string): Prom
 
 // POST /api/orgs — Create a new organization
 app.post('/api/orgs', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
-  }
-
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
-  }
-
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
 
   const body = (await c.req.json().catch(() => ({}))) as { name?: string }
@@ -1713,9 +1747,21 @@ app.post('/api/orgs', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
   }
 
-  const workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
+  // Resolve WorkOS user ID: standard auth (ses_*/API key) or JWT fallback
+  let workosUserId: string | null = null
+  const auth = c.get('auth')
+  if (auth.authenticated && auth.identityId) {
+    const stub = c.get('identityStub')
+    if (stub) {
+      workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
+    }
+  }
   if (!workosUserId) {
-    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Could not resolve WorkOS user ID')
+    const jwt = await extractWorkOSUserFromJWT(c.req.raw, c.env)
+    if (jwt?.sub) workosUserId = jwt.sub
+  }
+  if (!workosUserId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   // 1. Create the organization in WorkOS
@@ -1739,23 +1785,25 @@ app.post('/api/orgs', async (c) => {
 
 // GET /api/orgs — List the authenticated user's organizations
 app.get('/api/orgs', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
-  }
-
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
   }
 
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  // Resolve WorkOS user ID: standard auth (ses_*/API key) or JWT fallback
+  let workosUserId: string | null = null
+  const auth = c.get('auth')
+  if (auth.authenticated && auth.identityId) {
+    const stub = c.get('identityStub')
+    if (stub) {
+      workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
+    }
   }
-
-  const workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
   if (!workosUserId) {
-    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Could not resolve WorkOS user ID')
+    const jwt = await extractWorkOSUserFromJWT(c.req.raw, c.env)
+    if (jwt?.sub) workosUserId = jwt.sub
+  }
+  if (!workosUserId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   const memberships = await listUserOrgMemberships(c.env.WORKOS_API_KEY, workosUserId)
@@ -1778,13 +1826,15 @@ app.get('/api/orgs', async (c) => {
 
 // GET /api/orgs/:id/members — List members of an organization
 app.get('/api/orgs/:id/members', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
-  }
-
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  // Require auth: standard or JWT
+  const auth = c.get('auth')
+  const jwt = (!auth.authenticated || !auth.identityId) ? await extractWorkOSUserFromJWT(c.req.raw, c.env) : null
+  if (!auth.authenticated && !jwt) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   const orgId = c.req.param('id')
@@ -1803,13 +1853,15 @@ app.get('/api/orgs/:id/members', async (c) => {
 
 // POST /api/orgs/:id/invitations — Send an invitation to join an organization
 app.post('/api/orgs/:id/invitations', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
-  }
-
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  // Require auth: standard or JWT
+  const auth = c.get('auth')
+  const jwt = (!auth.authenticated || !auth.identityId) ? await extractWorkOSUserFromJWT(c.req.raw, c.env) : null
+  if (!auth.authenticated && !jwt) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   const orgId = c.req.param('id')
