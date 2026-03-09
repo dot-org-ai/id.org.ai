@@ -358,6 +358,100 @@ export async function updateWorkOSUser(
 }
 
 // ============================================================================
+// List Organization Memberships
+// ============================================================================
+
+export interface WorkOSOrganizationMembership {
+  id: string
+  user_id: string
+  organization_id: string
+  role: { slug: string }
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * List a user's organization memberships in WorkOS.
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID
+ * @returns Array of org memberships, or empty array on failure
+ */
+export async function listUserOrgMemberships(
+  apiKey: string,
+  userId: string,
+): Promise<WorkOSOrganizationMembership[]> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=100`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return []
+    const data = (await response.json()) as { data: WorkOSOrganizationMembership[] }
+    return data.data
+  } catch {
+    return []
+  }
+}
+
+/**
+ * List members of a WorkOS organization.
+ *
+ * @param apiKey - WorkOS API key
+ * @param organizationId - WorkOS organization ID
+ * @returns Array of org memberships, or empty array on failure
+ */
+export async function listOrgMembers(
+  apiKey: string,
+  organizationId: string,
+): Promise<WorkOSOrganizationMembership[]> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?organization_id=${organizationId}&limit=100`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return []
+    const data = (await response.json()) as { data: WorkOSOrganizationMembership[] }
+    return data.data
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Send an invitation to join a WorkOS organization.
+ *
+ * @param apiKey - WorkOS API key
+ * @param email - Email to invite
+ * @param organizationId - WorkOS organization ID
+ * @param roleSlug - Role slug (default: 'member')
+ * @returns true if invitation was sent
+ */
+export async function sendOrgInvitation(
+  apiKey: string,
+  email: string,
+  organizationId: string,
+  roleSlug = 'member',
+): Promise<boolean> {
+  try {
+    const response = await fetch('https://api.workos.com/user_management/invitations', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        organization_id: organizationId,
+        role_slug: roleSlug,
+      }),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+// ============================================================================
 // State Encoding (CSRF + continue URL)
 // ============================================================================
 

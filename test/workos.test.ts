@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState, listUserOrgMemberships, listOrgMembers, sendOrgInvitation } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 
@@ -892,5 +892,233 @@ describe('revokeWorkOSApiKey', () => {
 
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe('https://api.workos.com/api_keys/key_special_id_456')
+  })
+})
+
+// ============================================================================
+// listUserOrgMemberships
+// ============================================================================
+
+describe('listUserOrgMemberships', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends GET to api.workos.com/user_management/organization_memberships with user_id', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listUserOrgMemberships('sk_test', 'user_abc')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toContain('https://api.workos.com/user_management/organization_memberships')
+    expect(url).toContain('user_id=user_abc')
+    expect(options.headers.Authorization).toBe('Bearer sk_test')
+  })
+
+  it('includes limit=100 query parameter', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listUserOrgMemberships('sk_test', 'user_abc')
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toContain('limit=100')
+  })
+
+  it('returns array of memberships from data envelope', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: 'mem_1', user_id: 'user_abc', organization_id: 'org_1', role: { slug: 'admin' }, status: 'active', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+          { id: 'mem_2', user_id: 'user_abc', organization_id: 'org_2', role: { slug: 'member' }, status: 'active', created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' },
+        ],
+      }),
+    )
+
+    const memberships = await listUserOrgMemberships('sk_test', 'user_abc')
+
+    expect(memberships).toHaveLength(2)
+    expect(memberships[0].organization_id).toBe('org_1')
+    expect(memberships[0].role.slug).toBe('admin')
+    expect(memberships[1].organization_id).toBe('org_2')
+    expect(memberships[1].role.slug).toBe('member')
+  })
+
+  it('returns empty array when no memberships exist', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    const memberships = await listUserOrgMemberships('sk_test', 'user_abc')
+
+    expect(memberships).toEqual([])
+  })
+
+  it('returns empty array on non-200 response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Unauthorized', 401))
+
+    const memberships = await listUserOrgMemberships('sk_bad', 'user_abc')
+
+    expect(memberships).toEqual([])
+  })
+
+  it('returns empty array on fetch error', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network error'))
+
+    const memberships = await listUserOrgMemberships('sk_test', 'user_abc')
+
+    expect(memberships).toEqual([])
+  })
+})
+
+// ============================================================================
+// listOrgMembers
+// ============================================================================
+
+describe('listOrgMembers', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends GET to api.workos.com/user_management/organization_memberships with organization_id', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listOrgMembers('sk_test', 'org_xyz')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toContain('https://api.workos.com/user_management/organization_memberships')
+    expect(url).toContain('organization_id=org_xyz')
+    expect(options.headers.Authorization).toBe('Bearer sk_test')
+  })
+
+  it('includes limit=100 query parameter', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [] }))
+
+    await listOrgMembers('sk_test', 'org_xyz')
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toContain('limit=100')
+  })
+
+  it('returns array of members from data envelope', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: 'mem_1', user_id: 'user_1', organization_id: 'org_xyz', role: { slug: 'admin' }, status: 'active', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+          { id: 'mem_2', user_id: 'user_2', organization_id: 'org_xyz', role: { slug: 'member' }, status: 'active', created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' },
+        ],
+      }),
+    )
+
+    const members = await listOrgMembers('sk_test', 'org_xyz')
+
+    expect(members).toHaveLength(2)
+    expect(members[0].user_id).toBe('user_1')
+    expect(members[1].user_id).toBe('user_2')
+  })
+
+  it('returns empty array on non-200 response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Not Found', 404))
+
+    const members = await listOrgMembers('sk_test', 'org_nonexistent')
+
+    expect(members).toEqual([])
+  })
+
+  it('returns empty array on fetch error', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network error'))
+
+    const members = await listOrgMembers('sk_test', 'org_xyz')
+
+    expect(members).toEqual([])
+  })
+})
+
+// ============================================================================
+// sendOrgInvitation
+// ============================================================================
+
+describe('sendOrgInvitation', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends POST to api.workos.com/user_management/invitations', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'inv_1' }))
+
+    await sendOrgInvitation('sk_test', 'alice@example.com', 'org_xyz')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://api.workos.com/user_management/invitations')
+    expect(options.method).toBe('POST')
+    expect(options.headers.Authorization).toBe('Bearer sk_test')
+    expect(options.headers['Content-Type']).toBe('application/json')
+  })
+
+  it('sends email, organization_id, and role_slug in body', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'inv_1' }))
+
+    await sendOrgInvitation('sk_test', 'bob@example.com', 'org_abc', 'admin')
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.email).toBe('bob@example.com')
+    expect(body.organization_id).toBe('org_abc')
+    expect(body.role_slug).toBe('admin')
+  })
+
+  it('defaults role_slug to member when not specified', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'inv_1' }))
+
+    await sendOrgInvitation('sk_test', 'carol@example.com', 'org_xyz')
+
+    const [, options] = mockFetch.mock.calls[0]
+    const body = JSON.parse(options.body)
+    expect(body.role_slug).toBe('member')
+  })
+
+  it('returns true on successful response', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: 'inv_1' }))
+
+    const result = await sendOrgInvitation('sk_test', 'alice@example.com', 'org_xyz')
+
+    expect(result).toBe(true)
+  })
+
+  it('returns false on non-200 response', async () => {
+    mockFetch.mockResolvedValueOnce(textResponse('Bad Request', 400))
+
+    const result = await sendOrgInvitation('sk_test', 'invalid', 'org_xyz')
+
+    expect(result).toBe(false)
+  })
+
+  it('returns false on fetch error', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network error'))
+
+    const result = await sendOrgInvitation('sk_test', 'alice@example.com', 'org_xyz')
+
+    expect(result).toBe(false)
   })
 })

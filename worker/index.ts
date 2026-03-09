@@ -47,6 +47,11 @@ import {
   ensurePersonalOrg,
   encodeLoginState,
   decodeLoginState,
+  createWorkOSOrganization,
+  createWorkOSMembership,
+  listUserOrgMemberships,
+  listOrgMembers,
+  sendOrgInvitation,
 } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
@@ -1671,6 +1676,155 @@ app.delete('/api/keys/:id', async (c) => {
   } catch (err: any) {
     return errorResponse(c, 500, ErrorCode.ServerError, err.message)
   }
+})
+
+// ── Organization Management Endpoints ────────────────────────────────────
+// CRUD for organizations. Uses WorkOS Organization + Membership APIs.
+// Requires L1+ auth. The authenticated user's WorkOS user ID is resolved
+// from the identity record stored in the DO.
+
+/**
+ * Resolve the WorkOS user ID from the authenticated identity.
+ */
+async function resolveWorkOSUserId(stub: IdentityStub, identityId: string): Promise<string | null> {
+  const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${identityId}` })
+  const record = stored.value as { workosUserId?: string } | null
+  return record?.workosUserId ?? null
+}
+
+// POST /api/orgs — Create a new organization
+app.post('/api/orgs', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  const body = (await c.req.json().catch(() => ({}))) as { name?: string }
+  if (!body.name || body.name.trim().length === 0) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
+  }
+
+  const workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
+  if (!workosUserId) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Could not resolve WorkOS user ID')
+  }
+
+  // 1. Create the organization in WorkOS
+  const org = await createWorkOSOrganization(c.env.WORKOS_API_KEY, body.name.trim())
+  if (!org) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to create organization in WorkOS')
+  }
+
+  // 2. Add the creator as admin member
+  const membershipCreated = await createWorkOSMembership(c.env.WORKOS_API_KEY, workosUserId, org.id, 'admin')
+  if (!membershipCreated) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Organization created but failed to add membership')
+  }
+
+  return c.json({
+    id: org.id,
+    name: org.name,
+    workosOrgId: org.id,
+  }, 201)
+})
+
+// GET /api/orgs — List the authenticated user's organizations
+app.get('/api/orgs', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const stub = c.get('identityStub')
+  if (!stub) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
+  }
+
+  const workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
+  if (!workosUserId) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Could not resolve WorkOS user ID')
+  }
+
+  const memberships = await listUserOrgMemberships(c.env.WORKOS_API_KEY, workosUserId)
+
+  // Fetch org details for each membership
+  const orgs = await Promise.all(
+    memberships.map(async (m) => {
+      const orgInfo = await fetchOrgInfo(c.env.WORKOS_API_KEY!, m.organization_id)
+      return {
+        id: m.organization_id,
+        name: orgInfo?.name ?? m.organization_id,
+        role: m.role?.slug ?? 'member',
+        domains: orgInfo?.domains ?? [],
+      }
+    }),
+  )
+
+  return c.json({ organizations: orgs })
+})
+
+// GET /api/orgs/:id/members — List members of an organization
+app.get('/api/orgs/:id/members', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const orgId = c.req.param('id')
+  const members = await listOrgMembers(c.env.WORKOS_API_KEY, orgId)
+
+  return c.json({
+    members: members.map((m) => ({
+      id: m.id,
+      userId: m.user_id,
+      role: m.role?.slug ?? 'member',
+      status: m.status,
+      createdAt: m.created_at,
+    })),
+  })
+})
+
+// POST /api/orgs/:id/invitations — Send an invitation to join an organization
+app.post('/api/orgs/:id/invitations', async (c) => {
+  const auth = c.get('auth')
+  if (!auth.authenticated || !auth.identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const orgId = c.req.param('id')
+  const body = (await c.req.json().catch(() => ({}))) as { email?: string; role?: string }
+
+  if (!body.email) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'email is required')
+  }
+
+  const sent = await sendOrgInvitation(c.env.WORKOS_API_KEY, body.email, orgId, body.role || 'member')
+  if (!sent) {
+    return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to send invitation')
+  }
+
+  return c.json({ ok: true, email: body.email, organizationId: orgId }, 201)
 })
 
 // ── Audit Log Query Endpoint ─────────────────────────────────────────────
