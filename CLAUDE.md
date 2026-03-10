@@ -91,12 +91,13 @@ Full provider implementation:
 
 ### Progressive Capability Tiers
 
-| Level | Auth | Capabilities |
-|-------|------|-------------|
-| L0 | None | Read-only (search, fetch, explore) |
-| L1 | Session token | Write (do, try, claim) — 1K entities, 24h TTL |
-| L2 | GitHub-linked | Persistent, webhooks, export — Stripe test mode |
-| L3 | Full | Production integrations, invite, plan-based limits |
+| Level | Name | Auth | Token Types |
+|-------|------|------|-------------|
+| L0 | Anonymous | None | — |
+| L1 | Sandboxed | Session token | `ses_*` |
+| L2 | Identified | Org-scoped key or JWT | `sk_*` (WorkOS), JWT, claimed `oai_*`/`hly_sk_*` |
+| L3 | Admin | JWT with admin/owner role | JWT |
+| L4 | Superadmin | Platform JWT | JWT with `platformRole: superadmin` |
 
 ## Testing
 

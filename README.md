@@ -44,12 +44,13 @@ The agent operates first, proves value, then the human claims. Not the reverse.
 
 ### Progressive Capability Tiers
 
-| Level | Auth | Tools | Limits | Integrations |
-|-------|------|-------|--------|--------------|
-| **0 — Anonymous** | None | search, fetch, explore | Read-only, 30 req/min | None |
-| **1 — Sandboxed** | Session token | + do, try, claim | 1,000 entities, 24h TTL | Stubbed (realistic mocks) |
-| **2 — Claimed** | GitHub-linked | + subscribe, webhook, export | Persistent, no entity limit | Stripe test mode, GitHub read |
-| **3 — Production** | Full | + invite, integrate | Plan-based rate limits | Live Stripe, full GitHub sync |
+| Level | Name | Auth | Token Types | Limits |
+|-------|------|------|-------------|--------|
+| **L0 — Anonymous** | Anonymous | None | — | Read-only, 30 req/min |
+| **L1 — Sandboxed** | Sandboxed | Session token | `ses_*` | 1,000 entities, 24h TTL |
+| **L2 — Identified** | Identified | Org-scoped key or JWT | `sk_*` (WorkOS), JWT with `sub`, claimed `oai_*`/`hly_sk_*` | Persistent, no entity limit |
+| **L3 — Admin** | Admin | JWT with admin/owner role | JWT | Plan-based rate limits |
+| **L4 — Superadmin** | Superadmin | Platform JWT | JWT with `platformRole: superadmin` | Internal — .do platform only |
 
 Every MCP `_meta` response includes the current level, available actions, and exact instructions to upgrade. Errors are remediation guides, not rejections.
 
