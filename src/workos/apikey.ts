@@ -46,8 +46,6 @@ export async function validateWorkOSApiKey(
     })
 
     if (!response.ok) {
-      const errBody = await response.text().catch(() => '')
-      console.error(`[validateWorkOSApiKey] WorkOS returned ${response.status}: ${errBody}`)
       return { valid: false }
     }
 
@@ -57,7 +55,11 @@ export async function validateWorkOSApiKey(
         name: string
         owner?: { type: string; id: string }
         permissions?: string[]
-      }
+      } | null
+    }
+
+    if (!data.api_key) {
+      return { valid: false }
     }
 
     const key = data.api_key
