@@ -15,6 +15,7 @@ import { authorizeDevice, pollForTokens } from './device.js'
 import { getUser, logout as logoutFn } from './auth.js'
 import { createStorage, SecureFileTokenStorage } from './storage.js'
 import { provisionCommand } from './provision.js'
+import { claimCommand } from './claim.js'
 import { ProvisionStorage } from './provision-storage.js'
 
 const colors = {
@@ -63,7 +64,7 @@ ${colors.cyan}Commands:${colors.reset}
   token      Display current authentication token
   status     Show authentication and storage status
   provision  Create an anonymous sandbox for agents
-  claim      Claim a provisioned sandbox (coming soon)
+  claim      Claim a provisioned sandbox via commit
 
 ${colors.cyan}Options:${colors.reset}
   --help, -h     Show this help message
@@ -332,6 +333,15 @@ async function main() {
       const json = args.includes('--json')
       const provisionStorage = new ProvisionStorage()
       await provisionCommand({ baseUrl, json, storage: provisionStorage })
+      break
+    }
+    case 'claim': {
+      const baseUrl = process.env.ID_ORG_AI_URL || 'https://id.org.ai'
+      const json = args.includes('--json')
+      const token = args.find((a) => a.startsWith('--token='))?.split('=')[1] || (args.includes('--token') ? args[args.indexOf('--token') + 1] : undefined)
+      const noPush = args.includes('--no-push')
+      const claimStorage = new ProvisionStorage()
+      await claimCommand({ baseUrl, json, token, noPush, storage: claimStorage })
       break
     }
     default:

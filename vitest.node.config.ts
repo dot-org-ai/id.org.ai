@@ -16,6 +16,7 @@ export default {
       'test/claim-client.test.ts',
       'test/provision-storage.test.ts',
       'test/cli-provision.test.ts',
+      'test/cli-claim.test.ts',
     ],
     globals: true,
   },

@@ -3,7 +3,7 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config'
 export default defineWorkersConfig({
   test: {
     include: ['test/**/*.test.ts'],
-    exclude: ['test/cli.test.ts', 'test/provision-storage.test.ts'],
+    exclude: ['test/cli.test.ts', 'test/provision-storage.test.ts', 'test/cli-claim.test.ts'],
     globals: true,
     poolOptions: {
       workers: {
