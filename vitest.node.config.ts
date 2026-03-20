@@ -13,6 +13,7 @@ export default {
       'test/oauth-dev.test.ts',
       'test/oauth-server.test.ts',
       'test/oauth-stripe.test.ts',
+      'test/claim-client.test.ts',
     ],
     globals: true,
   },
