@@ -14,6 +14,8 @@
 import { authorizeDevice, pollForTokens } from './device.js'
 import { getUser, logout as logoutFn } from './auth.js'
 import { createStorage, SecureFileTokenStorage } from './storage.js'
+import { provisionCommand } from './provision.js'
+import { ProvisionStorage } from './provision-storage.js'
 
 const colors = {
   reset: '\x1b[0m',
@@ -60,6 +62,8 @@ ${colors.cyan}Commands:${colors.reset}
   whoami     Show current authenticated user
   token      Display current authentication token
   status     Show authentication and storage status
+  provision  Create an anonymous sandbox for agents
+  claim      Claim a provisioned sandbox (coming soon)
 
 ${colors.cyan}Options:${colors.reset}
   --help, -h     Show this help message
@@ -78,6 +82,12 @@ ${colors.cyan}Examples:${colors.reset}
 
   ${colors.gray}# Use token with curl${colors.reset}
   curl -H "Authorization: Bearer $(id.org.ai token)" https://crm.headless.ly/api/contacts
+
+  ${colors.gray}# Create anonymous sandbox${colors.reset}
+  id.org.ai provision
+
+  ${colors.gray}# Create sandbox and get JSON output${colors.reset}
+  id.org.ai provision --json
 
   ${colors.gray}# Logout${colors.reset}
   id.org.ai logout
@@ -317,6 +327,13 @@ async function main() {
     case 'status':
       await statusCommand()
       break
+    case 'provision': {
+      const baseUrl = process.env.ID_ORG_AI_URL || 'https://id.org.ai'
+      const json = args.includes('--json')
+      const provisionStorage = new ProvisionStorage()
+      await provisionCommand({ baseUrl, json, storage: provisionStorage })
+      break
+    }
     default:
       printError(`Unknown command: ${command}`)
       console.log(`\nRun ${colors.cyan}id.org.ai --help${colors.reset} for usage information`)

@@ -15,6 +15,7 @@ export default {
       'test/oauth-stripe.test.ts',
       'test/claim-client.test.ts',
       'test/provision-storage.test.ts',
+      'test/cli-provision.test.ts',
     ],
     globals: true,
   },
