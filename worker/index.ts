@@ -1525,6 +1525,41 @@ app.get('/api/claim/:token', async (c) => {
   }
 })
 
+// ── Claim Status Polling Endpoint ─────────────────────────────────────────
+// Lightweight endpoint for CLI polling. Returns only status + level.
+
+app.get('/api/claim/:token/status', async (c) => {
+  const token = c.req.param('token')
+
+  if (!token || !token.startsWith('clm_')) {
+    return c.json({ status: 'unclaimed' }, 404)
+  }
+
+  // Resolve identity ID from claim token KV
+  const identityId = await resolveIdentityFromClaim(token, c.env)
+  if (!identityId) {
+    return c.json({ status: 'expired' })
+  }
+
+  // Get the identity DO stub and verify claim status
+  const stub = getStubForIdentity(c.env, identityId)
+
+  try {
+    const result = await verifyClaim(token, stub)
+
+    if (!result.valid) {
+      return c.json({ status: 'unclaimed' })
+    }
+
+    return c.json({
+      status: result.status || 'unclaimed',
+      level: result.level,
+    })
+  } catch (err: any) {
+    return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
+  }
+})
+
 // ── Freeze Endpoint ───────────────────────────────────────────────────────
 // Requires L1+ auth. Freezes the caller's own tenant.
 
