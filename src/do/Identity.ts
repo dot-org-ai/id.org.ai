@@ -58,7 +58,8 @@ export interface IdentityStub {
   mcpFetch(params: { identityId: string; type: string; id?: string; filters?: Record<string, unknown>; limit?: number; offset?: number }): Promise<Record<string, unknown>>
   mcpDo(params: { entity: string; verb: string; data: Record<string, unknown>; identityId?: string; authLevel: number; timestamp: number }): Promise<{ success: boolean; entity: string; verb: string; result?: Record<string, unknown>; events?: unknown[]; error?: string }>
 
-  // OAuth Storage
+  // OAuth
+  ensureCliClient(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
   // Audit
@@ -820,6 +821,25 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     await this.ctx.storage.delete(`agentkey-did:${keyRecord.did}`)
 
     return true
+  }
+
+  // ─── OAuth Client Seeding ──────────────────────────────────────────
+
+  async ensureCliClient(): Promise<void> {
+    const existing = await this.ctx.storage.get('client:id_org_ai_cli')
+    if (existing) return
+
+    await this.ctx.storage.put('client:id_org_ai_cli', {
+      id: 'id_org_ai_cli',
+      name: 'id.org.ai CLI',
+      redirectUris: [],
+      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
+      responseTypes: [],
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      trusted: true,
+      tokenEndpointAuthMethod: 'none',
+      createdAt: Date.now(),
+    })
   }
 
   // ─── OAuth Storage (RPC) ───────────────────────────────────────────
