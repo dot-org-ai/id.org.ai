@@ -304,11 +304,11 @@ export async function generateKeypair(): Promise<{
   ) as CryptoKeyPair
 
   // Export raw public key (32 bytes)
-  const publicKeyBuffer = await crypto.subtle.exportKey('raw', keyPair.publicKey)
+  const publicKeyBuffer = (await crypto.subtle.exportKey('raw', keyPair.publicKey)) as ArrayBuffer
   const publicKey = new Uint8Array(publicKeyBuffer)
 
   // Export private key as PKCS#8, then extract the 32-byte seed
-  const pkcs8Buffer = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
+  const pkcs8Buffer = (await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)) as ArrayBuffer
   const pkcs8 = new Uint8Array(pkcs8Buffer)
 
   // PKCS#8 for Ed25519 is:
@@ -340,7 +340,7 @@ async function importPrivateKey(privateKey: Uint8Array): Promise<CryptoKey> {
 
   return crypto.subtle.importKey(
     'pkcs8',
-    pkcs8,
+    pkcs8.buffer as ArrayBuffer,
     { name: 'Ed25519' },
     false,
     ['sign'],
