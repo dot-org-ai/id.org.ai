@@ -162,28 +162,7 @@ function buildResourceList(auth: MCPAuthResult): Array<{ name: string; descripti
   return resources
 }
 
-/**
- * Mirror of buildClaimWorkflow from worker/index.ts (~line 1809).
- * Builds the GitHub Action workflow YAML for claim-by-commit.
- */
-function buildClaimWorkflow(claimToken: string): string {
-  return `name: Claim headless.ly tenant
-on:
-  push:
-    branches: [main, master]
-permissions:
-  id-token: write
-  contents: read
-jobs:
-  claim:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dot-org-ai/id@v1
-        with:
-          tenant: '${claimToken}'
-`
-}
+import { buildClaimWorkflow } from '../src/claim/workflow'
 
 /**
  * Mirror of parseCookieValue from worker/index.ts (~line 155).

@@ -32,6 +32,7 @@ import type { MCPAuthResult } from '../src/mcp/auth'
 import { dispatchTool } from '../src/mcp/tools'
 import { ClaimService } from '../src/claim/provision'
 import { verifyClaim } from '../src/claim/verify'
+import { buildClaimWorkflow } from '../src/claim/workflow'
 import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { OAuthProvider } from '../src/oauth/provider'
@@ -3112,24 +3113,3 @@ function buildResourceList(auth: MCPAuthResult): Array<{ name: string; descripti
   return resources
 }
 
-/**
- * Build the GitHub Action workflow YAML for claim-by-commit.
- */
-function buildClaimWorkflow(claimToken: string): string {
-  return `name: Claim headless.ly tenant
-on:
-  push:
-    branches: [main, master]
-permissions:
-  id-token: write
-  contents: read
-jobs:
-  claim:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dot-org-ai/id@v1
-        with:
-          tenant: '${claimToken}'
-`
-}
