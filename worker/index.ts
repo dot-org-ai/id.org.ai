@@ -726,18 +726,21 @@ async function resolveIdentityId(request: Request, env: Env): Promise<string | n
   const cookie = request.headers.get('cookie')
   if (cookie) {
     const jwt = parseCookieValue(cookie, 'auth')
+    console.log('[resolveIdentityId] cookie present:', !!cookie, 'jwt parsed:', !!jwt, 'jwt length:', jwt?.length)
     if (jwt) {
       try {
         const oauthStub = getStubForIdentity(env, 'oauth')
         const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
         const jwks = await manager.getJWKS()
+        console.log('[resolveIdentityId] JWKS keys:', jwks?.keys?.length)
         const localJwks = jose.createLocalJWKSet(jwks)
         const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+        console.log('[resolveIdentityId] JWT verified, sub:', payload.sub)
         if (payload.sub) {
           return `human:${payload.sub}`
         }
-      } catch {
-        // Invalid JWT — fall through to anonymous
+      } catch (err) {
+        console.error('[resolveIdentityId] JWT verification failed:', err instanceof Error ? err.message : err)
       }
     }
   }
@@ -1523,6 +1526,26 @@ async function authenticateRequest(c: any, next: () => Promise<void>) {
     // Explicit credentials provided but auth failed → reject (don't silently downgrade to L0)
     if ((hasExplicitApiKey || hasExplicitSession) && !auth.authenticated) {
       return errorResponse(c, 401, ErrorCode.Unauthorized, auth.error || 'Invalid credentials')
+    }
+
+    // MCPAuth only knows about API keys and session tokens. If the identity
+    // was resolved from a JWT cookie (human login), MCPAuth returns unauthenticated.
+    // In that case, construct an auth result from the cookie identity.
+    if (!auth.authenticated && !hasExplicitApiKey && !hasExplicitSession) {
+      const cookieHeader = c.req.header('cookie') || ''
+      const jwt = parseCookieValue(cookieHeader, 'auth')
+      if (jwt) {
+        // Identity was resolved from JWT in resolveIdentityId — trust it
+        const identity = await stub.getIdentity()
+        c.set('auth', {
+          authenticated: true,
+          identityId: identity?.id || `human:unknown`,
+          level: identity?.level ?? 2,
+          scopes: ['openid', 'profile', 'email'],
+          capabilities: { read: true, write: true, admin: false },
+        })
+        return next()
+      }
     }
 
     c.set('auth', auth)
