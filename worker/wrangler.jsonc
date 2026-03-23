@@ -33,8 +33,8 @@
   "routes": [
     { "pattern": "oauth.do/*", "zone_name": "oauth.do" },
     { "pattern": "auth.headless.ly/*", "zone_name": "workers.do" },
-    { "pattern": "id.org.ai/*", "zone_name": "workers.do" },
-    { "pattern": "api.id.org.ai/*", "zone_name": "workers.do" },
+    { "pattern": "id.org.ai/*", "zone_name": "id.org.ai" },
+    { "pattern": "api.id.org.ai/*", "zone_name": "id.org.ai" },
     { "pattern": "auth.org.ai/*", "zone_name": "workers.do" },
   ],
 

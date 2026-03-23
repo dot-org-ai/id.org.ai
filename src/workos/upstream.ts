@@ -40,6 +40,13 @@ export interface WorkOSAuthResult {
   organization_id?: string
 }
 
+export interface OrgSelectionError extends Error {
+  code: 'organization_selection_required'
+  pendingAuthenticationToken: string
+  organizations: Array<{ id: string; name: string }>
+  user: { id: string; email: string; first_name?: string; last_name?: string }
+}
+
 // ============================================================================
 // Auth URL Builder
 // ============================================================================
@@ -90,12 +97,32 @@ export async function exchangeWorkOSCode(
   })
 
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`WorkOS authentication failed: ${response.status} - ${error}`)
+    const errorBody = await response.text()
+
+    // Handle organization_selection_required — user belongs to multiple orgs.
+    // Parse the error and throw a typed error so the caller can render an org picker.
+    try {
+      const parsed = JSON.parse(errorBody)
+      if (parsed.code === 'organization_selection_required' && parsed.pending_authentication_token && parsed.organizations?.length) {
+        const err = new Error('organization_selection_required') as OrgSelectionError
+        err.code = 'organization_selection_required'
+        err.pendingAuthenticationToken = parsed.pending_authentication_token
+        err.organizations = parsed.organizations
+        err.user = parsed.user
+        throw err
+      }
+    } catch (e) {
+      if (e instanceof Error && (e as any).code === 'organization_selection_required') throw e
+    }
+
+    throw new Error(`WorkOS authentication failed: ${response.status} - ${errorBody}`)
   }
 
   const data = (await response.json()) as WorkOSAuthResult
+  return extractRolesFromToken(data, clientId, apiKey)
+}
 
+function extractRolesFromToken(data: WorkOSAuthResult, _clientId: string, _apiKey: string): WorkOSAuthResult {
   // Extract roles/permissions/org_id from the WorkOS JWT access_token
   try {
     const parts = data.access_token.split('.')
@@ -130,6 +157,38 @@ export async function exchangeWorkOSCode(
   }
 
   return data
+}
+
+/**
+ * Complete authentication after org selection.
+ * Uses the pending_authentication_token + chosen org ID.
+ */
+export async function exchangeWorkOSOrgSelection(
+  clientId: string,
+  apiKey: string,
+  pendingAuthenticationToken: string,
+  organizationId: string,
+): Promise<WorkOSAuthResult> {
+  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:workos:oauth:grant-type:organization-selection',
+      client_id: clientId,
+      client_secret: apiKey,
+      pending_authentication_token: pendingAuthenticationToken,
+      organization_id: organizationId,
+    }).toString(),
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`WorkOS org selection failed: ${response.status} - ${error}`)
+  }
+
+  const data = (await response.json()) as WorkOSAuthResult
+  if (!data.organization_id) data.organization_id = organizationId
+  return extractRolesFromToken(data, clientId, apiKey)
 }
 
 // ============================================================================

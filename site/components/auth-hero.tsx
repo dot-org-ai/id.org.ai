@@ -8,32 +8,32 @@ const oauthProviders = [
   {
     name: 'Continue with GitHub',
     icon: 'simple-icons:github',
-    href: '#',
+    href: '/login?provider=GitHubOAuth',
   },
   {
     name: 'Connect Google',
     icon: 'logos:google-icon',
-    href: '#',
+    href: '/login?provider=GoogleOAuth',
   },
   {
     name: 'Continue with Microsoft',
     icon: 'logos:microsoft-icon',
-    href: '#',
+    href: '/login?provider=MicrosoftOAuth',
   },
   {
     name: 'Continue with Apple',
     icon: 'simple-icons:apple',
-    href: '#',
+    href: '/login?provider=AppleOAuth',
   },
   {
     name: 'Continue with X',
     icon: 'simple-icons:x',
-    href: '#',
+    href: '/login?provider=authkit',
   },
   {
     name: 'Login with LinkedIn',
     icon: 'logos:linkedin-icon',
-    href: '#',
+    href: '/login?provider=authkit',
   },
 ]
 

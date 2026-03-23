@@ -41,6 +41,7 @@ import { DEFAULT_CALLBACK_URL, LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKO
 import {
   buildWorkOSAuthUrl,
   exchangeWorkOSCode,
+  exchangeWorkOSOrgSelection,
   fetchWorkOSUser,
   extractGitHubId,
   fetchGitHubUsername,
@@ -55,6 +56,7 @@ import {
   listOrgMembers,
   sendOrgInvitation,
 } from '../src/workos/upstream'
+import type { OrgSelectionError } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
@@ -982,10 +984,9 @@ app.get('/login', async (c) => {
     options: { expirationTtl: 300 },
   })
 
-  // Use the shared callback URL registered with WorkOS — not the requesting domain.
-  // Both id.org.ai and oauth.do route here, then we bounce back to the origin that
-  // initiated login so the auth cookie is set on the right host.
-  const redirectUri = c.env.REDIRECT_URI || DEFAULT_CALLBACK_URL
+  // Use the callback URL matching the current host. Both id.org.ai and
+  // oauth.dotdo.workers.dev are registered as redirect URIs in WorkOS.
+  const redirectUri = `${requestOrigin}/api/callback`
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
@@ -1030,6 +1031,194 @@ app.get('/callback', async (c) => {
   return new Response(null, { status: 302, headers })
 })
 
+// ── /api/org-select — Org picker POST handler ───────────────────────────────
+// After the user picks an org on the org picker page, this endpoint completes
+// authentication with the chosen org and redirects back to /api/callback flow.
+app.post('/api/org-select', async (c) => {
+  const clientId = c.env.WORKOS_CLIENT_ID
+  const apiKey = c.env.WORKOS_API_KEY
+  if (!clientId || !apiKey) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  const body = await c.req.parseBody()
+  const pendingToken = body.pending_token as string
+  const organizationId = body.organization_id as string
+  const state = body.state as string
+
+  if (!pendingToken || !organizationId || !state) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing required fields')
+  }
+
+  // Exchange pending token + org selection for real auth result
+  let authResult
+  try {
+    authResult = await exchangeWorkOSOrgSelection(clientId, apiKey, pendingToken, organizationId)
+  } catch (err: any) {
+    return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+  }
+
+  // Decode state to get CSRF + continue URL + origin
+  const decoded = decodeLoginState(state)
+  if (!decoded) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid state parameter')
+  }
+
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+
+  // Re-store CSRF since the original was consumed when we first hit /api/callback
+  await oauthStub.oauthStorageOp({
+    op: 'put',
+    key: `login-csrf:${decoded.csrf}`,
+    value: { csrf: decoded.csrf, createdAt: Date.now() },
+    options: { expirationTtl: 300 },
+  })
+
+  // Build a synthetic callback URL with a special parameter to skip code exchange
+  // and use the auth result directly. We'll store it in KV and pass a reference.
+  const resultKey = `auth-result:${crypto.randomUUID()}`
+  await oauthStub.oauthStorageOp({
+    op: 'put',
+    key: resultKey,
+    value: authResult,
+    options: { expirationTtl: 60 },
+  })
+
+  const requestOrigin = new URL(c.req.url).origin
+  const callbackUrl = new URL(`${requestOrigin}/api/callback`)
+  callbackUrl.searchParams.set('_auth_result', resultKey)
+  callbackUrl.searchParams.set('state', state)
+
+  return c.redirect(callbackUrl.toString(), 302)
+})
+
+// ── Org Picker Page Renderer ────────────────────────────────────────────────
+function renderOrgPickerPage(err: OrgSelectionError, state: string): Response {
+  const orgButtons = err.organizations.map((org) => `
+    <button type="submit" name="organization_id" value="${escapeHtml(org.id)}"
+      class="org-btn">
+      <span class="org-name">${escapeHtml(org.name)}</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>`).join('\n')
+
+  const userName = [err.user.first_name, err.user.last_name].filter(Boolean).join(' ') || err.user.email
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose Organization — id.org.ai</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #000;
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 420px;
+      padding: 24px;
+    }
+    .header {
+      margin-bottom: 32px;
+    }
+    .brand {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 24px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 15px;
+      color: #888;
+    }
+    .subtitle strong {
+      color: #aaa;
+      font-weight: 500;
+    }
+    .orgs {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .org-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 14px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .org-btn:hover {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.2);
+    }
+    .org-btn:active {
+      background: rgba(255,255,255,0.08);
+    }
+    .org-btn svg {
+      color: #666;
+      transition: color 0.15s;
+    }
+    .org-btn:hover svg {
+      color: #fff;
+    }
+    .footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 13px;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">id.org.ai</div>
+      <h1>Choose organization</h1>
+      <p class="subtitle">Signed in as <strong>${escapeHtml(userName)}</strong></p>
+    </div>
+    <form method="POST" action="/api/org-select">
+      <input type="hidden" name="pending_token" value="${escapeHtml(err.pendingAuthenticationToken)}">
+      <input type="hidden" name="state" value="${escapeHtml(state)}">
+      <div class="orgs">
+        ${orgButtons}
+      </div>
+    </form>
+    <div class="footer">Select the organization you want to sign in to</div>
+  </div>
+</body>
+</html>`
+
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  })
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
 // ── /api/callback — Server-side WorkOS callback ─────────────────────────────
 // WorkOS redirects the browser here after authentication (registered redirect_uri).
 // Exchanges the code, signs a JWT, then either:
@@ -1046,14 +1235,15 @@ app.get('/api/callback', async (c) => {
   const code = c.req.query('code')
   const state = c.req.query('state')
   const error = c.req.query('error')
+  const authResultKey = c.req.query('_auth_result')
 
   if (error) {
     const desc = c.req.query('error_description') || 'Authentication failed'
     return errorResponse(c, 400, ErrorCode.InvalidGrant, desc)
   }
 
-  if (!code || !state) {
-    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing code or state parameter')
+  if (!state) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing state parameter')
   }
 
   // Decode and validate state (CSRF)
@@ -1069,12 +1259,29 @@ app.get('/api/callback', async (c) => {
   // Consume CSRF token (one-time use)
   await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
 
-  // Exchange code with WorkOS
+  // Exchange code with WorkOS (or retrieve stored auth result from org selection)
   let authResult
-  try {
-    authResult = await exchangeWorkOSCode(clientId, apiKey, code)
-  } catch (err: any) {
-    return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+  if (authResultKey) {
+    // Coming back from org picker — retrieve stored auth result
+    const stored = await oauthStub.oauthStorageOp({ op: 'get', key: authResultKey })
+    if (!stored.value) {
+      return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Expired org selection — please try logging in again')
+    }
+    await oauthStub.oauthStorageOp({ op: 'delete', key: authResultKey })
+    authResult = stored.value as any
+  } else if (code) {
+    try {
+      authResult = await exchangeWorkOSCode(clientId, apiKey, code)
+    } catch (err: any) {
+      // User belongs to multiple orgs — show org picker
+      if (err.code === 'organization_selection_required') {
+        const orgErr = err as OrgSelectionError
+        return renderOrgPickerPage(orgErr, state)
+      }
+      return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+    }
+  } else {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing code or _auth_result parameter')
   }
 
   // Fetch full WorkOS user profile + org info in parallel

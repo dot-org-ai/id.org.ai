@@ -1,5 +1,5 @@
-export { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState } from './upstream'
-export type { WorkOSUser, WorkOSAuthResult } from './upstream'
+export { buildWorkOSAuthUrl, exchangeWorkOSCode, exchangeWorkOSOrgSelection, encodeLoginState, decodeLoginState } from './upstream'
+export type { WorkOSUser, WorkOSAuthResult, OrgSelectionError } from './upstream'
 export { validateWorkOSApiKey } from './apikey'
 export type { WorkOSApiKeyResult } from './apikey'
 export { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from './keys'
