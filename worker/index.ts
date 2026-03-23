@@ -722,7 +722,27 @@ async function resolveIdentityId(request: Request, env: Env): Promise<string | n
     return identityId
   }
 
-  // 3. No credentials → anonymous (no DO needed)
+  // 3. JWT auth cookie → verify and extract identity
+  const cookie = request.headers.get('cookie')
+  if (cookie) {
+    const jwt = parseCookieValue(cookie, 'auth')
+    if (jwt) {
+      try {
+        const oauthStub = getStubForIdentity(env, 'oauth')
+        const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+        const jwks = await manager.getJWKS()
+        const localJwks = jose.createLocalJWKSet(jwks)
+        const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+        if (payload.sub) {
+          return `human:${payload.sub}`
+        }
+      } catch {
+        // Invalid JWT — fall through to anonymous
+      }
+    }
+  }
+
+  // 4. No credentials → anonymous (no DO needed)
   return null
 }
 
@@ -1000,7 +1020,18 @@ app.get('/login', async (c) => {
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
   const safeProvider = provider && VALID_PROVIDERS.includes(provider) ? provider : undefined
   const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider)
-  return c.redirect(authUrl, 302)
+  // Store state in cookie so we can recover it if WorkOS drops the state param
+  // (happens during AuthKit's internal org selection flow)
+  const reqUrl = new URL(c.req.url)
+  const isSecure = reqUrl.protocol === 'https:'
+  const stateFlags = `HttpOnly; Path=/api/callback; SameSite=Lax; Max-Age=300${isSecure ? '; Secure' : ''}`
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: authUrl,
+      'Set-Cookie': `_auth_state=${state}; ${stateFlags}`,
+    },
+  })
 })
 
 // ── /callback — Origin callback: exchange one-time auth code for JWT cookie ──
@@ -1073,14 +1104,6 @@ app.post('/api/org-select', async (c) => {
   }
 
   const oauthStub = getStubForIdentity(c.env, 'oauth')
-
-  // Re-store CSRF since the original was consumed when we first hit /api/callback
-  await oauthStub.oauthStorageOp({
-    op: 'put',
-    key: `login-csrf:${decoded.csrf}`,
-    value: { csrf: decoded.csrf, createdAt: Date.now() },
-    options: { expirationTtl: 300 },
-  })
 
   // Build a synthetic callback URL with a special parameter to skip code exchange
   // and use the auth result directly. We'll store it in KV and pass a reference.
@@ -1241,9 +1264,12 @@ app.get('/api/callback', async (c) => {
   }
 
   const code = c.req.query('code')
-  const state = c.req.query('state')
   const error = c.req.query('error')
   const authResultKey = c.req.query('_auth_result')
+
+  // Recover state from query param or cookie (WorkOS AuthKit drops state during org selection)
+  const cookieHeader = c.req.header('cookie') || ''
+  const state = c.req.query('state') || parseCookieValue(cookieHeader, '_auth_state')
 
   if (error) {
     const desc = c.req.query('error_description') || 'Authentication failed'
@@ -1251,7 +1277,7 @@ app.get('/api/callback', async (c) => {
   }
 
   if (!state) {
-    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing state parameter')
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing state parameter — please try logging in again')
   }
 
   // Decode and validate state (CSRF)
@@ -1260,12 +1286,11 @@ app.get('/api/callback', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid state parameter')
   }
 
+  // Validate CSRF but don't consume yet — org picker flow may need it again
   const csrfData = await oauthStub.oauthStorageOp({ op: 'get', key: `login-csrf:${decoded.csrf}` })
   if (!csrfData.value) {
-    return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token — please try logging in again')
   }
-  // Consume CSRF token (one-time use)
-  await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
 
   // Exchange code with WorkOS (or retrieve stored auth result from org selection)
   let authResult
@@ -1281,7 +1306,7 @@ app.get('/api/callback', async (c) => {
     try {
       authResult = await exchangeWorkOSCode(clientId, apiKey, code)
     } catch (err: any) {
-      // User belongs to multiple orgs — show org picker
+      // User belongs to multiple orgs — show org picker (don't consume CSRF yet)
       if (err.code === 'organization_selection_required') {
         const orgErr = err as OrgSelectionError
         return renderOrgPickerPage(orgErr, state)
@@ -1291,6 +1316,9 @@ app.get('/api/callback', async (c) => {
   } else {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing code or _auth_result parameter')
   }
+
+  // Now consume CSRF token (auth succeeded, no more retries needed)
+  await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
 
   // Fetch full WorkOS user profile + org info in parallel
   let orgId = authResult.user.organization_id || authResult.organization_id
