@@ -300,9 +300,17 @@ function buildClearAuthCookieHeaders(opts: { secure: boolean; domain: string | n
 // localhost, omit Domain to use the default (exact host).
 
 function getRootDomain(hostname: string): string | null {
+  // Known public suffixes that should not be used as cookie domains
+  const publicSuffixes = ['org.ai', 'co.uk', 'com.au', 'co.jp']
   const parts = hostname.split('.')
   if (parts.length <= 2) return null // already root or localhost
-  return '.' + parts.slice(-2).join('.') // .headless.ly, .org.ai, etc.
+  // Check if the last two parts form a public suffix (e.g. org.ai)
+  const lastTwo = parts.slice(-2).join('.')
+  if (publicSuffixes.includes(lastTwo)) {
+    if (parts.length <= 3) return null // id.org.ai is already the root
+    return '.' + parts.slice(-3).join('.') // sub.id.org.ai → .id.org.ai
+  }
+  return '.' + lastTwo // .headless.ly, etc.
 }
 
 // ── JWKS Cache ──────────────────────────────────────────────────────────
