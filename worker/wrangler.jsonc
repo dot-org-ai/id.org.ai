@@ -12,12 +12,12 @@
 
   "workers_dev": true,
 
-  // Static assets — serve prebuilt @mdxui/auth SPA (API keys, profile, sessions)
+  // Static assets — id.org.ai landing page (static export from Next.js)
   "assets": {
-    "directory": "../node_modules/@mdxui/auth/app",
+    "directory": "./public",
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "single-page-application",
+    "not_found_handling": "404-page",
     "run_worker_first": true,
   },
 
