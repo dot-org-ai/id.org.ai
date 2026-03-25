@@ -877,26 +877,51 @@ app.get('/auth-config.json', (c) => {
 // /dash/assets/* is served by ASSETS binding. All other /dash/* routes serve
 // the SPA index.html so client-side routing works.
 
-app.get('/dash', (c) => {
+// Auth gate middleware — verifies JWT before serving any /dash/* SPA route.
+// Static assets (js, css, fonts, etc.) are exempted so the ASSETS binding
+// can serve them without a valid session cookie.
+app.use('/dash/*', async (c, next) => {
+  const pathname = new URL(c.req.url).pathname
+
+  // Let static asset requests fall through to the ASSETS binding unguarded.
+  // Assets are identified by having a file extension (e.g. .js, .css, .woff2).
+  if (/\.[a-zA-Z0-9]+$/.test(pathname)) {
+    return next()
+  }
+
   const cookie = c.req.header('cookie')
-  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
-  if (!jwt) return c.redirect('/login?continue=/dash/profile', 302)
+  if (!cookie) {
+    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+  }
+
+  const jwt = parseCookieValue(cookie, 'auth')
+  if (!jwt) {
+    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+  }
+
+  try {
+    const oauthStub = getStubForIdentity(c.env, 'oauth')
+    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const jwks = await manager.getJWKS()
+    const localJwks = jose.createLocalJWKSet(jwks)
+    await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+  } catch {
+    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+  }
+
+  await next()
+})
+
+app.get('/dash', (c) => {
+  // Already authenticated by middleware above
   return c.redirect('/dash/profile', 302)
 })
 
 app.get('/dash/*', async (c) => {
-  // Serve static assets (js, css, etc.) without auth check
+  // Serve static assets (js, css, etc.) — auth middleware exempts these
   if (c.env.ASSETS) {
     const assetResponse = await c.env.ASSETS.fetch(c.req.raw)
     if (assetResponse.status !== 404) return assetResponse
-  }
-
-  // SPA routes require authentication
-  const cookie = c.req.header('cookie')
-  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
-  if (!jwt) {
-    const continueUrl = new URL(c.req.url).pathname
-    return c.redirect(`/login?continue=${encodeURIComponent(continueUrl)}`, 302)
   }
 
   // Serve SPA index.html for all authenticated non-asset routes
