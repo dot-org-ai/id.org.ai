@@ -1,1 +1,1 @@
-export const VERSION = '0.0.1'
+export type { AuthUser, Organization, IdProviderProps, AuthContext, OrganizationsContext } from './types'
