@@ -854,7 +854,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       {
         id: 'id_org_ai_dash',
         name: 'id.org.ai Dashboard',
-        redirectUris: ['https://id.org.ai/dash/callback'],
+        redirectUris: ['https://id.org.ai/dash/profile'],
         grantTypes: ['authorization_code'],
         responseTypes: ['code'],
         scopes: ['openid', 'profile', 'email'],
@@ -865,7 +865,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       {
         id: 'id_org_ai_headlessly',
         name: 'Headless.ly',
-        redirectUris: ['https://headless.ly/callback'],
+        redirectUris: ['https://headless.ly/dashboard'],
         grantTypes: ['authorization_code'],
         responseTypes: ['code'],
         scopes: ['openid', 'profile', 'email'],

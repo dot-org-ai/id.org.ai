@@ -886,7 +886,7 @@ app.use('/dash/*', async (c, next) => {
   // Let static asset requests and OAuth callback through unguarded.
   // Assets are identified by having a file extension (e.g. .js, .css, .woff2).
   // /dash/callback must load the SPA so IdProvider can exchange the ?code= param.
-  if (/\.[a-zA-Z0-9]+$/.test(pathname) || pathname === '/dash/callback') {
+  if (/\.[a-zA-Z0-9]+$/.test(pathname) || new URL(c.req.url).searchParams.has('code')) {
     return next()
   }
 
