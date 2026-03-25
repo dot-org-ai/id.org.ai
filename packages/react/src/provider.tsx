@@ -1,15 +1,15 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react'
-import { IdAuthContext, IdConfigContext } from './context'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createIdClient } from './client'
+import { IdAuthContext, IdConfigContext } from './context'
 import {
-  generateCodeVerifier,
   generateCodeChallenge,
-  storeVerifier,
+  generateCodeVerifier,
+  getAndClearNonce,
   getAndClearVerifier,
   storeNonce,
-  getAndClearNonce,
+  storeVerifier,
 } from './pkce'
 import type { AuthUser, IdProviderProps } from './types'
 
@@ -28,6 +28,9 @@ export function IdProvider({
   const [widgetToken, setWidgetToken] = useState<string | null>(null)
 
   const client = useMemo(() => createIdClient(baseUrl), [baseUrl])
+  const onRedirectCallbackRef = useRef(onRedirectCallback)
+  onRedirectCallbackRef.current = onRedirectCallback
+
   const resolvedRedirectUri = useMemo(() => {
     if (typeof window === 'undefined') return ''
     return redirectUri
@@ -94,8 +97,8 @@ export function IdProvider({
           // Clean URL
           const cleanUrl = window.location.pathname
           window.history.replaceState({}, '', cleanUrl)
-          if (onRedirectCallback && session.user) {
-            onRedirectCallback({ user: session.user, state: decodedState })
+          if (onRedirectCallbackRef.current && session.user) {
+            onRedirectCallbackRef.current({ user: session.user, state: decodedState })
           }
         })
         .catch((err) => {
@@ -115,7 +118,7 @@ export function IdProvider({
           setIsLoading(false)
         })
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [client, resolvedRedirectUri, clientId])
 
   const signIn = useCallback(
     async (opts?: { organizationId?: string; returnTo?: string; state?: Record<string, unknown> }) => {

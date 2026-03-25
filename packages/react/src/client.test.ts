@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createIdClient } from './client'
 import type { AuthUser } from './types'
@@ -19,6 +20,7 @@ const mockUser: AuthUser = {
 describe('createIdClient', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('fetchSession returns user on 200', async () => {
@@ -46,7 +48,14 @@ describe('createIdClient', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
 
     const client = createIdClient('https://id.org.ai')
-    await expect(client.fetchSession()).rejects.toThrow('Network error')
+    let caught: Error | undefined
+    try {
+      await client.fetchSession()
+    } catch (e) {
+      caught = e as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught?.message).toBe('Network error')
   })
 
   it('fetchWidgetToken returns token', async () => {
