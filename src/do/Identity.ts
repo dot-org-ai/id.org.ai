@@ -25,6 +25,7 @@ import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify
 // errorJson/ErrorCode no longer needed — fetch() is health-check only, all routes are RPC
 import { AuditLog } from '../audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
+import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
 // Types
@@ -65,6 +66,11 @@ export interface IdentityStub {
   // Audit
   writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void>
   queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }>
+
+  // WorkOS widget token support
+  storeWorkOSRefreshToken(token: string): Promise<void>
+  refreshWorkOSToken(credentials: { clientId: string; apiKey: string }, organizationId?: string): Promise<string>
+  clearWorkOSRefreshToken(): Promise<void>
 }
 
 export type IdentityType = 'human' | 'agent' | 'service'
@@ -1257,5 +1263,66 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       }
     }
     return score
+  }
+
+  // ─── WorkOS Widget Token Support ────────────────────────────────────
+
+  async storeWorkOSRefreshToken(token: string): Promise<void> {
+    await this.ctx.storage.put('workos:refresh_token', token)
+  }
+
+  async clearWorkOSRefreshToken(): Promise<void> {
+    await this.ctx.storage.delete('workos:refresh_token')
+    await this.ctx.storage.delete('workos:cached_access_token')
+    await this.ctx.storage.delete('workos:cached_token_expiry')
+    await this.ctx.storage.delete('workos:cached_token_org')
+  }
+
+  async refreshWorkOSToken(
+    credentials: { clientId: string; apiKey: string },
+    organizationId?: string,
+  ): Promise<string> {
+    // Check cache first
+    const cachedToken = await this.ctx.storage.get<string>('workos:cached_access_token')
+    const cachedExpiry = await this.ctx.storage.get<number>('workos:cached_token_expiry')
+    const cachedOrg = await this.ctx.storage.get<string | undefined>('workos:cached_token_org')
+
+    if (cachedToken && cachedExpiry && cachedExpiry > Date.now() + 30_000 && cachedOrg === organizationId) {
+      return cachedToken
+    }
+
+    // Need to refresh
+    const refreshToken = await this.ctx.storage.get<string>('workos:refresh_token')
+    if (!refreshToken) {
+      throw new Error('No WorkOS refresh token stored — user must re-authenticate')
+    }
+
+    try {
+      const result = await refreshWorkOSAccessToken(
+        credentials.clientId,
+        credentials.apiKey,
+        refreshToken,
+        organizationId,
+      )
+
+      // Store rotated refresh token
+      if (result.refresh_token) {
+        await this.ctx.storage.put('workos:refresh_token', result.refresh_token)
+      }
+
+      // Cache access token
+      const expiresIn = result.expires_in ?? 300
+      await this.ctx.storage.put('workos:cached_access_token', result.access_token)
+      await this.ctx.storage.put('workos:cached_token_expiry', Date.now() + expiresIn * 1000)
+      await this.ctx.storage.put('workos:cached_token_org', organizationId)
+
+      return result.access_token
+    } catch (err) {
+      // If refresh failed with 401 (token revoked/expired), clear stored tokens
+      if (err instanceof Error && err.message.includes('401')) {
+        await this.clearWorkOSRefreshToken()
+      }
+      throw err
+    }
   }
 }
