@@ -2985,6 +2985,8 @@ app.get('/oauth/authorize', async (c) => {
 
   // Generate CSRF token for the consent form
   const oauthStub = getStubForIdentity(c.env, 'oauth')
+  // Lazily seed web OAuth clients on first authorize request
+  await oauthStub.ensureWebClients()
   const csrfToken = generateCSRFToken()
   // Store the CSRF token in the oauth DO's storage via RPC
   await oauthStub.oauthStorageOp({

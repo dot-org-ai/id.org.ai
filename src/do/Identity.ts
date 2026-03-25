@@ -61,6 +61,7 @@ export interface IdentityStub {
 
   // OAuth
   ensureCliClient(): Promise<void>
+  ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
   // Audit
@@ -846,6 +847,40 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       tokenEndpointAuthMethod: 'none',
       createdAt: Date.now(),
     })
+  }
+
+  async ensureWebClients(): Promise<void> {
+    const clients = [
+      {
+        id: 'id_org_ai_dash',
+        name: 'id.org.ai Dashboard',
+        redirectUris: ['https://id.org.ai/dash/callback'],
+        grantTypes: ['authorization_code'],
+        responseTypes: ['code'],
+        scopes: ['openid', 'profile', 'email'],
+        trusted: true,
+        tokenEndpointAuthMethod: 'none',
+        createdAt: Date.now(),
+      },
+      {
+        id: 'id_org_ai_headlessly',
+        name: 'Headless.ly',
+        redirectUris: ['https://headless.ly/callback'],
+        grantTypes: ['authorization_code'],
+        responseTypes: ['code'],
+        scopes: ['openid', 'profile', 'email'],
+        trusted: true,
+        tokenEndpointAuthMethod: 'none',
+        createdAt: Date.now(),
+      },
+    ]
+
+    for (const client of clients) {
+      const existing = await this.ctx.storage.get(`client:${client.id}`)
+      if (!existing) {
+        await this.ctx.storage.put(`client:${client.id}`, client)
+      }
+    }
   }
 
   // ─── OAuth Storage (RPC) ───────────────────────────────────────────
