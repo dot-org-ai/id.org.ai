@@ -1916,18 +1916,26 @@ app.get('/api/widget-token', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    // Verify the JWT is valid
     const oauthStub = getStubForIdentity(c.env, 'oauth')
     const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
-    await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
 
-    // TODO: Replace with actual WorkOS widget token via
-    // workos.userManagement.getAuthorizationUrl() or widget-specific API.
-    // For now, return the user's existing session JWT as the widget token.
-    return c.json({ token: jwt })
-  } catch {
+    if (!payload.sub) return c.json({ error: 'Unauthorized' }, 401)
+
+    const identityId = `human:${payload.sub}`
+    const identityStub = getStubForIdentity(c.env, identityId)
+    const organizationId = (payload.org_id as string) || undefined
+
+    const token = await identityStub.refreshWorkOSToken(
+      { clientId: c.env.WORKOS_CLIENT_ID, apiKey: c.env.WORKOS_API_KEY },
+      organizationId,
+    )
+
+    return c.json({ token })
+  } catch (err) {
+    console.error('[widget-token] Failed:', err instanceof Error ? err.message : err)
     return c.json({ error: 'Unauthorized' }, 401)
   }
 })
