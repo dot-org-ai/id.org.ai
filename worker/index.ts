@@ -860,15 +860,17 @@ app.get('/health', (c) =>
 // ── Auth Config for @mdxui/auth SPA (no auth required) ───────────────────
 
 app.get('/auth-config.json', (c) => {
-  const host = c.req.header('host') || 'id.org.ai'
   return c.json({
-    clientId: c.env.WORKOS_CLIENT_ID,
-    redirectUri: c.env.REDIRECT_URI || DEFAULT_CALLBACK_URL,
-    apiHostname: 'api.id.org.ai',
-    appName: c.env.APP_NAME || host.split('.')[0],
+    clientId: 'id_org_ai_dash',
+    apiHostname: 'https://id.org.ai',
+    redirectUri: 'https://id.org.ai/dash/profile',
+    basePath: '/dash',
+    appName: c.env.APP_NAME || 'id.org.ai',
     tagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
-    onUnauthenticated: 'landing',
-    providers: ['github', 'google', 'microsoft'],
+    onUnauthenticated: 'redirect',
+    redirectUrl: 'https://id.org.ai/login',
+    signOutRedirectUri: 'https://id.org.ai/',
+    loginUrl: 'https://id.org.ai/login',
   })
 })
 
@@ -3755,6 +3757,31 @@ app.post('/actions/registration', async (c) => {
 })
 
 // ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
+
+// Authenticated users on the landing page → redirect to dashboard
+app.get('/', async (c) => {
+  const cookie = c.req.header('cookie')
+  if (cookie) {
+    const jwt = parseCookieValue(cookie, 'auth')
+    if (jwt) {
+      try {
+        const oauthStub = getStubForIdentity(c.env, 'oauth')
+        const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+        const jwks = await manager.getJWKS()
+        const localJwks = jose.createLocalJWKSet(jwks)
+        await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+        return c.redirect('/dash/profile', 302)
+      } catch {
+        // Invalid cookie — fall through to landing page
+      }
+    }
+  }
+  // Not authenticated — serve landing page
+  if (c.env.ASSETS) {
+    return c.env.ASSETS.fetch(c.req.raw)
+  }
+  return c.text('id.org.ai', 200)
+})
 
 app.all('*', async (c) => {
   // If ASSETS binding exists, serve static SPA files

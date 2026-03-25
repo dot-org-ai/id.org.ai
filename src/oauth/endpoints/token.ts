@@ -158,7 +158,7 @@ async function signJWTAccessToken(
   const key = await options.getSigningKey()
   return signAccessToken(key, claims, {
     issuer: options.issuer,
-    audience: claims.client_id,
+    audience: claims.client_id as string | undefined,
     expiresIn,
   })
 }

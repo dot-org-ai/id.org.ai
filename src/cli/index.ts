@@ -12,7 +12,7 @@
  */
 
 import { authorizeDevice, pollForTokens } from './device.js'
-import { getUser, logout as logoutFn } from './auth.js'
+import { getUser, logout as logoutFn, ensureValidToken } from './auth.js'
 import { createStorage, SecureFileTokenStorage } from './storage.js'
 import { provisionCommand } from './provision.js'
 import { claimCommand } from './claim.js'
@@ -162,14 +162,14 @@ async function loginCommand() {
 
 async function logoutCommand() {
   try {
-    const token = await storage.getToken()
+    const tokenData = await storage.getTokenData()
 
-    if (!token) {
+    if (!tokenData?.accessToken) {
       printInfo('Not logged in')
       return
     }
 
-    await logoutFn(token)
+    await logoutFn(tokenData.accessToken, tokenData.refreshToken)
     await storage.removeToken()
     printSuccess('Logged out successfully')
   } catch (error) {
@@ -180,7 +180,7 @@ async function logoutCommand() {
 
 async function whoamiCommand() {
   try {
-    const token = await storage.getToken()
+    const token = await ensureValidToken(storage)
 
     if (!token) {
       console.log(`${colors.dim}Not logged in${colors.reset}`)
@@ -209,7 +209,7 @@ async function whoamiCommand() {
 
 async function tokenCommand() {
   try {
-    const token = await storage.getToken()
+    const token = await ensureValidToken(storage)
 
     if (!token) {
       console.log(`${colors.dim}No token found${colors.reset}`)
@@ -235,7 +235,7 @@ async function statusCommand() {
       console.log(`  ${colors.dim}${storagePath} (0600 permissions)${colors.reset}`)
     }
 
-    const token = await storage.getToken()
+    const token = await ensureValidToken(storage)
     if (!token) {
       console.log(`\n${colors.cyan}Auth:${colors.reset} ${colors.dim}Not authenticated${colors.reset}`)
       console.log(`\nRun ${colors.cyan}id.org.ai login${colors.reset} to authenticate`)
@@ -269,7 +269,7 @@ async function statusCommand() {
 
 async function autoLoginOrShowUser() {
   try {
-    const token = await storage.getToken()
+    const token = await ensureValidToken(storage)
 
     if (token) {
       const authResult = await getUser(token)
