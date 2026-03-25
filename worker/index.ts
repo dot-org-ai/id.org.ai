@@ -1060,8 +1060,8 @@ app.get('/login', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
-  const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/'
-  const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/'
+  const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/dash/profile'
+  const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/dash/profile'
 
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
