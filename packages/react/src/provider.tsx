@@ -179,6 +179,7 @@ export function IdProvider({
       signOut,
       getAccessToken,
       organizationId: user?.organizationId ?? null,
+      permissions: user?.permissions ?? [],
     }),
     [user, isLoading, error, signIn, signOut, getAccessToken],
   )

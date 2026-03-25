@@ -35,6 +35,7 @@ export interface AuthContext {
   signOut: (opts?: { redirectTo?: string }) => void
   getAccessToken: () => Promise<string>
   organizationId: string | null
+  permissions: string[]
 }
 
 export interface OrganizationsContext {
