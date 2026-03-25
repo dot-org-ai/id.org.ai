@@ -1787,7 +1787,18 @@ app.get('/api/callback', async (c) => {
 
 // ── Logout ────────────────────────────────────────────────────────────────────
 
-app.get('/logout', (c) => {
+app.get('/logout', async (c) => {
+  // Clear WorkOS refresh token (non-fatal)
+  try {
+    const identityId = await resolveIdentityId(c.req.raw, c.env)
+    if (identityId) {
+      const identityStub = getStubForIdentity(c.env, identityId)
+      await identityStub.clearWorkOSRefreshToken()
+    }
+  } catch {
+    // Non-fatal — proceed with cookie clearing
+  }
+
   const rawReturnUrl = c.req.query('return_url') || '/'
   const returnUrl = isSafeRedirectUrl(rawReturnUrl) ? rawReturnUrl : '/'
   const reqUrl = new URL(c.req.url)
@@ -1802,7 +1813,18 @@ app.get('/logout', (c) => {
   return new Response(null, { status: 302, headers })
 })
 
-app.post('/logout', (c) => {
+app.post('/logout', async (c) => {
+  // Clear WorkOS refresh token (non-fatal)
+  try {
+    const identityId = await resolveIdentityId(c.req.raw, c.env)
+    if (identityId) {
+      const identityStub = getStubForIdentity(c.env, identityId)
+      await identityStub.clearWorkOSRefreshToken()
+    }
+  } catch {
+    // Non-fatal — proceed with cookie clearing
+  }
+
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
@@ -2036,7 +2058,18 @@ app.post('/api/session/organization', async (c) => {
 // ── /api/logout — Clear session for @id.org.ai/react SDK ─────────────────────
 // Clears all auth cookies (single + chunked).
 
-app.post('/api/logout', (c) => {
+app.post('/api/logout', async (c) => {
+  // Clear WorkOS refresh token (non-fatal)
+  try {
+    const identityId = await resolveIdentityId(c.req.raw, c.env)
+    if (identityId) {
+      const identityStub = getStubForIdentity(c.env, identityId)
+      await identityStub.clearWorkOSRefreshToken()
+    }
+  } catch {
+    // Non-fatal — proceed with cookie clearing
+  }
+
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
