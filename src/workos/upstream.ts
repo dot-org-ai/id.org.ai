@@ -160,6 +160,42 @@ function extractRolesFromToken(data: WorkOSAuthResult, _clientId: string, _apiKe
 }
 
 /**
+ * Exchange a refresh token for a fresh access token.
+ *
+ * @param clientId - WorkOS client ID
+ * @param apiKey - WorkOS API key (the client secret)
+ * @param refreshToken - The refresh token to exchange
+ * @param organizationId - Optional organization ID to scope the new token
+ */
+export async function refreshWorkOSAccessToken(
+  clientId: string,
+  apiKey: string,
+  refreshToken: string,
+  organizationId?: string,
+): Promise<WorkOSAuthResult> {
+  const params = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: clientId,
+    client_secret: apiKey,
+    refresh_token: refreshToken,
+  })
+  if (organizationId) params.set('organization_id', organizationId)
+
+  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`WorkOS token refresh failed: ${response.status} - ${errorBody}`)
+  }
+
+  return (await response.json()) as WorkOSAuthResult
+}
+
+/**
  * Complete authentication after org selection.
  * Uses the pending_authentication_token + chosen org ID.
  */

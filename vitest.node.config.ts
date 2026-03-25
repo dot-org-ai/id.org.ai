@@ -17,6 +17,7 @@ export default {
       'test/provision-storage.test.ts',
       'test/cli-provision.test.ts',
       'test/cli-claim.test.ts',
+      'test/workos-refresh.test.ts',
     ],
     globals: true,
   },
