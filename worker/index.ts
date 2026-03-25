@@ -883,9 +883,10 @@ app.get('/auth-config.json', (c) => {
 app.use('/dash/*', async (c, next) => {
   const pathname = new URL(c.req.url).pathname
 
-  // Let static asset requests fall through to the ASSETS binding unguarded.
+  // Let static asset requests and OAuth callback through unguarded.
   // Assets are identified by having a file extension (e.g. .js, .css, .woff2).
-  if (/\.[a-zA-Z0-9]+$/.test(pathname)) {
+  // /dash/callback must load the SPA so IdProvider can exchange the ?code= param.
+  if (/\.[a-zA-Z0-9]+$/.test(pathname) || pathname === '/dash/callback') {
     return next()
   }
 
