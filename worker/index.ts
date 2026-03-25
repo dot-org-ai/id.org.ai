@@ -1706,6 +1706,15 @@ app.get('/api/callback', async (c) => {
     }
   }
 
+  // Store WorkOS refresh token for later widget token exchange
+  if (authResult.refresh_token) {
+    try {
+      await stub.storeWorkOSRefreshToken(authResult.refresh_token)
+    } catch (err) {
+      console.error('[callback] Failed to store WorkOS refresh token:', err)
+    }
+  }
+
   // Resolve GitHub ID: prefer identity record (from claim flow), then WorkOS profile
   const githubId = identity?.githubUserId || githubIdFromWorkOS || undefined
 
