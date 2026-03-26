@@ -20,6 +20,7 @@ export default {
       'test/workos-refresh.test.ts',
       'test/foundation-result.test.ts',
       'test/foundation-errors.test.ts',
+      'test/foundation-index.test.ts',
     ],
     globals: true,
   },
