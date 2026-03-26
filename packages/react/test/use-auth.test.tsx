@@ -13,6 +13,7 @@ const mockContext: AuthContext = {
   signIn: vi.fn(),
   signOut: vi.fn(),
   getAccessToken: vi.fn().mockResolvedValue('token'),
+  accessToken: null,
   organizationId: null,
   permissions: ['read'],
 }

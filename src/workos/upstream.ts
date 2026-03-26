@@ -84,16 +84,21 @@ export async function exchangeWorkOSCode(
   clientId: string,
   apiKey: string,
   code: string,
+  options?: { userAgent?: string; ipAddress?: string },
 ): Promise<WorkOSAuthResult> {
+  const params: Record<string, string> = {
+    grant_type: 'authorization_code',
+    client_id: clientId,
+    client_secret: apiKey,
+    code,
+  }
+  if (options?.userAgent) params.user_agent = options.userAgent
+  if (options?.ipAddress) params.ip_address = options.ipAddress
+
   const response = await fetch('https://api.workos.com/user_management/authenticate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: clientId,
-      client_secret: apiKey,
-      code,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
   })
 
   if (!response.ok) {
@@ -204,17 +209,22 @@ export async function exchangeWorkOSOrgSelection(
   apiKey: string,
   pendingAuthenticationToken: string,
   organizationId: string,
+  options?: { userAgent?: string; ipAddress?: string },
 ): Promise<WorkOSAuthResult> {
+  const params: Record<string, string> = {
+    grant_type: 'urn:workos:oauth:grant-type:organization-selection',
+    client_id: clientId,
+    client_secret: apiKey,
+    pending_authentication_token: pendingAuthenticationToken,
+    organization_id: organizationId,
+  }
+  if (options?.userAgent) params.user_agent = options.userAgent
+  if (options?.ipAddress) params.ip_address = options.ipAddress
+
   const response = await fetch('https://api.workos.com/user_management/authenticate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:workos:oauth:grant-type:organization-selection',
-      client_id: clientId,
-      client_secret: apiKey,
-      pending_authentication_token: pendingAuthenticationToken,
-      organization_id: organizationId,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
   })
 
   if (!response.ok) {

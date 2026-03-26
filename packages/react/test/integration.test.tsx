@@ -63,7 +63,7 @@ describe('Integration: IdProvider + useAuth + useOrganizations', () => {
             json: () => Promise.resolve({ user: mockUser, organizationId: 'org_1' }),
           })
         }
-        if (url.includes('/api/organizations')) {
+        if (url.includes('/api/orgs')) {
           return Promise.resolve({
             ok: true,
             json: () => Promise.resolve({ organizations: mockOrgs }),

@@ -1,5 +1,6 @@
 'use client'
 
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createIdClient } from './client'
 import { IdAuthContext, IdConfigContext } from './context'
@@ -22,11 +23,23 @@ export function IdProvider({
   onRedirectCallback,
   children,
 }: IdProviderProps) {
+  const queryClient = useMemo(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 30_000,
+            retry: 1,
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+    [],
+  )
+
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
-  const [widgetToken, setWidgetToken] = useState<string | null>(null)
-
   const client = useMemo(() => createIdClient(baseUrl), [baseUrl])
   const onRedirectCallbackRef = useRef(onRedirectCallback)
   onRedirectCallbackRef.current = onRedirectCallback
@@ -40,20 +53,31 @@ export function IdProvider({
       : `${window.location.origin}/callback`
   }, [redirectUri])
 
+  // Access token query — auto-refreshes before expiry
+  const { data: accessToken = null } = useQuery(
+    {
+      queryKey: ['id.org.ai', 'accessToken'],
+      queryFn: () => client.fetchWidgetToken(),
+      enabled: !!user,
+      staleTime: 4 * 60 * 1000, // 4 minutes (tokens expire in 5)
+    },
+    queryClient,
+  )
+
   // Listen for session refresh events (e.g., after org switch)
   useEffect(() => {
     const handleRefresh = () => {
+      queryClient.invalidateQueries({ queryKey: ['id.org.ai'] })
       client
         .fetchSession()
         .then((session) => {
           setUser(session.user)
-          setWidgetToken(null) // Clear cached widget token — may be org-scoped
         })
         .catch(() => {})
     }
     window.addEventListener('id.org.ai:session-refresh', handleRefresh)
     return () => window.removeEventListener('id.org.ai:session-refresh', handleRefresh)
-  }, [client])
+  }, [client, queryClient])
 
   // Handle OAuth callback if we're on the redirect URI with a code
   useEffect(() => {
@@ -155,22 +179,21 @@ export function IdProvider({
   const signOut = useCallback(
     async (opts?: { redirectTo?: string }) => {
       await client.logout()
-      setUser(null)
-      setWidgetToken(null)
-      setError(null)
       if (opts?.redirectTo) {
-        window.location.href = opts.redirectTo
+        window.location.replace(opts.redirectTo)
+        return
       }
+      setUser(null)
+      queryClient.removeQueries({ queryKey: ['id.org.ai'] })
+      setError(null)
     },
-    [client],
+    [client, queryClient],
   )
 
   const getAccessToken = useCallback(async () => {
-    if (widgetToken) return widgetToken
-    const token = await client.fetchWidgetToken()
-    setWidgetToken(token)
-    return token
-  }, [client, widgetToken])
+    if (accessToken) return accessToken
+    return client.fetchWidgetToken()
+  }, [client, accessToken])
 
   const contextValue = useMemo(
     () => ({
@@ -181,15 +204,18 @@ export function IdProvider({
       signIn,
       signOut,
       getAccessToken,
+      accessToken,
       organizationId: user?.organizationId ?? null,
       permissions: user?.permissions ?? [],
     }),
-    [user, isLoading, error, signIn, signOut, getAccessToken],
+    [user, isLoading, error, signIn, signOut, getAccessToken, accessToken],
   )
 
   return (
-    <IdConfigContext.Provider value={{ baseUrl }}>
-      <IdAuthContext.Provider value={contextValue}>{children}</IdAuthContext.Provider>
-    </IdConfigContext.Provider>
+    <QueryClientProvider client={queryClient}>
+      <IdConfigContext.Provider value={{ baseUrl }}>
+        <IdAuthContext.Provider value={contextValue}>{children}</IdAuthContext.Provider>
+      </IdConfigContext.Provider>
+    </QueryClientProvider>
   )
 }

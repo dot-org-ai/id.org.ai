@@ -16,6 +16,8 @@ export interface Organization {
   id: string
   name: string
   slug: string
+  role: string
+  domains: string[]
 }
 
 export interface IdProviderProps {
@@ -34,6 +36,7 @@ export interface AuthContext {
   signIn: (opts?: { organizationId?: string; returnTo?: string; state?: Record<string, unknown> }) => void
   signOut: (opts?: { redirectTo?: string }) => void
   getAccessToken: () => Promise<string>
+  accessToken: string | null
   organizationId: string | null
   permissions: string[]
 }
@@ -43,4 +46,6 @@ export interface OrganizationsContext {
   isLoading: boolean
   error: Error | null
   switchOrganization: (orgId: string) => Promise<void>
+  createOrganization: (name: string) => Promise<Organization>
+  isCreating: boolean
 }

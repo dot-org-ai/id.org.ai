@@ -894,12 +894,12 @@ app.use('/dash/*', async (c, next) => {
 
   const cookie = c.req.header('cookie')
   if (!cookie) {
-    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+    return c.redirect('/', 302)
   }
 
   const jwt = parseCookieValue(cookie, 'auth')
   if (!jwt) {
-    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+    return c.redirect('/', 302)
   }
 
   try {
@@ -909,7 +909,7 @@ app.use('/dash/*', async (c, next) => {
     const localJwks = jose.createLocalJWKSet(jwks)
     await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
   } catch {
-    return c.redirect(`/login?continue=${encodeURIComponent(pathname)}`, 302)
+    return c.redirect('/', 302)
   }
 
   await next()
@@ -1174,7 +1174,10 @@ app.post('/api/org-select', async (c) => {
   // Exchange pending token + org selection for real auth result
   let authResult
   try {
-    authResult = await exchangeWorkOSOrgSelection(clientId, apiKey, pendingToken, organizationId)
+    authResult = await exchangeWorkOSOrgSelection(clientId, apiKey, pendingToken, organizationId, {
+      userAgent: c.req.header('user-agent'),
+      ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for'),
+    })
   } catch (err: any) {
     return errorResponse(c, 502, ErrorCode.ServerError, err.message)
   }
@@ -1651,7 +1654,10 @@ app.get('/api/callback', async (c) => {
     authResult = stored.value as any
   } else if (code) {
     try {
-      authResult = await exchangeWorkOSCode(clientId, apiKey, code)
+      authResult = await exchangeWorkOSCode(clientId, apiKey, code, {
+        userAgent: c.req.header('user-agent'),
+        ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for'),
+      })
     } catch (err: any) {
       // User belongs to multiple orgs — show org picker (don't consume CSRF yet)
       if (err.code === 'organization_selection_required') {
@@ -1976,7 +1982,8 @@ app.get('/api/widget-token', async (c) => {
 
     const identityId = `human:${payload.sub}`
     const identityStub = getStubForIdentity(c.env, identityId)
-    const organizationId = (payload.org_id as string) || undefined
+    const org = payload.org as { id?: string } | undefined
+    const organizationId = org?.id || (payload.org_id as string) || undefined
 
     const token = await identityStub.refreshWorkOSToken(
       { clientId: c.env.WORKOS_CLIENT_ID, apiKey: c.env.WORKOS_API_KEY },
@@ -1985,8 +1992,9 @@ app.get('/api/widget-token', async (c) => {
 
     return c.json({ token })
   } catch (err) {
-    console.error('[widget-token] Failed:', err instanceof Error ? err.message : err)
-    return c.json({ error: 'Unauthorized' }, 401)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[widget-token] Failed for identity:', `human:${payload?.sub}`, msg)
+    return c.json({ error: msg.includes('re-authenticate') ? 'No refresh token — re-login required' : 'Unauthorized' }, 401)
   }
 })
 

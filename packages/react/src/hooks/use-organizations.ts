@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback, useContext, useMemo } from 'react'
+import { useCallback, useContext, useMemo } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { IdAuthContext, IdConfigContext } from '../context'
 import { createIdClient } from '../client'
-import type { Organization, OrganizationsContext } from '../types'
+import type { OrganizationsContext } from '../types'
 
 export function useOrganizations(): OrganizationsContext {
   const authContext = useContext(IdAuthContext)
@@ -13,37 +14,48 @@ export function useOrganizations(): OrganizationsContext {
     throw new Error('useOrganizations must be used within an <IdProvider>')
   }
 
-  const [organizations, setOrganizations] = useState<Organization[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
-
   const client = useMemo(() => createIdClient(config.baseUrl), [config.baseUrl])
+  const qc = useQueryClient()
 
-  useEffect(() => {
-    if (!authContext.isAuthenticated) return
-
-    setIsLoading(true)
-    client
-      .fetchOrganizations()
-      .then((orgs) => {
-        setOrganizations(orgs)
-        setIsLoading(false)
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err : new Error(String(err)))
-        setIsLoading(false)
-      })
-  }, [authContext.isAuthenticated, client])
+  const {
+    data: organizations = [],
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ['id.org.ai', 'organizations'],
+    queryFn: () => client.fetchOrganizations(),
+    enabled: authContext.isAuthenticated,
+  })
 
   const switchOrganization = useCallback(
     async (orgId: string) => {
       await client.switchOrganization(orgId)
-      // Cookie updated server-side — re-fetch session to update useAuth() state
-      // We dispatch a custom event that IdProvider listens for
+      // Invalidate access token (org-scoped)
+      qc.removeQueries({ queryKey: ['id.org.ai', 'accessToken'] })
+      // Refresh session to update useAuth() state
       window.dispatchEvent(new CustomEvent('id.org.ai:session-refresh'))
     },
-    [client],
+    [client, qc],
   )
 
-  return { organizations, isLoading, error, switchOrganization }
+  const createMutation = useMutation({
+    mutationFn: (name: string) => client.createOrganization(name),
+    onSuccess: async (org) => {
+      // Refetch org list
+      await qc.invalidateQueries({ queryKey: ['id.org.ai', 'organizations'] })
+      // Auto-switch to new org
+      await switchOrganization(org.id)
+    },
+  })
+
+  const createOrganization = useCallback((name: string) => createMutation.mutateAsync(name), [createMutation])
+
+  return {
+    organizations,
+    isLoading,
+    error: error ?? null,
+    switchOrganization,
+    createOrganization,
+    isCreating: createMutation.isPending,
+  }
 }

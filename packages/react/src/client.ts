@@ -45,10 +45,16 @@ export function createIdClient(baseUrl: string) {
   }
 
   async function fetchOrganizations(): Promise<Organization[]> {
-    const res = await fetch(`${baseUrl}/api/organizations`, { credentials: 'include' })
+    const res = await fetch(`${baseUrl}/api/orgs`, { credentials: 'include' })
     if (!res.ok) throw new Error(`Organizations fetch failed: ${res.status}`)
     const data = await res.json()
-    return data.organizations
+    return (data.organizations as Array<{ id: string; name: string; role?: string; domains?: string[] }>).map((o) => ({
+      id: o.id,
+      name: o.name,
+      slug: o.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      role: o.role ?? 'member',
+      domains: o.domains ?? [],
+    }))
   }
 
   async function switchOrganization(organizationId: string): Promise<SessionResponse> {
@@ -62,5 +68,26 @@ export function createIdClient(baseUrl: string) {
     return res.json()
   }
 
-  return { fetchSession, fetchWidgetToken, exchangeCode, logout, fetchOrganizations, switchOrganization }
+  async function createOrganization(name: string): Promise<Organization> {
+    const res = await fetch(`${baseUrl}/api/orgs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ name }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error((body as { error?: string }).error || `Create org failed: ${res.status}`)
+    }
+    const data = await res.json()
+    return {
+      id: data.id,
+      name: data.name,
+      slug: data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      role: 'admin',
+      domains: [],
+    }
+  }
+
+  return { fetchSession, fetchWidgetToken, exchangeCode, logout, fetchOrganizations, switchOrganization, createOrganization }
 }

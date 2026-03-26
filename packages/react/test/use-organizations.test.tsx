@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useOrganizations } from '../src/hooks/use-organizations'
 import { IdAuthContext, IdConfigContext } from '../src/context'
 import type { AuthContext } from '../src/types'
@@ -29,15 +30,20 @@ describe('useOrganizations', () => {
       signIn: vi.fn(),
       signOut: vi.fn(),
       getAccessToken: vi.fn(),
+      accessToken: null,
       organizationId: 'org_1',
       permissions: [],
     }
 
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
     function wrapper({ children }: { children: ReactNode }) {
       return (
-        <IdConfigContext.Provider value={{ baseUrl: 'https://id.org.ai' }}>
-          <IdAuthContext.Provider value={mockContext}>{children}</IdAuthContext.Provider>
-        </IdConfigContext.Provider>
+        <QueryClientProvider client={qc}>
+          <IdConfigContext.Provider value={{ baseUrl: 'https://id.org.ai' }}>
+            <IdAuthContext.Provider value={mockContext}>{children}</IdAuthContext.Provider>
+          </IdConfigContext.Provider>
+        </QueryClientProvider>
       )
     }
 
@@ -60,15 +66,20 @@ describe('useOrganizations', () => {
       signIn: vi.fn(),
       signOut: vi.fn(),
       getAccessToken: vi.fn(),
+      accessToken: null,
       organizationId: null,
       permissions: [],
     }
 
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
     function wrapper({ children }: { children: ReactNode }) {
       return (
-        <IdConfigContext.Provider value={{ baseUrl: 'https://id.org.ai' }}>
-          <IdAuthContext.Provider value={mockContext}>{children}</IdAuthContext.Provider>
-        </IdConfigContext.Provider>
+        <QueryClientProvider client={qc}>
+          <IdConfigContext.Provider value={{ baseUrl: 'https://id.org.ai' }}>
+            <IdAuthContext.Provider value={mockContext}>{children}</IdAuthContext.Provider>
+          </IdConfigContext.Provider>
+        </QueryClientProvider>
       )
     }
 
