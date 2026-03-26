@@ -1065,6 +1065,15 @@ app.get('/login', async (c) => {
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/dash/profile'
   const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/dash/profile'
 
+  // If the user already has a valid session, skip WorkOS and redirect to continue URL.
+  // This prevents conflicts when e.g. CLI device flow redirects here while user is logged in,
+  // or when WorkOS has its own active session that conflicts with a new auth request.
+  const identityId = await resolveIdentityId(c.req.raw, c.env)
+  if (identityId) {
+    const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${new URL(c.req.url).origin}${continueUrl}`
+    return c.redirect(redirectTo, 302)
+  }
+
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
