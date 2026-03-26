@@ -23,7 +23,7 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
-import { cors } from 'hono/cors'
+import { corsMiddleware, originValidationMiddleware, isAllowedOrigin, validateOrigin } from './middleware/origin'
 import * as jose from 'jose'
 import { IdentityDO } from '../src/do/Identity'
 import type { IdentityStub } from '../src/do/Identity'
@@ -106,9 +106,7 @@ import {
   encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
-  isAllowedOrigin,
   isSafeRedirectUrl,
-  validateOrigin,
 } from '../src/csrf'
 import { AUDIT_EVENTS } from '../src/audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
@@ -464,29 +462,14 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 // Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
 // The origin callback dynamically checks against the allowlist.
 
-app.use(
-  '*',
-  cors({
-    origin: (origin) => {
-      if (!origin) return origin
-      return isAllowedOrigin(origin) ? origin : ''
-    },
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-    credentials: true,
-  }),
-)
+app.use('*', corsMiddleware)
 
 // ── Origin Validation for Mutating Requests ──────────────────────────────
 // Validates Origin header on POST/PUT/DELETE to prevent cross-origin attacks
 // from unlisted origins. Requests without an Origin header are allowed
 // (same-origin, non-browser clients like curl/agents).
 
-app.use('*', async (c, next) => {
-  const error = validateOrigin(c.req.raw)
-  if (error) return error
-  await next()
-})
+app.use('*', originValidationMiddleware)
 
 // ── Identity Stub Middleware ──────────────────────────────────────────────
 // Resolves the shard key from auth credentials and injects the correct
