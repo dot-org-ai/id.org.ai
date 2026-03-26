@@ -29,6 +29,7 @@ import { IdentityDO } from '../src/do/Identity'
 import type { IdentityStub } from '../src/do/Identity'
 import { MCPAuth } from '../src/mcp/auth'
 import type { MCPAuthResult } from '../src/mcp/auth'
+import type { Env, Variables, AuthRPCResult, AuthUser, VerifyResult } from './types'
 import { dispatchTool } from '../src/mcp/tools'
 import { ClaimService } from '../src/claim/provision'
 import { verifyClaim } from '../src/claim/verify'
@@ -103,42 +104,6 @@ import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
 import { errorResponse, ErrorCode } from '../src/errors'
 
 export { IdentityDO }
-
-interface Env {
-  IDENTITY: DurableObjectNamespace
-  SESSIONS: KVNamespace
-  DB?: D1Database
-  ASSETS?: Fetcher
-  AUTH_SECRET: string
-  JWKS_SECRET: string
-  WORKOS_CLIENT_ID?: string
-  WORKOS_API_KEY?: string
-  WORKOS_COOKIE_PASSWORD?: string
-  WORKOS_WEBHOOK_SECRET?: string
-  GITHUB_APP_ID?: string
-  GITHUB_APP_PRIVATE_KEY?: string
-  GITHUB_WEBHOOK_SECRET?: string
-  // WorkOS Actions
-  WORKOS_ACTIONS_SECRET?: string
-  // Platform org — users in this org get platformRole: 'superadmin'
-  PLATFORM_ORG_ID?: string
-  // Branding for @mdxui/auth SPA
-  APP_NAME?: string
-  APP_TAGLINE?: string
-  REDIRECT_URI?: string
-}
-
-type Variables = {
-  auth: MCPAuthResult
-  identityStub: IdentityStub
-}
-
-// ── Auth Service (RPC via Service Binding) ──────────────────────────────
-// Exposes verifyToken() as an RPC method for other Cloudflare Workers.
-// Other workers bind to this as `env.AUTH` and call `env.AUTH.verifyToken(token)`.
-
-import type { AuthUser, VerifyResult, AuthResult } from '../src/auth/index.js'
-type AuthRPCResult = AuthResult
 
 // ── Token Cache Helpers ─────────────────────────────────────────────────
 // Uses Cloudflare Cache API to cache verified tokens for 5 minutes.
