@@ -1,6 +1,6 @@
 {
   "name": "id.org.ai",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "Agent-first identity — Humans. Agents. Identity.",
   "type": "module",
   "main": "dist/index.js",
@@ -52,6 +52,8 @@
   ],
   "scripts": {
     "build": "tsup",
+    "build:site": "cd site && pnpm install --ignore-workspace && pnpm build && rm -rf ../worker/public && cp -r out ../worker/public",
+    "build:dash": "cd ../../.studio/ui/packages/auth && npx vite build --config vite.app.config.ts --base /dash/ --outDir \"$(cd ../../../../.org.ai/id/worker/public && pwd)/dash\" --emptyOutDir",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && vitest run --config vitest.node.config.ts",
@@ -59,13 +61,13 @@
     "test:node": "vitest run --config vitest.node.config.ts",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config test-e2e/vitest.config.ts",
+    "predeploy": "pnpm build:site && pnpm build:dash",
     "deploy": "cd worker && wrangler deploy",
     "deploy:auth": "cd workers/auth && wrangler deploy",
     "deploy:all": "cd worker && wrangler deploy && cd ../workers/auth && wrangler deploy",
     "types": "cd worker && wrangler types"
   },
   "dependencies": {
-    "@mdxui/auth": "workspace:*",
     "@workos-inc/node": "^7.0.0",
     "hono": "^4.0.0",
     "jose": "^6.0.0",

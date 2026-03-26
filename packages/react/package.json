@@ -1,7 +1,27 @@
 {
   "name": "@id.org.ai/react",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "React SDK for id.org.ai — Agent-First Identity",
+  "author": "headless.ly",
+  "homepage": "https://id.org.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dot-org-ai/id.org.ai",
+    "directory": "packages/react"
+  },
+  "bugs": {
+    "url": "https://github.com/dot-org-ai/id.org.ai/issues"
+  },
+  "keywords": [
+    "identity",
+    "auth",
+    "oauth",
+    "pkce",
+    "react",
+    "agent",
+    "id.org.ai",
+    "headlessly"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +31,7 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": ["dist", "src", "!src/**/*.test.*"],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

@@ -20,7 +20,7 @@ outputs:
     description: 'Whether the tenant was successfully claimed (true/false)'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
 
 branding:

@@ -25,6 +25,7 @@ export function useOrganizations(): OrganizationsContext {
     queryKey: ['id.org.ai', 'organizations'],
     queryFn: () => client.fetchOrganizations(),
     enabled: authContext.isAuthenticated,
+    staleTime: 5 * 60 * 1000, // 5 minutes — orgs change rarely
   })
 
   const switchOrganization = useCallback(

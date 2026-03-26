@@ -108,44 +108,118 @@ Once installed, the GitHub Action runs on every push and can:
 - Report repo activity to the tenant's event log
 - Keep the identity link alive
 
+## Install
+
+### CLI (global)
+
+```bash
+npm install -g id.org.ai
+```
+
+This gives you the `id.org.ai` command globally:
+
+```bash
+id.org.ai login          # Login via device authorization flow
+id.org.ai whoami         # Show current authenticated user
+id.org.ai token          # Display auth token (pipe to curl, etc.)
+id.org.ai status         # Show auth + storage status
+id.org.ai provision      # Create anonymous agent sandbox
+id.org.ai claim <token>  # Claim a sandbox via commit
+id.org.ai logout         # Clear stored credentials
+```
+
+### SDK (Node.js)
+
+```bash
+npm install id.org.ai
+```
+
+```ts
+import { ... } from 'id.org.ai'           // Core identity
+import { ... } from 'id.org.ai/oauth'     // OAuth 2.1 provider
+import { ... } from 'id.org.ai/jwt'       // JWT signing + verification
+import { ... } from 'id.org.ai/claim'     // Claim-by-commit orchestration
+import { ... } from 'id.org.ai/mcp'       // MCP authentication
+import { ... } from 'id.org.ai/github'    // GitHub App + Action
+import { ... } from 'id.org.ai/db'        // Drizzle schema + database
+import { ... } from 'id.org.ai/auth'      // Auth utilities
+import { ... } from 'id.org.ai/workos'    // WorkOS integration
+```
+
+### React SDK
+
+```bash
+npm install @id.org.ai/react
+```
+
+```tsx
+import { IdProvider, useAuth, useOrganizations } from '@id.org.ai/react'
+
+function App() {
+  return (
+    <IdProvider clientId="your_client_id">
+      <YourApp />
+    </IdProvider>
+  )
+}
+
+function YourApp() {
+  const { user, isAuthenticated, signIn, signOut } = useAuth()
+  const { organizations, switchOrganization, createOrganization } = useOrganizations()
+
+  if (!isAuthenticated) return <button onClick={() => signIn()}>Sign In</button>
+  return <div>Hello {user.email}</div>
+}
+```
+
 ## Package Structure
 
 ```
 .org.ai/id/                        # This repo (dot-org-ai/id.org.ai)
 ├── src/
 │   ├── index.ts                   # Main exports
-│   ├── do/
-│   │   └── Identity.ts            # IdentityDO — root DO for the platform
-│   ├── db/
-│   │   ├── index.ts               # Re-exports
-│   │   └── schema.ts              # Drizzle schema (identities, sessions, linked_accounts, etc.)
-│   ├── oauth/
-│   │   ├── index.ts               # Re-exports
-│   │   └── provider.ts            # OAuth 2.1 provider (auth code + PKCE, tokens, consent)
-│   ├── mcp/
-│   │   ├── index.ts               # Re-exports
-│   │   └── auth.ts                # MCP authentication (API keys, sessions, capabilities)
-│   ├── auth/
-│   │   ├── index.ts               # Auth utilities
-│   │   └── stripe-connect.ts      # Stripe Connect URL generation
-│   ├── github/                    # NEW
-│   │   ├── app.ts                 # GitHub App webhook handler
+│   ├── do/Identity.ts             # IdentityDO — root Durable Object
+│   ├── db/schema.ts               # Drizzle schema (identities, sessions, linked_accounts)
+│   ├── oauth/                     # OAuth 2.1 provider (auth code + PKCE, tokens, consent)
+│   │   ├── provider.ts            # Core OAuth server
+│   │   ├── consent.ts             # Consent screen logic
+│   │   ├── dev.ts                 # Dev mode shortcuts
+│   │   └── endpoints/             # Token, authorize, device, introspect, revoke, register
+│   ├── mcp/                       # MCP authentication
+│   │   ├── auth.ts                # API keys, sessions, capabilities
+│   │   └── tools.ts               # MCP tool definitions
+│   ├── jwt/signing.ts             # JWT signing + verification + key rotation
+│   ├── crypto/keys.ts             # Ed25519 keypair management
+│   ├── auth/index.ts              # Auth utilities
+│   ├── github/                    # GitHub App + Action integration
+│   │   ├── app.ts                 # Push webhook handler
 │   │   └── action.ts              # GitHub Action claim logic
-│   └── claim/                     # NEW
-│       ├── index.ts               # Claim orchestration
-│       ├── provision.ts           # Anonymous tenant provisioning
-│       └── verify.ts              # Claim verification
-├── worker/
-│   ├── index.ts                   # Cloudflare Worker (Hono app)
-│   ├── oauth-do.ts                # OAuthDO (OAuth 2.1 authorization server)
-│   └── wrangler.jsonc             # Worker config (id.org.ai, auth.org.ai routes)
-├── action/                        # GitHub Action
-│   ├── action.yml                 # Action definition
-│   └── src/index.ts               # Action runtime
-├── package.json                   # npm: id.org.ai (or org.ai — TBD)
-├── tsconfig.json
-├── CLAUDE.md                      # AI assistant guidance
-└── README.md                      # This file
+│   ├── claim/                     # Claim-by-commit orchestration
+│   │   ├── provision.ts           # Anonymous tenant provisioning
+│   │   ├── verify.ts              # Claim verification
+│   │   ├── workflow.ts            # Workflow file generation
+│   │   └── client.ts              # Claim HTTP client
+│   └── cli/                       # CLI (id.org.ai command)
+│       ├── index.ts               # Entry point + command router
+│       ├── auth.ts                # login/logout/whoami/token/status
+│       ├── device.ts              # Device authorization flow
+│       ├── provision.ts           # Provision command
+│       ├── claim.ts               # Claim command
+│       └── storage.ts             # Token storage (~/.id.org.ai/token)
+├── packages/
+│   └── react/                     # @id.org.ai/react — React SDK
+│       ├── src/
+│       │   ├── provider.tsx       # IdProvider (QueryClient + OAuth callback)
+│       │   ├── hooks/             # useAuth(), useOrganizations()
+│       │   ├── client.ts          # HTTP client (session, orgs, widget-token)
+│       │   └── pkce.ts            # PKCE S256 challenge/verifier
+│       └── test/                  # 7 test suites (27 tests)
+├── worker/                        # Cloudflare Worker (Hono app, deployed to id.org.ai)
+├── action/                        # GitHub Action (dot-org-ai/id@v1)
+├── site/                          # Landing page (id.org.ai)
+├── test/                          # 29 test suites (1,296 tests, workerd pool)
+├── test-e2e/                      # E2E tests (7 suites, live endpoints)
+└── package.json                   # npm: id.org.ai
 ```
 
 ## Migration from org.ai
