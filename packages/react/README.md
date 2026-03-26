@@ -1,4 +1,4 @@
-# @id.org.ai/react
+# @org.ai/react
 
 React SDK for [id.org.ai](https://id.org.ai) — Agent-First Identity.
 
@@ -7,13 +7,13 @@ Provides authentication, organization management, and access tokens via TanStack
 ## Install
 
 ```bash
-npm install @id.org.ai/react @tanstack/react-query react
+npm install @org.ai/react @tanstack/react-query react
 ```
 
 ## Quick Start
 
 ```tsx
-import { IdProvider, useAuth, useOrganizations } from '@id.org.ai/react'
+import { IdProvider, useAuth, useOrganizations } from '@org.ai/react'
 
 function App() {
   return (
@@ -103,7 +103,7 @@ Switching organizations automatically invalidates the access token and refreshes
 For non-hook usage (e.g., in event handlers outside React tree):
 
 ```ts
-import { createIdClient } from '@id.org.ai/react'
+import { createIdClient } from '@org.ai/react'
 
 const client = createIdClient('https://id.org.ai')
 const session = await client.fetchSession()
