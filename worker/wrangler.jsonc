@@ -28,13 +28,15 @@
     "REDIRECT_URI": "https://id.org.ai/api/callback",
     // The WorkOS org that owns the platform — users in this org get platformRole: 'superadmin' in their JWT
     "PLATFORM_ORG_ID": "org_01K05B2AERNQ8N0QVSRFBSCNMS",
+    // Branding for @mdxui/auth SPA
+    "APP_NAME": "id.org.ai",
+    "APP_TAGLINE": "Humans. Agents. Identity.",
   },
 
   "routes": [
     { "pattern": "oauth.do/*", "zone_name": "oauth.do" },
     { "pattern": "auth.headless.ly/*", "zone_name": "workers.do" },
     { "pattern": "id.org.ai/*", "zone_name": "id.org.ai" },
-    { "pattern": "api.id.org.ai/*", "zone_name": "id.org.ai" },
     { "pattern": "auth.org.ai/*", "zone_name": "workers.do" },
   ],
 

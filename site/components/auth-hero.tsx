@@ -11,27 +11,31 @@ const oauthProviders = [
     href: '/login?provider=GitHubOAuth',
   },
   {
-    name: 'Connect Google',
+    name: 'Continue with Google',
     icon: 'logos:google-icon',
     href: '/login?provider=GoogleOAuth',
   },
   {
+    // TODO: Enable MicrosoftOAuth in WorkOS dashboard, then change to /login?provider=MicrosoftOAuth
     name: 'Continue with Microsoft',
     icon: 'logos:microsoft-icon',
-    href: '/login?provider=MicrosoftOAuth',
+    href: '/login?provider=authkit',
   },
   {
+    // TODO: Enable AppleOAuth in WorkOS dashboard, then change to /login?provider=AppleOAuth
     name: 'Continue with Apple',
     icon: 'simple-icons:apple',
-    href: '/login?provider=AppleOAuth',
+    href: '/login?provider=authkit',
   },
   {
+    // TODO: X (Twitter) not available as direct WorkOS provider
     name: 'Continue with X',
     icon: 'simple-icons:x',
     href: '/login?provider=authkit',
   },
   {
-    name: 'Login with LinkedIn',
+    // TODO: Enable LinkedInOAuth in WorkOS dashboard, then change to /login?provider=LinkedInOAuth
+    name: 'Continue with LinkedIn',
     icon: 'logos:linkedin-icon',
     href: '/login?provider=authkit',
   },
