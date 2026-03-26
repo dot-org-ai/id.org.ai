@@ -18,6 +18,7 @@ export default {
       'test/cli-provision.test.ts',
       'test/cli-claim.test.ts',
       'test/workos-refresh.test.ts',
+      'test/foundation-result.test.ts',
     ],
     globals: true,
   },
