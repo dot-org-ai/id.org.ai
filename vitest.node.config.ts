@@ -19,6 +19,7 @@ export default {
       'test/cli-claim.test.ts',
       'test/workos-refresh.test.ts',
       'test/foundation-result.test.ts',
+      'test/foundation-errors.test.ts',
     ],
     globals: true,
   },
