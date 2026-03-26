@@ -31,6 +31,7 @@ import { MCPAuth } from '../src/mcp/auth'
 import type { MCPAuthResult } from '../src/mcp/auth'
 import type { Env, Variables, AuthRPCResult, AuthUser, VerifyResult } from './types'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from './utils/cookies'
+import { isApiKeyPrefix, extractApiKey, extractSessionToken } from './utils/extract'
 import { dispatchTool } from '../src/mcp/tools'
 import { ClaimService } from '../src/claim/provision'
 import { verifyClaim } from '../src/claim/verify'
@@ -466,37 +467,6 @@ function getStubForIdentity(env: Env, identityId: string): IdentityStub {
 /**
  * Extract the API key from a request (oai_* prefix).
  */
-function isApiKeyPrefix(s: string): boolean {
-  return s.startsWith('oai_') || s.startsWith('hly_sk_') || s.startsWith('sk_')
-}
-
-function extractApiKey(request: Request): string | null {
-  const header = request.headers.get('x-api-key')
-  if (header && isApiKeyPrefix(header)) return header
-  const auth = request.headers.get('authorization')
-  if (auth?.startsWith('Bearer ')) {
-    const token = auth.slice(7)
-    if (isApiKeyPrefix(token)) return token
-  }
-  try {
-    const url = new URL(request.url)
-    const keyParam = url.searchParams.get('api_key')
-    if (keyParam && isApiKeyPrefix(keyParam)) return keyParam
-  } catch {
-    /* ignore */
-  }
-  return null
-}
-
-/**
- * Extract the session token from a request (ses_* prefix).
- */
-function extractSessionToken(request: Request): string | null {
-  const auth = request.headers.get('authorization')
-  if (auth?.startsWith('Bearer ses_')) return auth.slice(7)
-  return null
-}
-
 /**
  * Resolve the identity ID (shard key) from the request's auth credentials.
  * Returns null for anonymous/L0 requests that don't need a DO.
