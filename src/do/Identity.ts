@@ -23,8 +23,9 @@
 import { DurableObject } from 'cloudflare:workers'
 import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify, base64Decode, base64Encode, isValidDID } from '../crypto/keys'
 // errorJson/ErrorCode no longer needed — fetch() is health-check only, all routes are RPC
-import { AuditLog } from '../audit'
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
+import { AuditServiceImpl } from '../services/audit'
+import type { AuditService } from '../services/audit'
 import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
@@ -148,6 +149,17 @@ const RATE_LIMITS: Record<CapabilityLevel, { maxRequests: number; windowMs: numb
 
 export class IdentityDO extends DurableObject<IdentityEnv> {
   readonly ns = 'https://id.org.ai'
+
+  // ─── Service Layer ────────────────────────────────────────────────────
+
+  private _auditService?: AuditService
+
+  private get auditService(): AuditService {
+    if (!this._auditService) {
+      this._auditService = new AuditServiceImpl({ storage: this.ctx.storage })
+    }
+    return this._auditService
+  }
 
   // ─── Identity Management ──────────────────────────────────────────────
 
@@ -919,13 +931,16 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── Audit Log (RPC) ────────────────────────────────────────────────
 
+  // ── RPC Method Routing ──────────────────────────────────────────────────
+  // queryAuditLog()   → this.auditService  (Phase 2)
+  // writeAuditEvent() → raw storage.put    (legacy, to be migrated)
+
   async writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void> {
     await this.ctx.storage.put(key, event)
   }
 
-  async queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }> {
-    const auditLog = new AuditLog(this.ctx.storage)
-    return auditLog.query(options)
+  async queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; total: number; cursor?: string; hasMore: boolean }> {
+    return this.auditService.query(options)
   }
 
   // ─── MCP Do (RPC) ──────────────────────────────────────────────────
