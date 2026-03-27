@@ -2293,9 +2293,10 @@ app.post('/oauth/token', async (c) => {
 
 // Device Authorization (RFC 8628)
 app.post('/oauth/device', async (c) => {
-  // Lazily seed the CLI client on first device-flow request
+  // Lazily seed CLI clients on first device-flow request
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   await oauthStub.ensureCliClient()
+  await oauthStub.ensureOAuthDoClient()
   const provider = getOAuthProvider(c)
   return provider.handleDeviceAuthorization(c.req.raw)
 })

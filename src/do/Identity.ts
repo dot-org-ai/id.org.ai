@@ -64,6 +64,7 @@ export interface IdentityStub {
 
   // OAuth
   ensureCliClient(): Promise<void>
+  ensureOAuthDoClient(): Promise<void>
   ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
@@ -862,6 +863,23 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     await this.ctx.storage.put('client:id_org_ai_cli', {
       id: 'id_org_ai_cli',
       name: 'id.org.ai CLI',
+      redirectUris: [],
+      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
+      responseTypes: [],
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      trusted: true,
+      tokenEndpointAuthMethod: 'none',
+      createdAt: Date.now(),
+    })
+  }
+
+  async ensureOAuthDoClient(): Promise<void> {
+    const existing = await this.ctx.storage.get('client:oauth_do_cli')
+    if (existing) return
+
+    await this.ctx.storage.put('client:oauth_do_cli', {
+      id: 'oauth_do_cli',
+      name: 'oauth.do CLI',
       redirectUris: [],
       grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
       responseTypes: [],
