@@ -21,6 +21,7 @@ export default {
       'test/foundation-result.test.ts',
       'test/foundation-errors.test.ts',
       'test/foundation-index.test.ts',
+      'test/audit-service.test.ts',
     ],
     globals: true,
   },
