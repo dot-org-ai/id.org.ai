@@ -22,6 +22,7 @@ export default {
       'test/foundation-errors.test.ts',
       'test/foundation-index.test.ts',
       'test/audit-service.test.ts',
+      'test/entity-store-service.test.ts',
     ],
     globals: true,
   },
