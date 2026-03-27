@@ -112,9 +112,10 @@ import {
   isSafeRedirectUrl,
 } from '../src/csrf'
 import { AUDIT_EVENTS } from '../src/audit'
-import type { AuditQueryOptions, StoredAuditEvent } from '../src/audit'
 import { errorResponse, ErrorCode } from '../src/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
+import { logAuditEvent } from './utils/audit'
+import { auditRoutes } from './routes/audit'
 
 export { IdentityDO }
 
@@ -1394,6 +1395,8 @@ app.use('/mcp/*', authenticateRequest)
 app.use('/oauth/authorize', authenticateRequest)
 app.use('/device', authenticateRequest)
 
+app.route('', auditRoutes)
+
 // ── MCP Endpoint ──────────────────────────────────────────────────────────
 // Returns capabilities based on auth level. This is the entry point for
 // agents connecting via MCP protocol.
@@ -2121,41 +2124,6 @@ app.post('/api/orgs/:id/invitations', async (c) => {
   }
 
   return c.json({ ok: true, email: body.email, organizationId: orgId }, 201)
-})
-
-// ── Audit Log Query Endpoint ─────────────────────────────────────────────
-// Requires L2+ auth. Queries the audit log for the caller's identity DO.
-
-app.get('/api/audit', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to query audit log')
-  }
-  if (auth.level < 2) {
-    return errorResponse(c, 403, ErrorCode.InsufficientLevel, 'L2+ authentication required to access audit logs')
-  }
-
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
-  }
-
-  // Build query options from URL params
-  const url = new URL(c.req.url)
-  const queryParams: AuditQueryOptions = {}
-  if (url.searchParams.has('eventPrefix')) queryParams.eventPrefix = url.searchParams.get('eventPrefix')!
-  if (url.searchParams.has('actor')) queryParams.actor = url.searchParams.get('actor')!
-  if (url.searchParams.has('after')) queryParams.after = url.searchParams.get('after')!
-  if (url.searchParams.has('before')) queryParams.before = url.searchParams.get('before')!
-  if (url.searchParams.has('limit')) queryParams.limit = parseInt(url.searchParams.get('limit')!, 10)
-  if (url.searchParams.has('cursor')) queryParams.cursor = url.searchParams.get('cursor')!
-
-  try {
-    const data = await stub.queryAuditLog(queryParams)
-    return c.json(data)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-  }
 })
 
 // ── OAuth 2.1 Provider Endpoints ──────────────────────────────────────────
@@ -3135,39 +3103,6 @@ async function handlePushWithSharding(
   }
 }
 
-// ============================================================================
-// Audit Logging Helper
-// ============================================================================
-
-/**
- * Fire-and-forget audit event logger.
- *
- * Writes an audit event to the identity's Durable Object storage via RPC.
- * This is intentionally fire-and-forget: audit logging MUST NEVER break
- * the primary request flow.
- *
- * The event is stored with key format: `audit:{timestamp}:{event}:{randomSuffix}`
- */
-async function logAuditEvent(
-  stub: IdentityStub,
-  event: {
-    event: string
-    actor?: string
-    target?: string
-    ip?: string
-    userAgent?: string
-    metadata?: Record<string, unknown>
-  },
-): Promise<void> {
-  try {
-    const timestamp = new Date().toISOString()
-    const suffix = crypto.randomUUID().slice(0, 8)
-    const key = `audit:${timestamp}:${event.event}:${suffix}`
-    await stub.writeAuditEvent(key, { ...event, timestamp, key } as StoredAuditEvent)
-  } catch {
-    // Fire-and-forget: audit logging should never break the primary flow
-  }
-}
 
 // ============================================================================
 // Null-safe Stub for L0 (Anonymous) Requests
