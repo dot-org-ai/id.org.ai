@@ -26,6 +26,8 @@ import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
 import { AuditServiceImpl } from '../services/audit'
 import type { AuditService } from '../services/audit'
+import { EntityStoreServiceImpl } from '../services/entity-store'
+import type { EntityStoreService } from '../services/entity-store'
 import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
@@ -159,6 +161,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       this._auditService = new AuditServiceImpl({ storage: this.ctx.storage })
     }
     return this._auditService
+  }
+
+  private _entityStore?: EntityStoreService
+
+  private get entityStore(): EntityStoreService {
+    if (!this._entityStore) {
+      this._entityStore = new EntityStoreServiceImpl({ storage: this.ctx.storage })
+    }
+    return this._entityStore
   }
 
   // ─── Identity Management ──────────────────────────────────────────────
@@ -934,6 +945,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // ── RPC Method Routing ──────────────────────────────────────────────────
   // queryAuditLog()   → this.auditService  (Phase 2)
   // writeAuditEvent() → raw storage.put    (legacy, to be migrated)
+  // mcpDo()          → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
+  // mcpSearch()      → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
+  // mcpFetch()       → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
 
   async writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void> {
     await this.ctx.storage.put(key, event)
@@ -959,7 +973,6 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     const entityId = params.data.id as string ?? crypto.randomUUID()
     const owner = params.identityId ?? 'global'
-    const storageKey = `entity:${owner}:${params.entity}:${entityId}`
 
     if (params.verb === 'create') {
       const record = {
@@ -969,7 +982,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         createdAt: params.timestamp,
         updatedAt: params.timestamp,
       }
-      await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+      const putResult = await this.entityStore.put(owner, params.entity, entityId, record)
+      if (!putResult.success) return { success: false, entity: params.entity, verb: params.verb, error: putResult.error.message }
 
       const eventKey = `event:${owner}:${crypto.randomUUID()}`
       await this.ctx.storage.put(eventKey, {
@@ -994,14 +1008,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     if (params.verb === 'update') {
-      const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-      if (!existing) {
+      const getResult = await this.entityStore.get(owner, params.entity, entityId)
+      if (!getResult.success) {
         return { success: false, entity: params.entity, verb: params.verb, error: `${params.entity} not found: ${entityId}` }
       }
-
-      await this.deleteIndexesForEntity(owner, params.entity, entityId, existing)
+      const existing = getResult.data
+      await this.entityStore.deleteIndexes(owner, params.entity, entityId, existing)
       const record = { ...existing, ...params.data, $type: params.entity, updatedAt: params.timestamp }
-      await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+      const putResult = await this.entityStore.put(owner, params.entity, entityId, record)
+      if (!putResult.success) return { success: false, entity: params.entity, verb: params.verb, error: putResult.error.message }
 
       return {
         success: true,
@@ -1016,13 +1031,12 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     if (params.verb === 'delete') {
-      const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-      await this.deleteEntityWithIndexes(owner, params.entity, entityId, existing)
+      const deleteResult = await this.entityStore.delete(owner, params.entity, entityId)
       return {
         success: true,
         entity: params.entity,
         verb: params.verb,
-        result: { id: entityId, deleted: true },
+        result: { id: entityId, deleted: deleteResult.success ? deleteResult.data.deleted : false },
         events: [
           { type: 'deleting', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
           { type: 'deleted', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
@@ -1030,14 +1044,27 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       }
     }
 
+    if (params.verb === 'get') {
+      const getResult = await this.entityStore.get(owner, params.entity, entityId)
+      const existing = getResult.success ? getResult.data : null
+      return {
+        success: true,
+        entity: params.entity,
+        verb: params.verb,
+        result: existing ?? { id: entityId },
+      }
+    }
+
     // Custom verbs (qualify, close, advance, etc.)
-    const existing = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
+    const getResult = await this.entityStore.get(owner, params.entity, entityId)
+    const existing = getResult.success ? getResult.data : null
     if (existing) {
-      await this.deleteIndexesForEntity(owner, params.entity, entityId, existing)
+      await this.entityStore.deleteIndexes(owner, params.entity, entityId, existing)
     }
 
     const record = { ...(existing ?? {}), ...params.data, id: entityId, $type: params.entity, updatedAt: params.timestamp }
-    await this.putEntityWithIndexes(owner, params.entity, entityId, record)
+    const putResult = await this.entityStore.put(owner, params.entity, entityId, record)
+    if (!putResult.success) return { success: false, entity: params.entity, verb: params.verb, error: putResult.error.message }
 
     const eventKey = `event:${owner}:${crypto.randomUUID()}`
     await this.ctx.storage.put(eventKey, {
@@ -1074,62 +1101,33 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     const owner = params.identityId ?? 'global'
     const limit = Math.min(params.limit ?? 20, 100)
     const offset = params.offset ?? 0
-    const queryLower = params.query?.toLowerCase().trim() ?? ''
+    const query = params.query?.trim() ?? ''
 
-    let results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }> = []
-
-    if (params.type) {
-      const prefix = `entity:${owner}:${params.type}:`
-      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-      for (const [, value] of entries) {
-        if (!value || typeof value !== 'object') continue
-        const entityData = value as Record<string, unknown>
-        if (params.filters && !this.matchesFilters(entityData, params.filters)) continue
-        let score = 1
-        if (queryLower) {
-          score = this.calculateTextScore(entityData, queryLower)
-          if (score === 0) continue
-        }
-        results.push({ type: params.type, id: String(entityData.id ?? ''), data: entityData, score })
-      }
-    } else if (params.filters && Object.keys(params.filters).length > 0) {
-      const prefix = `entity:${owner}:`
-      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-      for (const [key, value] of entries) {
-        if (!value || typeof value !== 'object') continue
-        const entityData = value as Record<string, unknown>
-        const parts = key.split(':')
-        const entityType = parts[2]
-        if (!this.matchesFilters(entityData, params.filters)) continue
-        let score = 1
-        if (queryLower) {
-          score = this.calculateTextScore(entityData, queryLower)
-          if (score === 0) continue
-        }
-        results.push({ type: entityType, id: String(entityData.id ?? ''), data: entityData, score })
-      }
-    } else if (queryLower) {
-      const prefix = `entity:${owner}:`
-      const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
-
-      for (const [key, value] of entries) {
-        if (!value || typeof value !== 'object') continue
-        const entityData = value as Record<string, unknown>
-        const parts = key.split(':')
-        const entityType = parts[2]
-        const score = this.calculateTextScore(entityData, queryLower)
-        if (score === 0) continue
-        results.push({ type: entityType, id: String(entityData.id ?? ''), data: entityData, score })
-      }
+    if (query || (params.type && (params.filters || query))) {
+      // Text search path (with optional type/filters)
+      const searchResult = await this.entityStore.search(owner, query, {
+        type: params.type,
+        filters: params.filters,
+        limit,
+        offset,
+      })
+      return { results: searchResult.results, total: searchResult.total, limit, offset }
     }
 
-    results.sort((a, b) => b.score - a.score)
-    const total = results.length
-    results = results.slice(offset, offset + limit)
+    // Filter-only path (no query text)
+    if (params.type) {
+      const queryResult = await this.entityStore.query(owner, params.type, { filters: params.filters, limit, offset })
+      const results = queryResult.items.map((item) => ({
+        type: params.type!,
+        id: String(item.id ?? ''),
+        data: item,
+        score: 1,
+      }))
+      return { results, total: queryResult.total, limit, offset }
+    }
 
-    return { results, total, limit, offset }
+    // No query, no type — return empty
+    return { results: [], total: 0, limit, offset }
   }
 
   // ─── MCP Fetch (RPC) ─────────────────────────────────────────────────
@@ -1145,28 +1143,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     const owner = params.identityId ?? 'global'
 
     if (params.id) {
-      const storageKey = `entity:${owner}:${params.type}:${params.id}`
-      const data = await this.ctx.storage.get<Record<string, unknown>>(storageKey)
-      return { type: params.type, id: params.id, data: data ?? null }
+      const result = await this.entityStore.get(owner, params.type, params.id)
+      return { type: params.type, id: params.id, data: result.success ? result.data : null }
     }
 
-    const prefix = `entity:${owner}:${params.type}:`
-    const entries = await this.ctx.storage.list<Record<string, unknown>>({ prefix })
     const limit = Math.min(params.limit ?? 20, 100)
     const offset = params.offset ?? 0
+    const queryResult = await this.entityStore.query(owner, params.type, { filters: params.filters, limit, offset })
 
-    let items: Record<string, unknown>[] = []
-    for (const [, value] of entries) {
-      if (!value || typeof value !== 'object') continue
-      const entityData = value as Record<string, unknown>
-      if (params.filters && !this.matchesFilters(entityData, params.filters)) continue
-      items.push(entityData)
-    }
-
-    const total = items.length
-    items = items.slice(offset, offset + limit)
-
-    return { type: params.type, items, total, limit, offset }
+    return { type: params.type, items: queryResult.items, total: queryResult.total, limit, offset }
   }
 
   // ─── HTTP Handler (health check only) ─────────────────────────────────
@@ -1183,136 +1168,6 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     return Response.json({ error: 'Not found', message: 'Use Workers RPC to call IdentityDO methods directly' }, { status: 404 })
-  }
-
-  // ─── Entity Index Management ─────────────────────────────────────────
-  // Maintains secondary indexes for queryable entity storage.
-  //
-  // Storage layout:
-  //   entity:{owner}:{type}:{id}  → full JSON record
-  //   idx:{owner}:{type}:{field}:{value}:{id} → true
-  //
-  // Indexed fields: any string or enum field that is not 'id', 'metadata',
-  // or a JSON blob. This allows field-based lookups like
-  //   "all Contacts where stage = 'Lead'"
-
-  /** Fields that should not be indexed (JSON blobs, binary, internal) */
-  private static readonly NON_INDEXED_FIELDS = new Set([
-    'id', 'metadata', 'properties', 'config', 'targeting', 'variants',
-    'steps', 'trigger', 'filters', 'fields', '$type',
-  ])
-
-  /** Returns the index keys for a given entity record */
-  private indexKeysForEntity(
-    owner: string,
-    entityType: string,
-    entityId: string,
-    record: Record<string, unknown>,
-  ): Map<string, true> {
-    const keys = new Map<string, true>()
-    for (const [field, value] of Object.entries(record)) {
-      if (IdentityDO.NON_INDEXED_FIELDS.has(field)) continue
-      if (value === null || value === undefined) continue
-      if (typeof value === 'object') continue // skip arrays and nested objects
-      // Normalize index value: lowercase string, truncate to 128 chars
-      const normalized = String(value).toLowerCase().slice(0, 128)
-      keys.set(`idx:${owner}:${entityType}:${field}:${normalized}:${entityId}`, true)
-    }
-    return keys
-  }
-
-  /** Store an entity and its secondary indexes */
-  private async putEntityWithIndexes(
-    owner: string,
-    entityType: string,
-    entityId: string,
-    record: Record<string, unknown>,
-  ): Promise<void> {
-    const storageKey = `entity:${owner}:${entityType}:${entityId}`
-    const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
-
-    // Batch put: entity + all index entries
-    const batch = new Map<string, unknown>()
-    batch.set(storageKey, record)
-    for (const [key, val] of indexes) {
-      batch.set(key, val)
-    }
-    await this.ctx.storage.put(Object.fromEntries(batch))
-  }
-
-  /** Delete index entries for an entity record */
-  private async deleteIndexesForEntity(
-    owner: string,
-    entityType: string,
-    entityId: string,
-    record: Record<string, unknown>,
-  ): Promise<void> {
-    const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
-    if (indexes.size > 0) {
-      await this.ctx.storage.delete([...indexes.keys()])
-    }
-  }
-
-  /** Delete an entity and its secondary indexes */
-  private async deleteEntityWithIndexes(
-    owner: string,
-    entityType: string,
-    entityId: string,
-    record: Record<string, unknown> | null | undefined,
-  ): Promise<void> {
-    const storageKey = `entity:${owner}:${entityType}:${entityId}`
-    if (record) {
-      const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
-      const keysToDelete = [storageKey, ...indexes.keys()]
-      await this.ctx.storage.delete(keysToDelete)
-    } else {
-      await this.ctx.storage.delete(storageKey)
-    }
-  }
-
-  /** Check if an entity record matches a set of field filters */
-  private matchesFilters(
-    record: Record<string, unknown>,
-    filters: Record<string, unknown>,
-  ): boolean {
-    for (const [field, expected] of Object.entries(filters)) {
-      const actual = record[field]
-      if (actual === undefined || actual === null) return false
-      // Case-insensitive string comparison
-      if (typeof actual === 'string' && typeof expected === 'string') {
-        if (actual.toLowerCase() !== expected.toLowerCase()) return false
-      } else if (actual !== expected) {
-        return false
-      }
-    }
-    return true
-  }
-
-  /** Calculate a text relevance score for an entity against a query */
-  private calculateTextScore(
-    record: Record<string, unknown>,
-    queryLower: string,
-  ): number {
-    let score = 0
-    for (const [field, value] of Object.entries(record)) {
-      if (value === null || value === undefined || typeof value === 'object') continue
-      const strValue = String(value).toLowerCase()
-      if (!strValue.includes(queryLower)) continue
-
-      // Weight certain fields higher
-      if (field === 'name' || field === 'title' || field === 'subject') {
-        score += strValue === queryLower ? 20 : 10
-      } else if (field === 'email' || field === 'slug' || field === 'key') {
-        score += strValue === queryLower ? 15 : 8
-      } else if (field === 'description' || field === 'body') {
-        score += 3
-      } else if (field === '$type') {
-        score += 5
-      } else {
-        score += 2
-      }
-    }
-    return score
   }
 
   // ─── WorkOS Widget Token Support ────────────────────────────────────
