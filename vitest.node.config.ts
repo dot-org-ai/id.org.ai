@@ -23,6 +23,7 @@ export default {
       'test/foundation-index.test.ts',
       'test/audit-service.test.ts',
       'test/entity-store-service.test.ts',
+      'test/identity-service.test.ts',
     ],
     globals: true,
   },
