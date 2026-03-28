@@ -28,6 +28,7 @@ import { AuditServiceImpl } from '../services/audit'
 import type { AuditService } from '../services/audit'
 import { EntityStoreServiceImpl } from '../services/entity-store'
 import type { EntityStoreService } from '../services/entity-store'
+import { IdentityServiceImpl } from '../services/identity/service'
 import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
@@ -153,6 +154,18 @@ const RATE_LIMITS: Record<CapabilityLevel, { maxRequests: number; windowMs: numb
 export class IdentityDO extends DurableObject<IdentityEnv> {
   readonly ns = 'https://id.org.ai'
 
+  // ── RPC Method Routing ──────────────────────────────────────
+  // getIdentity()       → this.identityService.get()          (Phase 4 — delegated)
+  // createIdentity()    → direct (legacy generic factory, kept for backward compat)
+  // provisionAnonymous()→ direct (calls createIdentity internally)
+  // freezeIdentity()    → this.identityService.freeze() + DO session cleanup (Phase 4)
+  // writeAuditEvent()   → this.auditService                   (Phase 2)
+  // queryAuditLog()     → this.auditService                   (Phase 2)
+  // mcpDo/Search/Fetch  → this.entityStore                    (Phase 3)
+  // claim()             → direct (Phase 8)
+  // getSession()        → direct (Phase 6)
+  // createApiKey()      → direct (Phase 5)
+
   // ─── Service Layer ────────────────────────────────────────────────────
 
   private _auditService?: AuditService
@@ -173,6 +186,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     return this._entityStore
   }
 
+  private _identityService?: IdentityServiceImpl
+
+  private get identityService(): IdentityServiceImpl {
+    if (!this._identityService) {
+      this._identityService = new IdentityServiceImpl({ storage: this.ctx.storage, audit: this.auditService })
+    }
+    return this._identityService
+  }
+
   // ─── Identity Management ──────────────────────────────────────────────
 
   async createIdentity(data: {
@@ -185,6 +207,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     level?: CapabilityLevel
     id?: string
   }): Promise<Identity> {
+    // Legacy generic factory — keeps original behavior for backward compatibility.
+    // New code should use identityService.createHuman/provisionAgent/createService directly.
     const id = data.id ?? crypto.randomUUID()
     const claimToken = `clm_${crypto.randomUUID().replace(/-/g, '')}`
     const level = data.level ?? 0
@@ -217,23 +241,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   }
 
   async getIdentity(id: string): Promise<Identity | null> {
-    const data = await this.ctx.storage.get<any>(`identity:${id}`)
-    if (!data) return null
-    return {
-      id: data.id,
-      type: data.type,
-      name: data.name,
-      handle: data.handle,
-      email: data.email,
-      image: data.image,
-      verified: data.verified ?? false,
-      level: data.level ?? 0,
-      claimStatus: data.claimStatus ?? 'unclaimed',
-      frozen: data.frozen ?? false,
-      frozenAt: data.frozenAt,
-      githubUserId: data.githubUserId,
-      githubUsername: data.githubUsername,
-    }
+    const result = await this.identityService.get(id)
+    if (!result.success) return null
+    return result.data
   }
 
   // ─── Anonymous Provisioning ───────────────────────────────────────────
@@ -449,32 +459,19 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     stats: { entities: number; events: number; sessions: number }
     expiresAt: number
   }> {
-    const data = await this.ctx.storage.get<any>(`identity:${id}`)
-    if (!data) {
-      throw new Error('Identity not found')
-    }
+    // Identity state change delegated to IdentityServiceImpl (Phase 4)
+    const result = await this.identityService.freeze(id, 'user-initiated')
+    if (!result.success) throw new Error(result.error.message)
 
-    // Count related data
-    const entityEntries = await this.ctx.storage.list({ prefix: `entity:${id}:` })
-    const eventEntries = await this.ctx.storage.list({ prefix: `event:${id}:` })
+    // Session cleanup stays in DO until Auth service extraction (Phase 6)
     const sessions = await this.listSessions(id)
-
-    // Expire all sessions for this identity
     for (const session of sessions) {
       await this.ctx.storage.delete(`session:${session.token}`)
     }
 
-    // Mark as frozen with 30-day data preservation window
-    const frozenAt = Date.now()
-    const expiresAt = frozenAt + 30 * 24 * 60 * 60 * 1000 // 30 days
-
-    await this.ctx.storage.put(`identity:${id}`, {
-      ...data,
-      frozen: true,
-      frozenAt,
-      dataExpiresAt: expiresAt,
-      claimStatus: 'frozen' as ClaimStatus,
-    })
+    // Stats counting stays in DO (cross-domain concern)
+    const entityEntries = await this.ctx.storage.list({ prefix: `entity:${id}:` })
+    const eventEntries = await this.ctx.storage.list({ prefix: `event:${id}:` })
 
     return {
       frozen: true,
@@ -483,7 +480,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         events: eventEntries.size,
         sessions: sessions.length,
       },
-      expiresAt,
+      expiresAt: result.data.frozenAt! + 30 * 24 * 60 * 60 * 1000,
     }
   }
 

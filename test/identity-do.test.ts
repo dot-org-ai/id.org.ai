@@ -59,6 +59,9 @@ vi.mock('../src/audit', () => {
     constructor(storage: any) {
       this.storage = storage
     }
+    async log(event: any) {
+      return { ...event, key: `audit:${Date.now()}:${event.event}:mock`, timestamp: new Date().toISOString() }
+    }
     async query(options: any) {
       return { events: [], cursor: undefined, hasMore: false }
     }
