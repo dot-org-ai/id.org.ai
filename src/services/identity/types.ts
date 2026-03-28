@@ -146,6 +146,9 @@ export interface IdentityReader {
   /** Resolve identity by GitHub user ID (claim flow, webhook dedup). */
   getByGitHubUserId(githubUserId: string): Promise<Result<Identity, NotFoundError>>
 
+  /** Resolve identity by claim token (claim-by-commit flow). */
+  getByClaimToken(claimToken: string): Promise<Result<Identity, NotFoundError>>
+
   /** List linked accounts for an identity. */
   getLinkedAccounts(identityId: string): Promise<Result<LinkedAccount[], NotFoundError>>
 

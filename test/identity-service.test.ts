@@ -384,6 +384,44 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
+  // getByClaimToken()
+  // --------------------------------------------------------------------------
+
+  describe('getByClaimToken()', () => {
+    it('returns identity by claim token after provisioning', async () => {
+      const created = await service.provisionAgent({ name: 'bot' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getByClaimToken(created.data.claimToken)
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.id).toBe(created.data.identity.id)
+        }
+      }
+    })
+
+    it('returns identity by claim token after generic create', async () => {
+      const created = await service.create({ type: 'agent', name: 'bot2' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getByClaimToken(created.data.claimToken)
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.id).toBe(created.data.identity.id)
+        }
+      }
+    })
+
+    it('returns NotFoundError for unknown claim token', async () => {
+      const result = await service.getByClaimToken('clm_nonexistent')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
   // update()
   // --------------------------------------------------------------------------
 

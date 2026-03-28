@@ -68,6 +68,12 @@ export class IdentityServiceImpl implements IdentityWriter {
     return this.get(id)
   }
 
+  async getByClaimToken(claimToken: string): Promise<Result<Identity, NotFoundError>> {
+    const id = await this.getIdByIndex(`idx:claimtoken:${claimToken}`)
+    if (id === null) return Err(new NotFoundError('Identity', claimToken))
+    return this.get(id)
+  }
+
   async getLinkedAccounts(identityId: string): Promise<Result<LinkedAccount[], NotFoundError>> {
     const exists = await this.exists(identityId)
     if (!exists) return Err(new NotFoundError('Identity', identityId))
@@ -131,6 +137,7 @@ export class IdentityServiceImpl implements IdentityWriter {
     // Create secondary indexes
     if (input.email) await this.putIndex(`idx:email:${input.email.toLowerCase()}`, id)
     if (input.handle) await this.putIndex(`idx:handle:${input.handle.toLowerCase()}`, id)
+    await this.putIndex(`idx:claimtoken:${claimToken}`, id)
 
     await this.audit.log({ event: 'identity.created', target: id, metadata: { type: input.type } })
 
@@ -207,6 +214,7 @@ export class IdentityServiceImpl implements IdentityWriter {
     }
 
     await this.storage.put(`identity:${id}`, record)
+    await this.putIndex(`idx:claimtoken:${claimToken}`, id)
 
     return Ok({ identity: this.toIdentity(record), claimToken })
   }
@@ -424,6 +432,7 @@ export class IdentityServiceImpl implements IdentityWriter {
       if (data.email) await this.storage.put(`idx:email:${(data.email as string).toLowerCase()}`, id)
       if (data.handle) await this.storage.put(`idx:handle:${(data.handle as string).toLowerCase()}`, id)
       if (data.githubUserId) await this.storage.put(`idx:github:${data.githubUserId}`, id)
+      if (data.claimToken) await this.storage.put(`idx:claimtoken:${data.claimToken}`, id)
     }
   }
 

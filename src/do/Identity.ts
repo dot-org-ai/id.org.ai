@@ -267,24 +267,17 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     repo?: string
     branch?: string
   }): Promise<{ success: boolean; identity?: Identity; error?: string }> {
-    // Find identity by claim token
-    const entries = await this.ctx.storage.list<any>({ prefix: 'identity:' })
-    let targetId: string | null = null
-    let targetData: any = null
-
-    for (const [key, value] of entries) {
-      if (value.claimToken === data.claimToken) {
-        targetId = value.id
-        targetData = value
-        break
-      }
-    }
-
-    if (!targetId || !targetData) {
+    // Find identity by claim token via index
+    const lookupResult = await this.identityService.getByClaimToken(data.claimToken)
+    if (!lookupResult.success) {
       return { success: false, error: 'Invalid claim token' }
     }
 
-    if (targetData.claimStatus === 'claimed') {
+    const targetIdentity = lookupResult.data
+    const targetId = targetIdentity.id
+    const targetData = await this.ctx.storage.get<any>(`identity:${targetId}`)
+
+    if (targetIdentity.claimStatus === 'claimed') {
       return { success: false, error: 'Tenant already claimed' }
     }
 
@@ -333,34 +326,31 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return { valid: false }
     }
 
-    const entries = await this.ctx.storage.list<any>({ prefix: 'identity:' })
-    for (const [, value] of entries) {
-      if (value.claimToken === token) {
-        // Count entities and events for this identity
-        const entityPrefix = `entity:${value.id}:`
-        const eventPrefix = `event:${value.id}:`
-        const entities = await this.ctx.storage.list({ prefix: entityPrefix })
-        const events = await this.ctx.storage.list({ prefix: eventPrefix })
-
-        const session = await this.findSessionForIdentity(value.id)
-        const expiresAt = session?.expiresAt
-
-        return {
-          valid: true,
-          identityId: value.id,
-          status: value.claimStatus ?? 'unclaimed',
-          level: value.level ?? 0,
-          stats: {
-            entities: entities.size,
-            events: events.size,
-            createdAt: value.createdAt,
-            expiresAt,
-          },
-        }
-      }
+    const lookupResult = await this.identityService.getByClaimToken(token)
+    if (!lookupResult.success) {
+      return { valid: false }
     }
 
-    return { valid: false }
+    const identity = lookupResult.data
+
+    // Count entities and events for this identity
+    const entities = await this.ctx.storage.list({ prefix: `entity:${identity.id}:` })
+    const events = await this.ctx.storage.list({ prefix: `event:${identity.id}:` })
+
+    const session = await this.findSessionForIdentity(identity.id)
+
+    return {
+      valid: true,
+      identityId: identity.id,
+      status: identity.claimStatus,
+      level: identity.level,
+      stats: {
+        entities: entities.size,
+        events: events.size,
+        createdAt: identity.createdAt,
+        expiresAt: session?.expiresAt,
+      },
+    }
   }
 
   // ─── Session Management ─────────────────────────────────────────────
@@ -387,8 +377,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     // Verify the identity still exists and is not frozen
-    const identity = await this.ctx.storage.get<any>(`identity:${session.identityId}`)
-    if (!identity || identity.frozen) {
+    const result = await this.identityService.get(session.identityId)
+    if (!result.success || result.data.frozen) {
       return { valid: false }
     }
 
