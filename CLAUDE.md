@@ -44,6 +44,13 @@ src/                       # npm package source (id.org.ai or org.ai)
   auth/                    # Auth utilities
   github/                  # GitHub App webhook + Action claim logic
   claim/                   # Claim-by-commit orchestration
+  services/
+    identity/              # Domain 3 — Identity Core (CRUD, provision, freeze, linked accounts)
+      types.ts             # IdentityReader + IdentityWriter interfaces
+      service.ts           # IdentityServiceImpl
+      index.ts             # Barrel exports
+    audit/                 # Domain 10 — Audit Logging
+    entity-store/          # Domain 9 — Entity Store
 worker/                    # Cloudflare Worker
   index.ts                 # Hono app entry point
   wrangler.jsonc           # Worker configuration
