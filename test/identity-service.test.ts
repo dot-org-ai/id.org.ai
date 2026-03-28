@@ -493,6 +493,94 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
+  // freeze()
+  // --------------------------------------------------------------------------
+
+  describe('freeze()', () => {
+    it('freezes a non-frozen identity', async () => {
+      const created = await service.createHuman({ name: 'Remy', email: 'remy@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const before = Date.now()
+        const result = await service.freeze(created.data.id, 'policy violation')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          const identity = result.data
+          expect(identity.frozen).toBe(true)
+          expect(identity.frozenAt).toBeGreaterThanOrEqual(before)
+          expect(identity.claimStatus).toBe('frozen')
+        }
+      }
+    })
+
+    it('returns NotFoundError for missing identity', async () => {
+      const result = await service.freeze('usr_missing', 'reason')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+
+    it('returns AuthError when already frozen', async () => {
+      const created = await service.createHuman({ name: 'Sam', email: 'sam@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.freeze(created.data.id, 'first freeze')
+        const result = await service.freeze(created.data.id, 'second freeze')
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('AuthError')
+          expect(result.error.code).toBe('forbidden')
+        }
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // unfreeze()
+  // --------------------------------------------------------------------------
+
+  describe('unfreeze()', () => {
+    it('restores previous claimStatus on unfreeze', async () => {
+      const created = await service.createHuman({ name: 'Tina', email: 'tina@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        // human starts as 'claimed' — freeze then unfreeze should restore 'claimed'
+        await service.freeze(created.data.id, 'test')
+        const result = await service.unfreeze(created.data.id)
+        expect(result.success).toBe(true)
+        if (result.success) {
+          const identity = result.data
+          expect(identity.frozen).toBe(false)
+          expect(identity.frozenAt).toBeUndefined()
+          expect(identity.claimStatus).toBe('claimed')
+        }
+      }
+    })
+
+    it('returns AuthError when identity is not frozen', async () => {
+      const created = await service.createHuman({ name: 'Uma', email: 'uma@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.unfreeze(created.data.id)
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('AuthError')
+          expect(result.error.code).toBe('forbidden')
+        }
+      }
+    })
+
+    it('returns NotFoundError for missing identity', async () => {
+      const result = await service.unfreeze('usr_missing')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
   // createService()
   // --------------------------------------------------------------------------
 

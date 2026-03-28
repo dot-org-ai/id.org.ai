@@ -1,7 +1,6 @@
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
-import { NotFoundError, ValidationError, ConflictError } from '../../foundation/errors'
-import type { AuthError } from '../../foundation/errors'
+import { NotFoundError, ValidationError, ConflictError, AuthError } from '../../foundation/errors'
 import type { AuditService } from '../audit/service'
 import type {
   IdentityWriter,
@@ -258,12 +257,57 @@ export class IdentityServiceImpl implements IdentityWriter {
     return Ok(this.toIdentity(updated))
   }
 
-  async freeze(_id: string, _reason: string): Promise<Result<Identity, NotFoundError | AuthError>> {
-    throw new Error('Not implemented')
+  async freeze(id: string, reason: string): Promise<Result<Identity, NotFoundError | AuthError>> {
+    const raw = await this.storage.get<Record<string, unknown>>(`identity:${id}`)
+    if (raw === undefined || raw === null) {
+      return Err(new NotFoundError('Identity', id))
+    }
+    if (raw['frozen'] === true) {
+      return Err(new AuthError('forbidden', 'Identity is already frozen'))
+    }
+
+    const now = Date.now()
+    const updated: Record<string, unknown> = {
+      ...raw,
+      frozen: true,
+      frozenAt: now,
+      frozenReason: reason,
+      previousClaimStatus: raw['claimStatus'],
+      claimStatus: 'frozen',
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, updated)
+    await this.audit.log({ event: 'identity.frozen', target: id, metadata: { reason } })
+
+    return Ok(this.toIdentity(updated))
   }
 
-  async unfreeze(_id: string): Promise<Result<Identity, NotFoundError | AuthError>> {
-    throw new Error('Not implemented')
+  async unfreeze(id: string): Promise<Result<Identity, NotFoundError | AuthError>> {
+    const raw = await this.storage.get<Record<string, unknown>>(`identity:${id}`)
+    if (raw === undefined || raw === null) {
+      return Err(new NotFoundError('Identity', id))
+    }
+    if (raw['frozen'] !== true) {
+      return Err(new AuthError('forbidden', 'Identity is not frozen'))
+    }
+
+    const now = Date.now()
+    const restoredStatus = (raw['previousClaimStatus'] as string | undefined) ?? 'unclaimed'
+    const updated: Record<string, unknown> = {
+      ...raw,
+      frozen: false,
+      frozenAt: undefined,
+      frozenReason: undefined,
+      claimStatus: restoredStatus,
+      previousClaimStatus: undefined,
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, updated)
+    await this.audit.log({ event: 'identity.unfrozen', target: id, metadata: {} })
+
+    return Ok(this.toIdentity(updated))
   }
 
   async linkAccount(_identityId: string, _input: LinkAccountInput): Promise<Result<LinkedAccount, NotFoundError | ValidationError | ConflictError>> {
