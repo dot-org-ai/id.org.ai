@@ -51,6 +51,13 @@ src/                       # npm package source (id.org.ai or org.ai)
       index.ts             # Barrel exports
     audit/                 # Domain 10 — Audit Logging
     entity-store/          # Domain 9 — Entity Store
+    keys/                  # Domain 5 — Keys & Credentials (API keys, agent Ed25519, rate limiting)
+      types.ts             # KeyService interfaces + domain types
+      api-keys.ts          # ApiKeyServiceImpl (create/list/revoke/validate)
+      agent-keys.ts        # AgentKeyServiceImpl (register/list/revoke/verify)
+      rate-limit.ts        # RateLimitServiceImpl (sliding window)
+      service.ts           # KeyServiceImpl (composite)
+      index.ts             # Barrel exports
 worker/                    # Cloudflare Worker
   index.ts                 # Hono app entry point
   wrangler.jsonc           # Worker configuration
