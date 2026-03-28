@@ -581,6 +581,217 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
+  // linkAccount()
+  // --------------------------------------------------------------------------
+
+  describe('linkAccount()', () => {
+    it('links a GitHub account with status=active', async () => {
+      const created = await service.createHuman({ name: 'Victor', email: 'victor@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.linkAccount(created.data.id, {
+          provider: 'github',
+          providerAccountId: 'gh_victor_42',
+          type: 'auth',
+          displayName: 'victor-gh',
+          email: 'victor@github.com',
+        })
+        expect(result.success).toBe(true)
+        if (result.success) {
+          const account = result.data
+          expect(account.provider).toBe('github')
+          expect(account.providerAccountId).toBe('gh_victor_42')
+          expect(account.type).toBe('auth')
+          expect(account.displayName).toBe('victor-gh')
+          expect(account.status).toBe('active')
+          expect(account.identityId).toBe(created.data.id)
+          expect(typeof account.id).toBe('string')
+          expect(typeof account.linkedAt).toBe('number')
+        }
+      }
+    })
+
+    it('returns NotFoundError for missing identity', async () => {
+      const result = await service.linkAccount('usr_missing', {
+        provider: 'github',
+        providerAccountId: 'gh_999',
+        type: 'auth',
+        displayName: 'ghost',
+      })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+        expect(result.error.entity).toBe('Identity')
+      }
+    })
+
+    it('returns ConflictError for duplicate provider', async () => {
+      const created = await service.createHuman({ name: 'Wendy', email: 'wendy@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.linkAccount(created.data.id, {
+          provider: 'github',
+          providerAccountId: 'gh_wendy_1',
+          type: 'auth',
+          displayName: 'wendy-gh',
+        })
+        const result = await service.linkAccount(created.data.id, {
+          provider: 'github',
+          providerAccountId: 'gh_wendy_2',
+          type: 'auth',
+          displayName: 'wendy-gh-2',
+        })
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('ConflictError')
+        }
+      }
+    })
+
+    it('stores linked account in storage at linked:{id}:{provider}', async () => {
+      const created = await service.createHuman({ name: 'Xavier', email: 'xavier@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.linkAccount(created.data.id, {
+          provider: 'stripe',
+          providerAccountId: 'cus_xavier',
+          type: 'payment',
+          displayName: 'xavier stripe',
+        })
+        const key = `linked:${created.data.id}:stripe`
+        expect(backingMap.has(key)).toBe(true)
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // unlinkAccount()
+  // --------------------------------------------------------------------------
+
+  describe('unlinkAccount()', () => {
+    it('soft-revokes linked account (status=revoked)', async () => {
+      const created = await service.createHuman({ name: 'Yara', email: 'yara@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.linkAccount(created.data.id, {
+          provider: 'github',
+          providerAccountId: 'gh_yara',
+          type: 'auth',
+          displayName: 'yara-gh',
+        })
+        const result = await service.unlinkAccount(created.data.id, 'github')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.status).toBe('revoked')
+          expect(result.data.provider).toBe('github')
+        }
+      }
+    })
+
+    it('returns NotFoundError when provider link does not exist', async () => {
+      const created = await service.createHuman({ name: 'Zane', email: 'zane@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.unlinkAccount(created.data.id, 'github')
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('NotFoundError')
+        }
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getLinkedAccounts()
+  // --------------------------------------------------------------------------
+
+  describe('getLinkedAccounts()', () => {
+    it('returns NotFoundError for nonexistent identity', async () => {
+      const result = await service.getLinkedAccounts('usr_missing')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+
+    it('returns all linked accounts for an identity', async () => {
+      const created = await service.createHuman({ name: 'Aria', email: 'aria@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.linkAccount(created.data.id, {
+          provider: 'github',
+          providerAccountId: 'gh_aria',
+          type: 'auth',
+          displayName: 'aria-gh',
+        })
+        await service.linkAccount(created.data.id, {
+          provider: 'stripe',
+          providerAccountId: 'cus_aria',
+          type: 'payment',
+          displayName: 'aria stripe',
+        })
+        const result = await service.getLinkedAccounts(created.data.id)
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.length).toBe(2)
+          const providers = result.data.map((a) => a.provider)
+          expect(providers).toContain('github')
+          expect(providers).toContain('stripe')
+        }
+      }
+    })
+
+    it('returns empty array when identity has no linked accounts', async () => {
+      const created = await service.createHuman({ name: 'Ben', email: 'ben@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getLinkedAccounts(created.data.id)
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data).toEqual([])
+        }
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getLinkedAccount()
+  // --------------------------------------------------------------------------
+
+  describe('getLinkedAccount()', () => {
+    it('returns specific linked account by provider', async () => {
+      const created = await service.createHuman({ name: 'Cleo', email: 'cleo@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.linkAccount(created.data.id, {
+          provider: 'anthropic',
+          providerAccountId: 'ant_cleo',
+          type: 'ai',
+          displayName: 'cleo anthropic',
+        })
+        const result = await service.getLinkedAccount(created.data.id, 'anthropic')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.provider).toBe('anthropic')
+          expect(result.data.providerAccountId).toBe('ant_cleo')
+        }
+      }
+    })
+
+    it('returns NotFoundError for missing provider link', async () => {
+      const created = await service.createHuman({ name: 'Drew', email: 'drew@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getLinkedAccount(created.data.id, 'github')
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('NotFoundError')
+        }
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
   // createService()
   // --------------------------------------------------------------------------
 

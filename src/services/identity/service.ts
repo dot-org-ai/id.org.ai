@@ -66,12 +66,19 @@ export class IdentityServiceImpl implements IdentityWriter {
     return this.get(id)
   }
 
-  async getLinkedAccounts(_identityId: string): Promise<Result<LinkedAccount[], NotFoundError>> {
-    return Err(new NotFoundError('Identity', _identityId))
+  async getLinkedAccounts(identityId: string): Promise<Result<LinkedAccount[], NotFoundError>> {
+    const exists = await this.exists(identityId)
+    if (!exists) return Err(new NotFoundError('Identity', identityId))
+    const entries = await this.storage.list<LinkedAccount>({ prefix: `linked:${identityId}:` })
+    return Ok(Array.from(entries.values()))
   }
 
-  async getLinkedAccount(_identityId: string, _provider: LinkedAccountProvider): Promise<Result<LinkedAccount, NotFoundError>> {
-    return Err(new NotFoundError('LinkedAccount', `${_identityId}:${_provider}`))
+  async getLinkedAccount(identityId: string, provider: LinkedAccountProvider): Promise<Result<LinkedAccount, NotFoundError>> {
+    const raw = await this.storage.get<LinkedAccount>(`linked:${identityId}:${provider}`)
+    if (raw === undefined || raw === null) {
+      return Err(new NotFoundError('LinkedAccount', `${identityId}:${provider}`))
+    }
+    return Ok(raw)
   }
 
   // --------------------------------------------------------------------------
@@ -310,12 +317,46 @@ export class IdentityServiceImpl implements IdentityWriter {
     return Ok(this.toIdentity(updated))
   }
 
-  async linkAccount(_identityId: string, _input: LinkAccountInput): Promise<Result<LinkedAccount, NotFoundError | ValidationError | ConflictError>> {
-    throw new Error('Not implemented')
+  async linkAccount(identityId: string, input: LinkAccountInput): Promise<Result<LinkedAccount, NotFoundError | ValidationError | ConflictError>> {
+    const exists = await this.exists(identityId)
+    if (!exists) return Err(new NotFoundError('Identity', identityId))
+
+    const key = `linked:${identityId}:${input.provider}`
+    const existing = await this.storage.get<LinkedAccount>(key)
+    if (existing !== undefined && existing !== null) {
+      return Err(new ConflictError('LinkedAccount', `Provider already linked: ${input.provider}`))
+    }
+
+    const account: LinkedAccount = {
+      id: this.generateId(),
+      identityId,
+      provider: input.provider,
+      providerAccountId: input.providerAccountId,
+      type: input.type,
+      displayName: input.displayName,
+      email: input.email,
+      status: 'active',
+      linkedAt: Date.now(),
+      metadata: input.metadata,
+    }
+
+    await this.storage.put(key, account)
+    await this.audit.log({ event: 'identity.account.linked', target: identityId, metadata: { provider: input.provider } })
+
+    return Ok(account)
   }
 
-  async unlinkAccount(_identityId: string, _provider: LinkedAccountProvider): Promise<Result<LinkedAccount, NotFoundError>> {
-    throw new Error('Not implemented')
+  async unlinkAccount(identityId: string, provider: LinkedAccountProvider): Promise<Result<LinkedAccount, NotFoundError>> {
+    const key = `linked:${identityId}:${provider}`
+    const existing = await this.storage.get<LinkedAccount>(key)
+    if (existing === undefined || existing === null) {
+      return Err(new NotFoundError('LinkedAccount', `${identityId}:${provider}`))
+    }
+
+    const revoked: LinkedAccount = { ...existing, status: 'revoked' }
+    await this.storage.put(key, revoked)
+
+    return Ok(revoked)
   }
 
   // --------------------------------------------------------------------------
