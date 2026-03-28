@@ -1,7 +1,7 @@
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
-import { NotFoundError } from '../../foundation/errors'
-import type { AuthError, ValidationError, ConflictError } from '../../foundation/errors'
+import { NotFoundError, ValidationError, ConflictError } from '../../foundation/errors'
+import type { AuthError } from '../../foundation/errors'
 import type { AuditService } from '../audit/service'
 import type {
   IdentityWriter,
@@ -73,16 +73,113 @@ export class IdentityServiceImpl implements IdentityWriter {
   // IdentityWriter — stubs
   // --------------------------------------------------------------------------
 
-  async createHuman(_input: CreateHumanInput): Promise<Result<Identity, ValidationError | ConflictError>> {
-    throw new Error('Not implemented')
+  async createHuman(input: CreateHumanInput): Promise<Result<Identity, ValidationError | ConflictError>> {
+    if (!input.name || input.name.trim() === '') {
+      return Err(new ValidationError('name', 'Name must not be empty'))
+    }
+    if (!input.email || input.email.trim() === '') {
+      return Err(new ValidationError('email', 'Email must not be empty'))
+    }
+
+    const emailKey = `idx:email:${input.email.toLowerCase()}`
+    const existing = await this.getIdByIndex(emailKey)
+    if (existing !== null) {
+      return Err(new ConflictError('Identity', `Email already in use: ${input.email}`))
+    }
+
+    if (input.handle) {
+      const handleKey = `idx:handle:${input.handle.toLowerCase()}`
+      const existingHandle = await this.getIdByIndex(handleKey)
+      if (existingHandle !== null) {
+        return Err(new ConflictError('Identity', `Handle already in use: ${input.handle}`))
+      }
+    }
+
+    const id = this.generateId()
+    const now = Date.now()
+    const record: Record<string, unknown> = {
+      id,
+      type: 'human',
+      name: input.name,
+      email: input.email,
+      handle: input.handle,
+      image: input.image,
+      verified: true,
+      level: 2,
+      claimStatus: 'claimed',
+      frozen: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, record)
+    await this.putIndex(emailKey, id)
+    if (input.handle) {
+      await this.putIndex(`idx:handle:${input.handle.toLowerCase()}`, id)
+    }
+
+    await this.audit.log({ event: 'identity.created', target: id, metadata: { type: 'human' } })
+
+    return Ok(this.toIdentity(record))
   }
 
-  async provisionAgent(_input: ProvisionAgentInput): Promise<Result<ProvisionAgentResult, ValidationError>> {
-    throw new Error('Not implemented')
+  async provisionAgent(input: ProvisionAgentInput): Promise<Result<ProvisionAgentResult, ValidationError>> {
+    const id = this.generateId()
+    const claimToken = this.generateClaimToken()
+    const name = input.name ?? `anon_${id.slice(0, 8)}`
+    const now = Date.now()
+
+    const record: Record<string, unknown> = {
+      id,
+      type: 'agent',
+      name,
+      verified: false,
+      level: 0,
+      claimStatus: 'unclaimed',
+      claimToken,
+      frozen: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, record)
+
+    return Ok({ identity: this.toIdentity(record), claimToken })
   }
 
-  async createService(_input: CreateServiceInput): Promise<Result<Identity, ValidationError | ConflictError>> {
-    throw new Error('Not implemented')
+  async createService(input: CreateServiceInput): Promise<Result<Identity, ValidationError | ConflictError>> {
+    if (!input.name || input.name.trim() === '') {
+      return Err(new ValidationError('name', 'Name must not be empty'))
+    }
+    if (!input.handle || input.handle.trim() === '') {
+      return Err(new ValidationError('handle', 'Handle must not be empty'))
+    }
+
+    const handleKey = `idx:handle:${input.handle.toLowerCase()}`
+    const existing = await this.getIdByIndex(handleKey)
+    if (existing !== null) {
+      return Err(new ConflictError('Identity', `Handle already in use: ${input.handle}`))
+    }
+
+    const id = this.generateId()
+    const now = Date.now()
+    const record: Record<string, unknown> = {
+      id,
+      type: 'service',
+      name: input.name,
+      handle: input.handle,
+      verified: true,
+      level: 3,
+      claimStatus: 'claimed',
+      frozen: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, record)
+    await this.putIndex(handleKey, id)
+
+    return Ok(this.toIdentity(record))
   }
 
   async update(_id: string, _input: UpdateIdentityInput): Promise<Result<Identity, NotFoundError | ValidationError | ConflictError>> {
@@ -108,6 +205,23 @@ export class IdentityServiceImpl implements IdentityWriter {
   // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
+
+  private generateId(): string {
+    return crypto.randomUUID().replace(/-/g, '')
+  }
+
+  private generateClaimToken(): string {
+    return `clm_${crypto.randomUUID().replace(/-/g, '')}`
+  }
+
+  private async putIndex(indexKey: string, identityId: string): Promise<void> {
+    await this.storage.put(indexKey, identityId)
+  }
+
+  private async getIdByIndex(indexKey: string): Promise<string | null> {
+    const val = await this.storage.get<string>(indexKey)
+    return val ?? null
+  }
 
   private toIdentity(raw: Record<string, unknown>): Identity {
     const now = Date.now()

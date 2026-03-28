@@ -145,4 +145,200 @@ describe('IdentityServiceImpl', () => {
       expect(found).toBe(true)
     })
   })
+
+  // --------------------------------------------------------------------------
+  // createHuman()
+  // --------------------------------------------------------------------------
+
+  describe('createHuman()', () => {
+    it('creates a human identity at level 2 / claimed', async () => {
+      const result = await service.createHuman({ name: 'Bob Smith', email: 'bob@example.com' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const identity = result.data
+        expect(identity.type).toBe('human')
+        expect(identity.name).toBe('Bob Smith')
+        expect(identity.email).toBe('bob@example.com')
+        expect(identity.verified).toBe(true)
+        expect(identity.level).toBe(2)
+        expect(identity.claimStatus).toBe('claimed')
+        expect(identity.frozen).toBe(false)
+        expect(typeof identity.id).toBe('string')
+        expect(identity.id.length).toBeGreaterThan(0)
+        expect(typeof identity.createdAt).toBe('number')
+      }
+    })
+
+    it('stores the identity in storage and creates email index', async () => {
+      const result = await service.createHuman({ name: 'Carol', email: 'carol@example.com' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const id = result.data.id
+        expect(backingMap.has(`identity:${id}`)).toBe(true)
+        expect(backingMap.get('idx:email:carol@example.com')).toBe(id)
+      }
+    })
+
+    it('stores handle index when handle is provided', async () => {
+      const result = await service.createHuman({ name: 'Dave', email: 'dave@example.com', handle: 'dave' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const id = result.data.id
+        expect(backingMap.get('idx:handle:dave')).toBe(id)
+        expect(result.data.handle).toBe('dave')
+      }
+    })
+
+    it('returns ValidationError for empty name', async () => {
+      const result = await service.createHuman({ name: '', email: 'test@example.com' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ValidationError')
+      }
+    })
+
+    it('returns ValidationError for empty email', async () => {
+      const result = await service.createHuman({ name: 'Test', email: '' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ValidationError')
+      }
+    })
+
+    it('returns ConflictError for duplicate email', async () => {
+      await service.createHuman({ name: 'First', email: 'dup@example.com' })
+      const result = await service.createHuman({ name: 'Second', email: 'dup@example.com' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ConflictError')
+      }
+    })
+
+    it('returns ConflictError for duplicate handle', async () => {
+      await service.createHuman({ name: 'First', email: 'first@example.com', handle: 'shared' })
+      const result = await service.createHuman({ name: 'Second', email: 'second@example.com', handle: 'shared' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ConflictError')
+      }
+    })
+
+    it('email uniqueness check is case-insensitive', async () => {
+      await service.createHuman({ name: 'First', email: 'Case@Example.com' })
+      const result = await service.createHuman({ name: 'Second', email: 'case@example.com' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ConflictError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // provisionAgent()
+  // --------------------------------------------------------------------------
+
+  describe('provisionAgent()', () => {
+    it('creates an agent at level 0 / unclaimed with a clm_ token', async () => {
+      const result = await service.provisionAgent({})
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const { identity, claimToken } = result.data
+        expect(identity.type).toBe('agent')
+        expect(identity.verified).toBe(false)
+        expect(identity.level).toBe(0)
+        expect(identity.claimStatus).toBe('unclaimed')
+        expect(claimToken).toMatch(/^clm_/)
+        expect(typeof identity.id).toBe('string')
+      }
+    })
+
+    it('uses provided name when given', async () => {
+      const result = await service.provisionAgent({ name: 'my-agent' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.identity.name).toBe('my-agent')
+      }
+    })
+
+    it('generates anon_ name when no name provided', async () => {
+      const result = await service.provisionAgent({})
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.identity.name).toMatch(/^anon_/)
+      }
+    })
+
+    it('stores the identity in storage', async () => {
+      const result = await service.provisionAgent({})
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const id = result.data.identity.id
+        expect(backingMap.has(`identity:${id}`)).toBe(true)
+      }
+    })
+
+    it('generates unique IDs for each provisioned agent', async () => {
+      const r1 = await service.provisionAgent({})
+      const r2 = await service.provisionAgent({})
+      expect(r1.success && r2.success).toBe(true)
+      if (r1.success && r2.success) {
+        expect(r1.data.identity.id).not.toBe(r2.data.identity.id)
+        expect(r1.data.claimToken).not.toBe(r2.data.claimToken)
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // createService()
+  // --------------------------------------------------------------------------
+
+  describe('createService()', () => {
+    it('creates a service identity at level 3 / claimed', async () => {
+      const result = await service.createService({ name: 'payments-service', handle: 'payments' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const identity = result.data
+        expect(identity.type).toBe('service')
+        expect(identity.name).toBe('payments-service')
+        expect(identity.handle).toBe('payments')
+        expect(identity.verified).toBe(true)
+        expect(identity.level).toBe(3)
+        expect(identity.claimStatus).toBe('claimed')
+      }
+    })
+
+    it('stores handle index', async () => {
+      const result = await service.createService({ name: 'my-svc', handle: 'my-svc' })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        const id = result.data.id
+        expect(backingMap.get('idx:handle:my-svc')).toBe(id)
+      }
+    })
+
+    it('returns ValidationError for empty name', async () => {
+      const result = await service.createService({ name: '', handle: 'svc' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ValidationError')
+      }
+    })
+
+    it('returns ValidationError for empty handle', async () => {
+      const result = await service.createService({ name: 'svc', handle: '' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ValidationError')
+      }
+    })
+
+    it('returns ConflictError for duplicate handle', async () => {
+      await service.createService({ name: 'First', handle: 'shared-handle' })
+      const result = await service.createService({ name: 'Second', handle: 'shared-handle' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('ConflictError')
+      }
+    })
+  })
 })
