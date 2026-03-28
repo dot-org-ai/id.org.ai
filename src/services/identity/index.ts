@@ -27,6 +27,8 @@ export type {
   LinkedAccountStatus,
 
   // Input types
+  CreateIdentityInput,
+  CreateIdentityResult,
   CreateHumanInput,
   CreateServiceInput,
   ProvisionAgentInput,

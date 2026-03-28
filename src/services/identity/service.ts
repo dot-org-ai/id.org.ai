@@ -10,6 +10,8 @@ import type {
   ClaimStatus,
   LinkedAccount,
   LinkedAccountProvider,
+  CreateIdentityInput,
+  CreateIdentityResult,
   CreateHumanInput,
   CreateServiceInput,
   ProvisionAgentInput,
@@ -82,8 +84,58 @@ export class IdentityServiceImpl implements IdentityWriter {
   }
 
   // --------------------------------------------------------------------------
-  // IdentityWriter — stubs
+  // IdentityWriter — creation
   // --------------------------------------------------------------------------
+
+  async create(input: CreateIdentityInput): Promise<Result<CreateIdentityResult, ValidationError | ConflictError>> {
+    const id = input.id ?? this.generateId()
+    const claimToken = this.generateClaimToken()
+    const level = input.level ?? 0
+    const now = Date.now()
+
+    // Check email uniqueness if provided
+    if (input.email) {
+      const existing = await this.getIdByIndex(`idx:email:${input.email.toLowerCase()}`)
+      if (existing !== null) {
+        return Err(new ConflictError('Identity', `Email already in use: ${input.email}`))
+      }
+    }
+
+    // Check handle uniqueness if provided
+    if (input.handle) {
+      const existing = await this.getIdByIndex(`idx:handle:${input.handle.toLowerCase()}`)
+      if (existing !== null) {
+        return Err(new ConflictError('Identity', `Handle already in use: ${input.handle}`))
+      }
+    }
+
+    const record: Record<string, unknown> = {
+      id,
+      type: input.type,
+      name: input.name,
+      email: input.email,
+      handle: input.handle,
+      capabilities: input.capabilities,
+      ownerId: input.ownerId,
+      verified: false,
+      level,
+      claimStatus: 'unclaimed',
+      claimToken,
+      frozen: false,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, record)
+
+    // Create secondary indexes
+    if (input.email) await this.putIndex(`idx:email:${input.email.toLowerCase()}`, id)
+    if (input.handle) await this.putIndex(`idx:handle:${input.handle.toLowerCase()}`, id)
+
+    await this.audit.log({ event: 'identity.created', target: id, metadata: { type: input.type } })
+
+    return Ok({ identity: this.toIdentity(record), claimToken })
+  }
 
   async createHuman(input: CreateHumanInput): Promise<Result<Identity, ValidationError | ConflictError>> {
     if (!input.name || input.name.trim() === '') {

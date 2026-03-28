@@ -155,9 +155,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   readonly ns = 'https://id.org.ai'
 
   // ── RPC Method Routing ──────────────────────────────────────
-  // getIdentity()       → this.identityService.get()          (Phase 4 — delegated)
-  // createIdentity()    → direct (legacy generic factory, kept for backward compat)
-  // provisionAnonymous()→ direct (calls createIdentity internally)
+  // getIdentity()       → this.identityService.get()            (Phase 4)
+  // createIdentity()    → this.identityService.create()         (Phase 4)
+  // provisionAnonymous()→ this.identityService.create() + DO session (Phase 4)
   // freezeIdentity()    → this.identityService.freeze() + DO session cleanup (Phase 4)
   // writeAuditEvent()   → this.auditService                   (Phase 2)
   // queryAuditLog()     → this.auditService                   (Phase 2)
@@ -207,37 +207,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     level?: CapabilityLevel
     id?: string
   }): Promise<Identity> {
-    // Legacy generic factory — keeps original behavior for backward compatibility.
-    // New code should use identityService.createHuman/provisionAgent/createService directly.
-    const id = data.id ?? crypto.randomUUID()
-    const claimToken = `clm_${crypto.randomUUID().replace(/-/g, '')}`
-    const level = data.level ?? 0
-
-    await this.ctx.storage.put(`identity:${id}`, {
-      id,
-      type: data.type,
-      name: data.name,
-      email: data.email,
-      handle: data.handle,
-      capabilities: data.capabilities,
-      ownerId: data.ownerId,
-      verified: false,
-      level,
-      claimStatus: 'unclaimed' as ClaimStatus,
-      claimToken,
-      createdAt: Date.now(),
-    })
-
-    return {
-      id,
-      type: data.type,
-      name: data.name,
-      handle: data.handle,
-      email: data.email,
-      verified: false,
-      level,
-      claimStatus: 'unclaimed',
-    }
+    const result = await this.identityService.create(data)
+    if (!result.success) throw new Error(result.error.message)
+    return result.data.identity
   }
 
   async getIdentity(id: string): Promise<Identity | null> {
@@ -253,15 +225,16 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     sessionToken: string
     claimToken: string
   }> {
-    const identity = await this.createIdentity({
+    const result = await this.identityService.create({
       type: 'agent',
       name: `anon_${crypto.randomUUID().slice(0, 8)}`,
       level: 1,
       id: presetIdentityId,
     })
+    if (!result.success) throw new Error(result.error.message)
 
+    const { identity, claimToken } = result.data
     const sessionToken = `ses_${crypto.randomUUID().replace(/-/g, '')}`
-    const data = await this.ctx.storage.get<any>(`identity:${identity.id}`)
 
     await this.ctx.storage.put(`session:${sessionToken}`, {
       identityId: identity.id,
@@ -270,11 +243,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24h TTL
     })
 
-    return {
-      identity,
-      sessionToken,
-      claimToken: data.claimToken,
-    }
+    return { identity, sessionToken, claimToken }
   }
 
   // ─── Claim-by-Commit ─────────────────────────────────────────────────
