@@ -49,16 +49,22 @@ export class IdentityServiceImpl implements IdentityWriter {
     return raw !== undefined && raw !== null
   }
 
-  async getByHandle(_handle: string): Promise<Result<Identity, NotFoundError>> {
-    return Err(new NotFoundError('Identity', _handle))
+  async getByHandle(handle: string): Promise<Result<Identity, NotFoundError>> {
+    const id = await this.getIdByIndex(`idx:handle:${handle.toLowerCase()}`)
+    if (id === null) return Err(new NotFoundError('Identity', handle))
+    return this.get(id)
   }
 
-  async getByEmail(_email: string): Promise<Result<Identity, NotFoundError>> {
-    return Err(new NotFoundError('Identity', _email))
+  async getByEmail(email: string): Promise<Result<Identity, NotFoundError>> {
+    const id = await this.getIdByIndex(`idx:email:${email.toLowerCase()}`)
+    if (id === null) return Err(new NotFoundError('Identity', email))
+    return this.get(id)
   }
 
-  async getByGitHubUserId(_githubUserId: string): Promise<Result<Identity, NotFoundError>> {
-    return Err(new NotFoundError('Identity', _githubUserId))
+  async getByGitHubUserId(githubUserId: string): Promise<Result<Identity, NotFoundError>> {
+    const id = await this.getIdByIndex(`idx:github:${githubUserId}`)
+    if (id === null) return Err(new NotFoundError('Identity', githubUserId))
+    return this.get(id)
   }
 
   async getLinkedAccounts(_identityId: string): Promise<Result<LinkedAccount[], NotFoundError>> {
@@ -182,8 +188,74 @@ export class IdentityServiceImpl implements IdentityWriter {
     return Ok(this.toIdentity(record))
   }
 
-  async update(_id: string, _input: UpdateIdentityInput): Promise<Result<Identity, NotFoundError | ValidationError | ConflictError>> {
-    throw new Error('Not implemented')
+  async update(id: string, input: UpdateIdentityInput): Promise<Result<Identity, NotFoundError | ValidationError | ConflictError>> {
+    const raw = await this.storage.get<Record<string, unknown>>(`identity:${id}`)
+    if (raw === undefined || raw === null) {
+      return Err(new NotFoundError('Identity', id))
+    }
+
+    if (raw['frozen'] === true) {
+      return Err(new ValidationError('frozen', 'Cannot update a frozen identity'))
+    }
+
+    // Level monotonicity
+    if (input.level !== undefined && input.level < (raw['level'] as number)) {
+      return Err(new ValidationError('level', 'Level cannot be decreased'))
+    }
+
+    // Handle uniqueness + index swap
+    if (input.handle !== undefined && input.handle !== raw['handle']) {
+      const newHandleKey = `idx:handle:${input.handle.toLowerCase()}`
+      const existingId = await this.getIdByIndex(newHandleKey)
+      if (existingId !== null && existingId !== id) {
+        return Err(new ConflictError('Identity', `Handle already in use: ${input.handle}`))
+      }
+      if (raw['handle']) {
+        await this.storage.delete(`idx:handle:${(raw['handle'] as string).toLowerCase()}`)
+      }
+      await this.putIndex(newHandleKey, id)
+    }
+
+    // Email uniqueness + index swap
+    if (input.email !== undefined && input.email !== raw['email']) {
+      const newEmailKey = `idx:email:${input.email.toLowerCase()}`
+      const existingId = await this.getIdByIndex(newEmailKey)
+      if (existingId !== null && existingId !== id) {
+        return Err(new ConflictError('Identity', `Email already in use: ${input.email}`))
+      }
+      if (raw['email']) {
+        await this.storage.delete(`idx:email:${(raw['email'] as string).toLowerCase()}`)
+      }
+      await this.putIndex(newEmailKey, id)
+    }
+
+    // GitHub index swap
+    if (input.githubUserId !== undefined && input.githubUserId !== raw['githubUserId']) {
+      if (raw['githubUserId']) {
+        await this.storage.delete(`idx:github:${raw['githubUserId'] as string}`)
+      }
+      await this.putIndex(`idx:github:${input.githubUserId}`, id)
+    }
+
+    const now = Date.now()
+    const updated: Record<string, unknown> = {
+      ...raw,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.handle !== undefined ? { handle: input.handle } : {}),
+      ...(input.email !== undefined ? { email: input.email } : {}),
+      ...(input.image !== undefined ? { image: input.image } : {}),
+      ...(input.verified !== undefined ? { verified: input.verified } : {}),
+      ...(input.level !== undefined ? { level: input.level } : {}),
+      ...(input.claimStatus !== undefined ? { claimStatus: input.claimStatus } : {}),
+      ...(input.githubUserId !== undefined ? { githubUserId: input.githubUserId } : {}),
+      ...(input.githubUsername !== undefined ? { githubUsername: input.githubUsername } : {}),
+      updatedAt: now,
+    }
+
+    await this.storage.put(`identity:${id}`, updated)
+    await this.audit.log({ event: 'identity.updated', target: id, metadata: { fields: Object.keys(input) } })
+
+    return Ok(this.toIdentity(updated))
   }
 
   async freeze(_id: string, _reason: string): Promise<Result<Identity, NotFoundError | AuthError>> {

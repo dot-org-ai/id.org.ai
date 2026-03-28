@@ -289,6 +289,210 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
+  // getByHandle()
+  // --------------------------------------------------------------------------
+
+  describe('getByHandle()', () => {
+    it('returns identity by handle', async () => {
+      const created = await service.createHuman({ name: 'Eve', email: 'eve@example.com', handle: 'eve' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getByHandle('eve')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.id).toBe(created.data.id)
+          expect(result.data.handle).toBe('eve')
+        }
+      }
+    })
+
+    it('is case-insensitive', async () => {
+      await service.createHuman({ name: 'Frank', email: 'frank@example.com', handle: 'Frank' })
+      const result = await service.getByHandle('frank')
+      expect(result.success).toBe(true)
+    })
+
+    it('returns NotFoundError for unknown handle', async () => {
+      const result = await service.getByHandle('nobody')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getByEmail()
+  // --------------------------------------------------------------------------
+
+  describe('getByEmail()', () => {
+    it('returns identity by email', async () => {
+      const created = await service.createHuman({ name: 'Grace', email: 'grace@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.getByEmail('grace@example.com')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.id).toBe(created.data.id)
+          expect(result.data.email).toBe('grace@example.com')
+        }
+      }
+    })
+
+    it('is case-insensitive', async () => {
+      await service.createHuman({ name: 'Hank', email: 'Hank@Example.com' })
+      const result = await service.getByEmail('hank@example.com')
+      expect(result.success).toBe(true)
+    })
+
+    it('returns NotFoundError for unknown email', async () => {
+      const result = await service.getByEmail('nobody@example.com')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getByGitHubUserId()
+  // --------------------------------------------------------------------------
+
+  describe('getByGitHubUserId()', () => {
+    it('returns identity after GitHub link via update', async () => {
+      const created = await service.createHuman({ name: 'Ivy', email: 'ivy@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        await service.update(created.data.id, { githubUserId: 'gh_123', githubUsername: 'ivy-gh' })
+        const result = await service.getByGitHubUserId('gh_123')
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.id).toBe(created.data.id)
+          expect(result.data.githubUserId).toBe('gh_123')
+          expect(result.data.githubUsername).toBe('ivy-gh')
+        }
+      }
+    })
+
+    it('returns NotFoundError for unknown GitHub user ID', async () => {
+      const result = await service.getByGitHubUserId('gh_unknown')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // update()
+  // --------------------------------------------------------------------------
+
+  describe('update()', () => {
+    it('updates mutable fields', async () => {
+      const created = await service.createHuman({ name: 'Jack', email: 'jack@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.update(created.data.id, { name: 'Jack Updated', image: 'https://example.com/jack.png' })
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.name).toBe('Jack Updated')
+          expect(result.data.image).toBe('https://example.com/jack.png')
+          expect(result.data.email).toBe('jack@example.com')
+        }
+      }
+    })
+
+    it('returns NotFoundError for missing identity', async () => {
+      const result = await service.update('usr_missing', { name: 'Ghost' })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error._tag).toBe('NotFoundError')
+      }
+    })
+
+    it('rejects level decrease', async () => {
+      const created = await service.createHuman({ name: 'Kate', email: 'kate@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.update(created.data.id, { level: 0 })
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('ValidationError')
+        }
+      }
+    })
+
+    it('allows level increase', async () => {
+      const created = await service.createHuman({ name: 'Leo', email: 'leo@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.update(created.data.id, { level: 3 })
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.data.level).toBe(3)
+        }
+      }
+    })
+
+    it('rejects update on frozen identity', async () => {
+      const created = await service.createHuman({ name: 'Mia', email: 'mia@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        // manually freeze via storage
+        const raw = backingMap.get(`identity:${created.data.id}`) as Record<string, unknown>
+        backingMap.set(`identity:${created.data.id}`, { ...raw, frozen: true })
+        const result = await service.update(created.data.id, { name: 'Mia Frozen' })
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('ValidationError')
+        }
+      }
+    })
+
+    it('swaps handle index on update', async () => {
+      const created = await service.createHuman({ name: 'Ned', email: 'ned@example.com', handle: 'ned-old' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const id = created.data.id
+        const result = await service.update(id, { handle: 'ned-new' })
+        expect(result.success).toBe(true)
+        // old index removed, new index points to same id
+        expect(backingMap.has('idx:handle:ned-old')).toBe(false)
+        expect(backingMap.get('idx:handle:ned-new')).toBe(id)
+        if (result.success) {
+          expect(result.data.handle).toBe('ned-new')
+        }
+      }
+    })
+
+    it('returns ConflictError when new handle is already taken', async () => {
+      await service.createHuman({ name: 'Oscar', email: 'oscar@example.com', handle: 'taken-handle' })
+      const created = await service.createHuman({ name: 'Paula', email: 'paula@example.com', handle: 'paula' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const result = await service.update(created.data.id, { handle: 'taken-handle' })
+        expect(result.success).toBe(false)
+        if (!result.success) {
+          expect(result.error._tag).toBe('ConflictError')
+        }
+      }
+    })
+
+    it('swaps github index on update', async () => {
+      const created = await service.createHuman({ name: 'Quinn', email: 'quinn@example.com' })
+      expect(created.success).toBe(true)
+      if (created.success) {
+        const id = created.data.id
+        await service.update(id, { githubUserId: 'gh_old' })
+        const result = await service.update(id, { githubUserId: 'gh_new' })
+        expect(result.success).toBe(true)
+        expect(backingMap.has('idx:github:gh_old')).toBe(false)
+        expect(backingMap.get('idx:github:gh_new')).toBe(id)
+      }
+    })
+  })
+
+  // --------------------------------------------------------------------------
   // createService()
   // --------------------------------------------------------------------------
 
