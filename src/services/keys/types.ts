@@ -151,7 +151,7 @@ export interface ApiKeyWriter extends ApiKeyReader {
   create(input: CreateApiKeyInput): Promise<Result<CreateApiKeyResult, ValidationError>>
 
   /** Revoke an API key by ID. */
-  revoke(keyId: string, identityId: string): Promise<Result<{ id: string; status: 'revoked'; revokedAt: string }, NotFoundError | KeyError>>
+  revoke(keyId: string, identityId: string): Promise<Result<{ id: string; status: 'revoked'; revokedAt: string; key?: string }, NotFoundError | KeyError>>
 }
 
 export interface AgentKeyReader {

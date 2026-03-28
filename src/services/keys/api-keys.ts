@@ -118,7 +118,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
   async revoke(
     keyId: string,
     identityId: string,
-  ): Promise<Result<{ id: string; status: 'revoked'; revokedAt: string }, NotFoundError | KeyError>> {
+  ): Promise<Result<{ id: string; status: 'revoked'; revokedAt: string; key?: string }, NotFoundError | KeyError>> {
     const apiKey = await this.storage.get<ApiKeyRecord>(`apikey:${keyId}`)
     if (!apiKey || apiKey.identityId !== identityId) {
       return Err(new NotFoundError('ApiKey', keyId))
@@ -145,7 +145,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       target: keyId,
     })
 
-    return Ok({ id: keyId, status: 'revoked' as const, revokedAt })
+    return Ok({ id: keyId, status: 'revoked' as const, revokedAt, key: apiKey.key })
   }
 
   async validate(key: string): Promise<Result<ValidateApiKeyResult, NotFoundError>> {

@@ -21,14 +21,15 @@
  */
 
 import { DurableObject } from 'cloudflare:workers'
-import { publicKeyToDID, didToPublicKey, pemToPublicKey, verify as ed25519Verify, base64Decode, base64Encode, isValidDID } from '../crypto/keys'
 // errorJson/ErrorCode no longer needed — fetch() is health-check only, all routes are RPC
+// crypto/keys imports removed — now handled by KeyService (Phase 5)
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
 import { AuditServiceImpl } from '../services/audit'
 import type { AuditService } from '../services/audit'
 import { EntityStoreServiceImpl } from '../services/entity-store'
 import type { EntityStoreService } from '../services/entity-store'
 import { IdentityServiceImpl } from '../services/identity/service'
+import { KeyServiceImpl } from '../services/keys'
 import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
@@ -116,12 +117,6 @@ export interface SessionData {
   expiresAt: number
 }
 
-export interface RateLimitEntry {
-  identityId: string
-  windowStart: number
-  requestCount: number
-}
-
 export interface IdentityEnv {
   // KV for sessions
   SESSIONS: KVNamespace
@@ -134,17 +129,6 @@ export interface IdentityEnv {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
-}
-
-// ============================================================================
-// Rate limit configuration by capability level
-// ============================================================================
-
-const RATE_LIMITS: Record<CapabilityLevel, { maxRequests: number; windowMs: number }> = {
-  0: { maxRequests: 30, windowMs: 60_000 },
-  1: { maxRequests: 100, windowMs: 60_000 },
-  2: { maxRequests: 1000, windowMs: 60_000 },
-  3: { maxRequests: Infinity, windowMs: 60_000 },
 }
 
 // ============================================================================
@@ -166,16 +150,24 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   }
 
   // ── RPC Method Routing ──────────────────────────────────────
-  // getIdentity()       → this.identityService.get()            (Phase 4)
-  // createIdentity()    → this.identityService.create()         (Phase 4)
-  // provisionAnonymous()→ this.identityService.create() + DO session (Phase 4)
-  // freezeIdentity()    → this.identityService.freeze() + DO session cleanup (Phase 4)
-  // writeAuditEvent()   → this.auditService                   (Phase 2)
-  // queryAuditLog()     → this.auditService                   (Phase 2)
-  // mcpDo/Search/Fetch  → this.entityStore                    (Phase 3)
-  // claim()             → direct (Phase 8)
-  // getSession()        → direct (Phase 6)
-  // createApiKey()      → direct (Phase 5)
+  // getIdentity()          → this.identityService              (Phase 4)
+  // createIdentity()       → this.identityService              (Phase 4)
+  // provisionAnonymous()   → this.identityService + DO session (Phase 4)
+  // freezeIdentity()       → this.identityService + DO cleanup (Phase 4)
+  // writeAuditEvent()      → this.auditService                (Phase 2)
+  // queryAuditLog()        → this.auditService                (Phase 2)
+  // mcpDo/Search/Fetch     → this.entityStore                 (Phase 3)
+  // createApiKey()         → this.keyService.apiKeys           (Phase 5)
+  // listApiKeys()          → this.keyService.apiKeys           (Phase 5)
+  // revokeApiKey()         → this.keyService.apiKeys           (Phase 5)
+  // validateApiKey()       → this.keyService.apiKeys           (Phase 5)
+  // registerAgentKey()     → this.keyService.agentKeys         (Phase 5)
+  // verifyAgentSignature() → this.keyService.agentKeys         (Phase 5)
+  // listAgentKeys()        → this.keyService.agentKeys         (Phase 5)
+  // revokeAgentKey()       → this.keyService.agentKeys         (Phase 5)
+  // checkRateLimit()       → this.keyService.rateLimit         (Phase 5)
+  // claim()                → direct (Phase 8)
+  // getSession()           → direct (Phase 6)
 
   // ─── Service Layer ────────────────────────────────────────────────────
 
@@ -204,6 +196,19 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       this._identityService = new IdentityServiceImpl({ storage: this.ctx.storage, audit: this.auditService })
     }
     return this._identityService
+  }
+
+  private _keyService?: KeyServiceImpl
+
+  private get keyService(): KeyServiceImpl {
+    if (!this._keyService) {
+      this._keyService = new KeyServiceImpl({
+        storage: this.ctx.storage,
+        audit: this.auditService,
+        identity: this.identityService,
+      })
+    }
+    return this._keyService
   }
 
   // ─── Identity Management ──────────────────────────────────────────────
@@ -454,55 +459,17 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
   }
 
-  // ─── Rate Limiting ──────────────────────────────────────────────────
+  // ─── Rate Limiting (delegated to KeyService — Phase 5) ────────────────
 
   async checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{
     allowed: boolean
     remaining: number
     resetAt: number
   }> {
-    const config = RATE_LIMITS[level]
-    if (config.maxRequests === Infinity) {
-      return { allowed: true, remaining: Infinity, resetAt: 0 }
-    }
-
-    const key = `rateLimit:${identityId}`
-    const now = Date.now()
-    const entry = await this.ctx.storage.get<RateLimitEntry>(key)
-
-    if (!entry || now - entry.windowStart > config.windowMs) {
-      // New window — record first request
-      await this.ctx.storage.put(key, {
-        identityId,
-        windowStart: now,
-        requestCount: 1,
-      } satisfies RateLimitEntry)
-      return {
-        allowed: true,
-        remaining: config.maxRequests - 1,
-        resetAt: now + config.windowMs,
-      }
-    }
-
-    const remaining = config.maxRequests - entry.requestCount - 1
-    const resetAt = entry.windowStart + config.windowMs
-
-    if (entry.requestCount >= config.maxRequests) {
-      return { allowed: false, remaining: 0, resetAt }
-    }
-
-    // Increment counter
-    await this.ctx.storage.put(key, {
-      ...entry,
-      requestCount: entry.requestCount + 1,
-    })
-
-    return { allowed: true, remaining: Math.max(0, remaining), resetAt }
+    return this.keyService.rateLimit.check(identityId, level)
   }
 
-  // ─── API Key Management ───────────────────────────────────────────────
-
-  static readonly VALID_SCOPES = new Set(['read', 'write', 'admin'])
+  // ─── API Key Management (delegated to KeyService — Phase 5) ───────────
 
   async createApiKey(data: {
     name: string
@@ -510,95 +477,24 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     scopes?: string[]
     expiresAt?: string
   }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string }> {
-    if (!data.name) throw new Error('name is required')
-
-    const scopes = data.scopes ?? ['read', 'write']
-    for (const s of scopes) {
-      if (!IdentityDO.VALID_SCOPES.has(s)) throw new Error(`Invalid scope: ${s}`)
-    }
-
-    if (data.expiresAt) {
-      const expiry = new Date(data.expiresAt).getTime()
-      if (expiry <= Date.now()) throw new Error('expiresAt must be in the future')
-    }
-
-    const id = crypto.randomUUID()
-    const key = `hly_sk_${crypto.randomUUID().replace(/-/g, '')}${crypto.randomUUID().replace(/-/g, '')}`
-    const prefix = key.slice(0, 15)
-    const now = new Date().toISOString()
-
-    await this.ctx.storage.put(`apikey:${id}`, {
-      id,
-      key,
-      name: data.name,
-      prefix,
-      identityId: data.identityId,
-      scopes,
-      status: 'active',
-      createdAt: now,
-      expiresAt: data.expiresAt ?? undefined,
-      requestCount: 0,
-    })
-
-    // Index by key for lookup
-    await this.ctx.storage.put(`apikey-lookup:${key}`, id)
-
-    const result: { id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string } = {
-      id, key, name: data.name, prefix, scopes, createdAt: now,
-    }
-    if (data.expiresAt) result.expiresAt = data.expiresAt
-    return result
+    const result = await this.keyService.apiKeys.create(data)
+    if (!result.success) throw new Error(result.error.message)
+    return result.data
   }
 
   async listApiKeys(identityId: string): Promise<Array<{
     id: string; name: string; prefix: string; scopes: string[]; status: string;
     createdAt: string; expiresAt?: string; lastUsedAt?: string
   }>> {
-    const entries = await this.ctx.storage.list<any>({ prefix: 'apikey:' })
-    const keys: Array<{
-      id: string; name: string; prefix: string; scopes: string[]; status: string;
-      createdAt: string; expiresAt?: string; lastUsedAt?: string
-    }> = []
-
-    for (const [key, value] of entries) {
-      if (key.startsWith('apikey-lookup:')) continue
-      if (value.identityId !== identityId) continue
-      keys.push({
-        id: value.id,
-        name: value.name,
-        prefix: value.prefix ?? (value.key ? value.key.slice(0, 15) : ''),
-        scopes: value.scopes ?? ['read', 'write'],
-        status: value.status ?? (value.enabled === false ? 'revoked' : 'active'),
-        createdAt: value.createdAt ?? new Date(0).toISOString(),
-        expiresAt: value.expiresAt,
-        lastUsedAt: value.lastUsedAt,
-      })
-    }
-
-    return keys
+    return this.keyService.apiKeys.list(identityId)
   }
 
   async revokeApiKey(keyId: string, identityId: string): Promise<{
     id: string; status: string; revokedAt: string; key?: string
   } | null> {
-    const apiKey = await this.ctx.storage.get<any>(`apikey:${keyId}`)
-    if (!apiKey) return null
-    if (apiKey.identityId !== identityId) return null
-
-    const revokedAt = new Date().toISOString()
-    await this.ctx.storage.put(`apikey:${keyId}`, {
-      ...apiKey,
-      status: 'revoked',
-      enabled: false,
-      revokedAt,
-    })
-
-    // Remove lookup index so the key can't be used for auth
-    if (apiKey.key) {
-      await this.ctx.storage.delete(`apikey-lookup:${apiKey.key}`)
-    }
-
-    return { id: keyId, status: 'revoked', revokedAt, key: apiKey.key }
+    const result = await this.keyService.apiKeys.revoke(keyId, identityId)
+    if (!result.success) return null
+    return result.data
   }
 
   async validateApiKey(key: string): Promise<{
@@ -607,164 +503,33 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     scopes?: string[]
     level?: CapabilityLevel
   }> {
-    const id = await this.ctx.storage.get<string>(`apikey-lookup:${key}`)
-    if (!id) return { valid: false }
-
-    const apiKey = await this.ctx.storage.get<any>(`apikey:${id}`)
-    if (!apiKey) return { valid: false }
-    if (apiKey.status === 'revoked' || apiKey.enabled === false) return { valid: false }
-
-    // Check expiry
-    if (apiKey.expiresAt) {
-      const expiry = new Date(apiKey.expiresAt).getTime()
-      if (Date.now() > expiry) return { valid: false }
-    }
-
-    const identity = await this.getIdentity(apiKey.identityId)
-    if (!identity) return { valid: false }
-
-    // Update last used
-    const now = new Date().toISOString()
-    await this.ctx.storage.put(`apikey:${id}`, {
-      ...apiKey,
-      lastUsedAt: now,
-      requestCount: (apiKey.requestCount ?? 0) + 1,
-    })
-
-    return {
-      valid: true,
-      identityId: apiKey.identityId,
-      scopes: apiKey.scopes,
-      level: identity.level,
-    }
+    const result = await this.keyService.apiKeys.validate(key)
+    if (!result.success) return { valid: false }
+    return result.data
   }
 
-  // ─── Agent Key Management ───────────────────────────────────────────
+  // ─── Agent Key Management (delegated to KeyService — Phase 5) ─────────
 
-  /**
-   * Register an Ed25519 public key for an agent identity.
-   *
-   * Accepts the public key in base64, PEM, or raw hex format.
-   * Computes the DID (did:agent:ed25519:{base58pubkey}) and stores
-   * the key in DO storage indexed by both key ID and DID.
-   */
   async registerAgentKey(data: {
     identityId: string
-    publicKey: string // base64 or PEM format
+    publicKey: string
     label?: string
   }): Promise<{ id: string; did: string }> {
-    // Verify the identity exists
-    const identity = await this.getIdentity(data.identityId)
-    if (!identity) {
-      throw new Error('Identity not found')
-    }
-
-    // Parse the public key — accept PEM or base64
-    let rawPublicKey: Uint8Array
-    try {
-      if (data.publicKey.includes('-----BEGIN PUBLIC KEY-----')) {
-        rawPublicKey = pemToPublicKey(data.publicKey)
-      } else {
-        rawPublicKey = base64Decode(data.publicKey)
-      }
-    } catch (err: any) {
-      throw new Error(`Invalid public key format: ${err.message}`)
-    }
-
-    if (rawPublicKey.length !== 32) {
-      throw new Error(`Expected 32-byte Ed25519 public key, got ${rawPublicKey.length} bytes`)
-    }
-
-    // Compute DID
-    const did = publicKeyToDID(rawPublicKey)
-
-    // Check for duplicate DID
-    const existingKey = await this.ctx.storage.get<any>(`agentkey-did:${did}`)
-    if (existingKey) {
-      throw new Error(`An agent key with DID ${did} is already registered`)
-    }
-
-    // Store the key
-    const id = crypto.randomUUID()
-    const keyRecord = {
-      id,
-      identityId: data.identityId,
-      publicKey: base64Encode(rawPublicKey),
-      algorithm: 'Ed25519',
-      did,
-      label: data.label,
-      createdAt: Date.now(),
-      revokedAt: null as number | null,
-    }
-
-    await this.ctx.storage.put(`agentkey:${id}`, keyRecord)
-    // Index by DID for fast lookup during verification
-    await this.ctx.storage.put(`agentkey-did:${did}`, id)
-    // Index by identity for listing
-    const identityKeysKey = `agentkeys:${data.identityId}`
-    const existingIds = await this.ctx.storage.get<string[]>(identityKeysKey) ?? []
-    existingIds.push(id)
-    await this.ctx.storage.put(identityKeysKey, existingIds)
-
-    return { id, did }
+    const result = await this.keyService.agentKeys.register(data)
+    if (!result.success) throw new Error(result.error.message)
+    return result.data
   }
 
-  /**
-   * Verify a signed request from an agent.
-   *
-   * Resolves the DID to a stored public key, then verifies the Ed25519
-   * signature over the provided message. Returns the identity ID on success.
-   */
   async verifyAgentSignature(data: {
     did: string
     message: string
-    signature: string // base64
+    signature: string
   }): Promise<{ valid: boolean; identityId?: string }> {
-    // Validate DID format
-    if (!isValidDID(data.did)) {
-      return { valid: false }
-    }
-
-    // Look up the key by DID
-    const keyId = await this.ctx.storage.get<string>(`agentkey-did:${data.did}`)
-    if (!keyId) {
-      return { valid: false }
-    }
-
-    const keyRecord = await this.ctx.storage.get<any>(`agentkey:${keyId}`)
-    if (!keyRecord || keyRecord.revokedAt) {
-      return { valid: false }
-    }
-
-    // Verify the identity is not frozen
-    const identity = await this.getIdentity(keyRecord.identityId)
-    if (!identity || identity.frozen) {
-      return { valid: false }
-    }
-
-    // Verify the Ed25519 signature
-    try {
-      const publicKey = didToPublicKey(data.did)
-      const messageBytes = new TextEncoder().encode(data.message)
-      const signatureBytes = base64Decode(data.signature)
-
-      const valid = await ed25519Verify(messageBytes, signatureBytes, publicKey)
-      if (!valid) {
-        return { valid: false }
-      }
-
-      return { valid: true, identityId: keyRecord.identityId }
-    } catch {
-      return { valid: false }
-    }
+    const result = await this.keyService.agentKeys.verify(data)
+    if (!result.success) return { valid: false }
+    return result.data
   }
 
-  /**
-   * List all agent keys for an identity.
-   *
-   * Returns non-revoked keys by default. Revoked keys are excluded
-   * unless they were revoked within the last 30 days (for audit).
-   */
   async listAgentKeys(identityId: string): Promise<Array<{
     id: string
     did: string
@@ -772,53 +537,13 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     createdAt: number
     revokedAt?: number
   }>> {
-    const keyIds = await this.ctx.storage.get<string[]>(`agentkeys:${identityId}`) ?? []
-    const keys: Array<{ id: string; did: string; label?: string; createdAt: number; revokedAt?: number }> = []
-
-    for (const keyId of keyIds) {
-      const keyRecord = await this.ctx.storage.get<any>(`agentkey:${keyId}`)
-      if (!keyRecord) continue
-
-      // Include non-revoked keys and recently-revoked keys (last 30 days)
-      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
-      if (keyRecord.revokedAt && keyRecord.revokedAt < thirtyDaysAgo) continue
-
-      keys.push({
-        id: keyRecord.id,
-        did: keyRecord.did,
-        label: keyRecord.label,
-        createdAt: keyRecord.createdAt,
-        revokedAt: keyRecord.revokedAt ?? undefined,
-      })
-    }
-
-    return keys
+    return this.keyService.agentKeys.list(identityId)
   }
 
-  /**
-   * Revoke an agent key.
-   *
-   * Marks the key as revoked (does not delete it, for audit trail).
-   * Removes the DID index so the key can no longer be used for verification.
-   */
   async revokeAgentKey(keyId: string): Promise<boolean> {
-    const keyRecord = await this.ctx.storage.get<any>(`agentkey:${keyId}`)
-    if (!keyRecord) {
-      return false
-    }
-
-    if (keyRecord.revokedAt) {
-      return false // Already revoked
-    }
-
-    // Mark as revoked
-    keyRecord.revokedAt = Date.now()
-    await this.ctx.storage.put(`agentkey:${keyId}`, keyRecord)
-
-    // Remove DID index so verification fails immediately
-    await this.ctx.storage.delete(`agentkey-did:${keyRecord.did}`)
-
-    return true
+    const result = await this.keyService.agentKeys.revoke(keyId)
+    if (!result.success) return false
+    return result.data
   }
 
   // ─── OAuth Client Seeding ──────────────────────────────────────────
