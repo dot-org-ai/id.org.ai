@@ -755,6 +755,79 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
+  // backfillIndexes()
+  // --------------------------------------------------------------------------
+
+  describe('backfillIndexes()', () => {
+    it('creates indexes for pre-existing identities that have none', async () => {
+      // Seed legacy data directly — no idx: keys
+      const legacyId = 'usr_legacy001'
+      backingMap.set(`identity:${legacyId}`, {
+        id: legacyId,
+        type: 'human',
+        name: 'Legacy User',
+        email: 'legacy@example.com',
+        handle: 'legacy',
+        githubUserId: 'gh_legacy_42',
+        verified: true,
+        level: 2,
+        claimStatus: 'claimed',
+        frozen: false,
+        createdAt: 1700000000000,
+        updatedAt: 1700000001000,
+      })
+
+      // Confirm no indexes exist yet
+      expect(backingMap.has('idx:email:legacy@example.com')).toBe(false)
+      expect(backingMap.has('idx:handle:legacy')).toBe(false)
+      expect(backingMap.has('idx:github:gh_legacy_42')).toBe(false)
+
+      await service.backfillIndexes()
+
+      // Lookups should now work
+      const byEmail = await service.getByEmail('legacy@example.com')
+      expect(byEmail.success).toBe(true)
+      if (byEmail.success) expect(byEmail.data.id).toBe(legacyId)
+
+      const byHandle = await service.getByHandle('legacy')
+      expect(byHandle.success).toBe(true)
+      if (byHandle.success) expect(byHandle.data.id).toBe(legacyId)
+
+      const byGitHub = await service.getByGitHubUserId('gh_legacy_42')
+      expect(byGitHub.success).toBe(true)
+      if (byGitHub.success) expect(byGitHub.data.id).toBe(legacyId)
+    })
+
+    it('is idempotent — calling twice produces no error and lookups still work', async () => {
+      const legacyId = 'usr_legacy002'
+      backingMap.set(`identity:${legacyId}`, {
+        id: legacyId,
+        type: 'human',
+        name: 'Legacy Two',
+        email: 'legacy2@example.com',
+        handle: 'legacy2',
+        verified: true,
+        level: 2,
+        claimStatus: 'claimed',
+        frozen: false,
+        createdAt: 1700000000000,
+        updatedAt: 1700000001000,
+      })
+
+      await service.backfillIndexes()
+      await service.backfillIndexes() // second call — must not throw
+
+      const byEmail = await service.getByEmail('legacy2@example.com')
+      expect(byEmail.success).toBe(true)
+      if (byEmail.success) expect(byEmail.data.id).toBe(legacyId)
+
+      const byHandle = await service.getByHandle('legacy2')
+      expect(byHandle.success).toBe(true)
+      if (byHandle.success) expect(byHandle.data.id).toBe(legacyId)
+    })
+  })
+
+  // --------------------------------------------------------------------------
   // getLinkedAccount()
   // --------------------------------------------------------------------------
 

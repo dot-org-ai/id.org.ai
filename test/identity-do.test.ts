@@ -121,7 +121,7 @@ async function createTestDO() {
   const IdentityDO = mod.IdentityDO
 
   const storage = new MockStorage()
-  const ctx = { storage } as any
+  const ctx = { storage, blockConcurrencyWhile: (fn: () => Promise<void>) => fn() } as any
   const env = {
     SESSIONS: {} as any,
     AUTH_SECRET: 'test-secret',

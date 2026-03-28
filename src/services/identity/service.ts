@@ -412,6 +412,22 @@ export class IdentityServiceImpl implements IdentityWriter {
   }
 
   // --------------------------------------------------------------------------
+  // Infrastructure — backfill
+  // --------------------------------------------------------------------------
+
+  async backfillIndexes(): Promise<void> {
+    const entries = await this.storage.list({ prefix: 'identity:' })
+    for (const [, value] of entries) {
+      const data = value as Record<string, unknown>
+      const id = data.id as string
+      if (!id) continue
+      if (data.email) await this.storage.put(`idx:email:${(data.email as string).toLowerCase()}`, id)
+      if (data.handle) await this.storage.put(`idx:handle:${(data.handle as string).toLowerCase()}`, id)
+      if (data.githubUserId) await this.storage.put(`idx:github:${data.githubUserId}`, id)
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
 

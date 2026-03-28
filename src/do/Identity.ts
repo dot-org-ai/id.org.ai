@@ -154,6 +154,17 @@ const RATE_LIMITS: Record<CapabilityLevel, { maxRequests: number; windowMs: numb
 export class IdentityDO extends DurableObject<IdentityEnv> {
   readonly ns = 'https://id.org.ai'
 
+  constructor(ctx: DurableObjectState, env: IdentityEnv) {
+    super(ctx, env)
+    ctx.blockConcurrencyWhile(async () => {
+      const done = await ctx.storage.get<boolean>('_idx_backfilled')
+      if (!done) {
+        await this.identityService.backfillIndexes()
+        await ctx.storage.put('_idx_backfilled', true)
+      }
+    })
+  }
+
   // ── RPC Method Routing ──────────────────────────────────────
   // getIdentity()       → this.identityService.get()            (Phase 4)
   // createIdentity()    → this.identityService.create()         (Phase 4)
