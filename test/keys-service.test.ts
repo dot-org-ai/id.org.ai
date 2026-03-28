@@ -506,3 +506,31 @@ describe('AgentKeyServiceImpl', () => {
     })
   })
 })
+
+describe('KeyServiceImpl', () => {
+  let storage: DurableObjectStorage
+  let backingMap: Map<string, unknown>
+  let audit: AuditServiceImpl
+
+  beforeEach(() => {
+    backingMap = new Map()
+    storage = createMockStorage(backingMap)
+    audit = new AuditServiceImpl({ storage })
+  })
+
+  it('composes apiKeys, agentKeys, and rateLimit', async () => {
+    const { KeyServiceImpl } = await import('../src/services/keys/service')
+    const svc = new KeyServiceImpl({ storage, audit })
+    expect(svc.apiKeys).toBeDefined()
+    expect(svc.agentKeys).toBeDefined()
+    expect(svc.rateLimit).toBeDefined()
+  })
+
+  it('is importable from barrel export', async () => {
+    const mod = await import('../src/services/keys')
+    expect(mod.KeyServiceImpl).toBeDefined()
+    expect(mod.ApiKeyServiceImpl).toBeDefined()
+    expect(mod.AgentKeyServiceImpl).toBeDefined()
+    expect(mod.RateLimitServiceImpl).toBeDefined()
+  })
+})
