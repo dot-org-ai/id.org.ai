@@ -24,6 +24,7 @@ export default {
       'test/audit-service.test.ts',
       'test/entity-store-service.test.ts',
       'test/identity-service.test.ts',
+      'test/session-service.test.ts',
     ],
     globals: true,
   },
