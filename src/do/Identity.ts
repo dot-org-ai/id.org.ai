@@ -31,6 +31,7 @@ import type { EntityStoreService } from '../services/entity-store'
 import { IdentityServiceImpl } from '../services/identity/service'
 import { KeyServiceImpl } from '../services/keys'
 import { SessionServiceImpl } from '../services/auth/service'
+import { OAuthServiceImpl } from '../services/oauth/service'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../workos'
 
@@ -222,6 +223,28 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       this._sessionService = new SessionServiceImpl({ storage: this.ctx.storage, identityReader: this.identityService })
     }
     return this._sessionService
+  }
+
+  private _oauthService?: OAuthServiceImpl
+
+  private get oauthService(): OAuthServiceImpl {
+    if (!this._oauthService) {
+      this._oauthService = new OAuthServiceImpl({
+        storage: this.ctx.storage,
+        config: {
+          issuer: 'https://id.org.ai',
+          authorizationEndpoint: 'https://id.org.ai/oauth/authorize',
+          tokenEndpoint: 'https://id.org.ai/oauth/token',
+          userinfoEndpoint: 'https://id.org.ai/oauth/userinfo',
+          registrationEndpoint: 'https://id.org.ai/oauth/register',
+          deviceAuthorizationEndpoint: 'https://id.org.ai/oauth/device',
+          revocationEndpoint: 'https://id.org.ai/oauth/revoke',
+          introspectionEndpoint: 'https://id.org.ai/oauth/introspect',
+          jwksUri: 'https://id.org.ai/.well-known/jwks.json',
+        },
+      })
+    }
+    return this._oauthService
   }
 
   // ─── Identity Management ──────────────────────────────────────────────
@@ -510,71 +533,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // ─── OAuth Client Seeding ──────────────────────────────────────────
 
   async ensureCliClient(): Promise<void> {
-    const existing = await this.ctx.storage.get('client:id_org_ai_cli')
-    if (existing) return
-
-    await this.ctx.storage.put('client:id_org_ai_cli', {
-      id: 'id_org_ai_cli',
-      name: 'id.org.ai CLI',
-      redirectUris: [],
-      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
-      responseTypes: [],
-      scopes: ['openid', 'profile', 'email', 'offline_access'],
-      trusted: true,
-      tokenEndpointAuthMethod: 'none',
-      createdAt: Date.now(),
-    })
+    await this.oauthService.ensureDefaultClients()
   }
 
   async ensureOAuthDoClient(): Promise<void> {
-    const existing = await this.ctx.storage.get('client:oauth_do_cli')
-    if (existing) return
-
-    await this.ctx.storage.put('client:oauth_do_cli', {
-      id: 'oauth_do_cli',
-      name: 'oauth.do CLI',
-      redirectUris: [],
-      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
-      responseTypes: [],
-      scopes: ['openid', 'profile', 'email', 'offline_access'],
-      trusted: true,
-      tokenEndpointAuthMethod: 'none',
-      createdAt: Date.now(),
-    })
+    await this.oauthService.ensureDefaultClients()
   }
 
   async ensureWebClients(): Promise<void> {
-    const clients = [
-      {
-        id: 'id_org_ai_dash',
-        name: 'id.org.ai Dashboard',
-        redirectUris: ['https://id.org.ai/dash/profile'],
-        grantTypes: ['authorization_code'],
-        responseTypes: ['code'],
-        scopes: ['openid', 'profile', 'email'],
-        trusted: true,
-        tokenEndpointAuthMethod: 'none',
-        createdAt: Date.now(),
-      },
-      {
-        id: 'id_org_ai_headlessly',
-        name: 'Headless.ly',
-        redirectUris: ['https://headless.ly/dashboard'],
-        grantTypes: ['authorization_code'],
-        responseTypes: ['code'],
-        scopes: ['openid', 'profile', 'email'],
-        trusted: true,
-        tokenEndpointAuthMethod: 'none',
-        createdAt: Date.now(),
-      },
-    ]
-
-    for (const client of clients) {
-      const existing = await this.ctx.storage.get(`client:${client.id}`)
-      if (!existing) {
-        await this.ctx.storage.put(`client:${client.id}`, client)
-      }
-    }
+    await this.oauthService.ensureDefaultClients()
   }
 
   // ─── OAuth Storage (RPC) ───────────────────────────────────────────
