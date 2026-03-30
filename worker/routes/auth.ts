@@ -10,7 +10,7 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, resolveIdentityId } from '../middleware/tenant'
-import { renderLoginPage } from '../views/login'
+import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { SigningKeyManager } from '../../src/jwt/signing'
 import {
@@ -64,7 +64,7 @@ app.get('/login', async (c) => {
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    return renderLoginPage(continueUrl)
+    return renderProviderPicker(continueUrl)
   }
 
   const csrf = crypto.randomUUID()

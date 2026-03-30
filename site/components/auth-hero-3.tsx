@@ -26,11 +26,6 @@ const oauthProviders = [
     href: "#",
   },
   {
-    name: "Continue with X",
-    icon: "simple-icons:x",
-    href: "#",
-  },
-  {
     name: "Continue with LinkedIn",
     icon: "logos:linkedin-icon",
     href: "#",

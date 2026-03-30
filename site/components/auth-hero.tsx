@@ -28,12 +28,6 @@ const oauthProviders = [
     href: '/login?provider=authkit',
   },
   {
-    // TODO: X (Twitter) not available as direct WorkOS provider
-    name: 'Continue with X',
-    icon: 'simple-icons:x',
-    href: '/login?provider=authkit',
-  },
-  {
     // TODO: Enable LinkedInOAuth in WorkOS dashboard, then change to /login?provider=LinkedInOAuth
     name: 'Continue with LinkedIn',
     icon: 'logos:linkedin-icon',
