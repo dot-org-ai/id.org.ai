@@ -30,6 +30,8 @@ import { EntityStoreServiceImpl } from '../services/entity-store'
 import type { EntityStoreService } from '../services/entity-store'
 import { IdentityServiceImpl } from '../services/identity/service'
 import { KeyServiceImpl } from '../services/keys'
+import { SessionServiceImpl } from '../services/auth/service'
+import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../workos'
 
 // ============================================================================
@@ -167,7 +169,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // revokeAgentKey()       → this.keyService.agentKeys         (Phase 5)
   // checkRateLimit()       → this.keyService.rateLimit         (Phase 5)
   // claim()                → direct (Phase 8)
-  // getSession()           → direct (Phase 6)
+  // getSession()           → this.sessionService              (Phase 6)
+  // listSessions()         → this.sessionService              (Phase 6)
+  // findSessionForIdentity → this.sessionService              (Phase 6)
 
   // ─── Service Layer ────────────────────────────────────────────────────
 
@@ -211,6 +215,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     return this._keyService
   }
 
+  private _sessionService?: SessionServiceImpl
+
+  private get sessionService(): SessionServiceImpl {
+    if (!this._sessionService) {
+      this._sessionService = new SessionServiceImpl({ storage: this.ctx.storage, identityReader: this.identityService })
+    }
+    return this._sessionService
+  }
+
   // ─── Identity Management ──────────────────────────────────────────────
 
   async createIdentity(data: {
@@ -250,14 +263,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     if (!result.success) throw new Error(result.error.message)
 
     const { identity, claimToken } = result.data
-    const sessionToken = `ses_${crypto.randomUUID().replace(/-/g, '')}`
 
-    await this.ctx.storage.put(`session:${sessionToken}`, {
-      identityId: identity.id,
-      level: 1,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24h TTL
-    })
+    // Session creation delegated to SessionService (Phase 6)
+    const sessionResult = await this.sessionService.create(identity.id, 1, 86400000)
+    if (!sessionResult.success) throw new Error('Failed to create session')
+    const sessionToken = sessionResult.data.token
 
     return { identity, sessionToken, claimToken }
   }
@@ -366,33 +376,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     level?: CapabilityLevel
     expiresAt?: number
   }> {
-    if (!token.startsWith('ses_')) {
-      return { valid: false }
-    }
-
-    const session = await this.ctx.storage.get<SessionData>(`session:${token}`)
-    if (!session) {
-      return { valid: false }
-    }
-
-    if (Date.now() > session.expiresAt) {
-      // Clean up expired session
-      await this.ctx.storage.delete(`session:${token}`)
-      return { valid: false }
-    }
-
-    // Verify the identity still exists and is not frozen
-    const result = await this.identityService.get(session.identityId)
-    if (!result.success || result.data.frozen) {
-      return { valid: false }
-    }
-
-    return {
-      valid: true,
-      identityId: session.identityId,
-      level: session.level,
-      expiresAt: session.expiresAt,
-    }
+    return this.sessionService.get(token)
   }
 
   async listSessions(identityId: string): Promise<Array<{
@@ -400,31 +384,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     createdAt: number
     expiresAt: number
   }>> {
-    const entries = await this.ctx.storage.list<SessionData>({ prefix: 'session:' })
-    const sessions: Array<{ token: string; createdAt: number; expiresAt: number }> = []
-    const now = Date.now()
-
-    for (const [key, value] of entries) {
-      if (value.identityId === identityId && value.expiresAt > now) {
-        sessions.push({
-          token: key.slice('session:'.length),
-          createdAt: value.createdAt,
-          expiresAt: value.expiresAt,
-        })
-      }
-    }
-
-    return sessions
+    return this.sessionService.list(identityId)
   }
 
-  private async findSessionForIdentity(identityId: string): Promise<SessionData | null> {
-    const entries = await this.ctx.storage.list<SessionData>({ prefix: 'session:' })
-    for (const [, value] of entries) {
-      if (value.identityId === identityId) {
-        return value
-      }
-    }
-    return null
+  private async findSessionForIdentity(identityId: string): Promise<AuthSessionData | null> {
+    return this.sessionService.findForIdentity(identityId)
   }
 
   // ─── Freeze Identity ────────────────────────────────────────────────
@@ -438,11 +402,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     const result = await this.identityService.freeze(id, 'user-initiated')
     if (!result.success) throw new Error(result.error.message)
 
-    // Session cleanup stays in DO until Auth service extraction (Phase 6)
-    const sessions = await this.listSessions(id)
-    for (const session of sessions) {
-      await this.ctx.storage.delete(`session:${session.token}`)
-    }
+    // Session cleanup delegated to SessionService (Phase 6)
+    const sessionCount = await this.sessionService.deleteAllForIdentity(id)
 
     // Stats counting stays in DO (cross-domain concern)
     const entityEntries = await this.ctx.storage.list({ prefix: `entity:${id}:` })
@@ -453,7 +414,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       stats: {
         entities: entityEntries.size,
         events: eventEntries.size,
-        sessions: sessions.length,
+        sessions: sessionCount,
       },
       expiresAt: result.data.frozenAt! + 30 * 24 * 60 * 60 * 1000,
     }
