@@ -25,6 +25,7 @@ export default {
       'test/entity-store-service.test.ts',
       'test/identity-service.test.ts',
       'test/session-service.test.ts',
+      'test/oauth-facade-service.test.ts',
     ],
     globals: true,
   },
