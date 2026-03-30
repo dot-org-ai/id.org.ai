@@ -27,8 +27,6 @@ import { corsMiddleware, originValidationMiddleware, isAllowedOrigin, validateOr
 import * as jose from 'jose'
 import { IdentityDO } from '../src/do/Identity'
 import type { IdentityStub } from '../src/do/Identity'
-import { MCPAuth } from '../src/mcp/auth'
-import type { MCPAuthResult } from '../src/mcp/auth'
 import type { Env, Variables, AuthRPCResult, AuthUser, VerifyResult } from './types'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from './utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from './utils/extract'
@@ -42,7 +40,6 @@ import {
   identityStubMiddleware,
 } from './middleware/tenant'
 import { renderLandingPage } from './views/landing'
-import { dispatchTool } from '../src/mcp/tools'
 import { GitHubApp } from '../src/github/app'
 import type { PushEvent } from '../src/github/app'
 import { oauthRoutes, getOAuthProvider } from './routes/oauth'
@@ -55,7 +52,6 @@ import {
   fetchGitHubUsername,
   fetchOrgInfo,
   updateWorkOSUser,
-  ensurePersonalOrg,
   createWorkOSOrganization,
   createWorkOSMembership,
   listUserOrgMemberships,
@@ -63,7 +59,6 @@ import {
   sendOrgInvitation,
 } from '../src/workos/upstream'
 import { validateWorkOSApiKey } from '../src/workos/apikey'
-import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
 import {
   ensureSCIMTables,
   handleDSyncUserCreated,
@@ -99,6 +94,8 @@ import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, ca
 import { logAuditEvent } from './utils/audit'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
+import { apiKeyRoutes } from './routes/api-keys'
+import { mcpRoutes } from './routes/mcp'
 
 export { IdentityDO }
 
@@ -698,331 +695,8 @@ app.use('/api/*', authenticateRequest)
 app.use('/mcp', authenticateRequest)
 app.use('/mcp/*', authenticateRequest)
 app.route('', auditRoutes)
-
-// ── MCP Endpoint ──────────────────────────────────────────────────────────
-// Returns capabilities based on auth level. This is the entry point for
-// agents connecting via MCP protocol.
-
-app.get('/mcp', async (c) => {
-  const auth = c.get('auth')
-  const meta = MCPAuth.buildMetaStatic(auth)
-
-  return c.json({
-    jsonrpc: '2.0',
-    result: {
-      protocolVersion: '2024-11-05',
-      serverInfo: {
-        name: 'id.org.ai',
-        version: '1.0.0',
-      },
-      capabilities: {
-        tools: buildToolList(auth),
-        resources: buildResourceList(auth),
-      },
-      _meta: meta,
-    },
-  })
-})
-
-app.post('/mcp', async (c) => {
-  const auth = c.get('auth')
-  const stub = c.get('identityStub')
-  const meta = MCPAuth.buildMetaStatic(auth)
-
-  // Rate limit check
-  if (auth.rateLimit && !auth.rateLimit.allowed) {
-    // Audit: rate limit exceeded
-    if (stub && auth.identityId) {
-      await logAuditEvent(stub, {
-        event: AUDIT_EVENTS.RATE_LIMIT_EXCEEDED,
-        actor: auth.identityId,
-        ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
-        userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
-        metadata: { level: auth.level, remaining: auth.rateLimit.remaining },
-      })
-    }
-
-    return c.json(
-      {
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Rate limit exceeded',
-          data: meta,
-        },
-      },
-      429,
-    )
-  }
-
-  const body = (await c.req.json()) as { method?: string; params?: any; id?: string | number }
-
-  // Handle MCP initialize
-  if (body.method === 'initialize') {
-    return c.json({
-      jsonrpc: '2.0',
-      id: body.id,
-      result: {
-        protocolVersion: '2024-11-05',
-        serverInfo: { name: 'id.org.ai', version: '1.0.0' },
-        capabilities: {
-          tools: buildToolList(auth),
-          resources: buildResourceList(auth),
-        },
-        _meta: meta,
-      },
-    })
-  }
-
-  // Handle tools/list
-  if (body.method === 'tools/list') {
-    return c.json({
-      jsonrpc: '2.0',
-      id: body.id,
-      result: {
-        tools: buildToolList(auth),
-        _meta: meta,
-      },
-    })
-  }
-
-  // Handle tools/call — dispatch to tool handlers
-  if (body.method === 'tools/call') {
-    const toolName = body.params?.name as string
-
-    // Check capability level — explore is always available, try requires L1+
-    const toolLevelMap: Record<string, number> = { explore: 0, search: 0, fetch: 0, try: 1, do: 1 }
-    const requiredLevel = toolLevelMap[toolName] ?? 0
-
-    if (requiredLevel > auth.level) {
-      return c.json(
-        {
-          jsonrpc: '2.0',
-          id: body.id,
-          error: {
-            code: -32601,
-            message: `Tool "${toolName}" requires Level ${requiredLevel}+ authentication`,
-            data: { ...meta, requiredLevel, currentLevel: auth.level },
-          },
-        },
-        403,
-      )
-    }
-
-    // L1+ tools require a DO stub (authenticated identity)
-    if (requiredLevel >= 1 && !stub) {
-      return c.json(
-        {
-          jsonrpc: '2.0',
-          id: body.id,
-          error: {
-            code: -32601,
-            message: `Tool "${toolName}" requires authentication`,
-            data: meta,
-          },
-        },
-        401,
-      )
-    }
-
-    // For L0 tools without a stub, pass a null-safe stub
-    // (explore, search schema-only, and fetch schema-only don't need the DO)
-    const effectiveStub = stub ?? nullStub
-
-    // Dispatch to the tool handler
-    const toolResult = await dispatchTool(toolName, body.params?.arguments ?? {}, effectiveStub, auth)
-
-    return c.json({
-      jsonrpc: '2.0',
-      id: body.id,
-      result: { ...toolResult, _meta: meta },
-    })
-  }
-
-  return c.json(
-    {
-      jsonrpc: '2.0',
-      id: body.id,
-      error: { code: -32601, message: 'Method not found', data: meta },
-    },
-    404,
-  )
-})
-
-
-// ── API Key Management Endpoints ─────────────────────────────────────────
-// CRUD for API keys. Prefers WorkOS API keys when WORKOS_API_KEY is configured,
-// falls back to custom hly_sk_* keys for tenants without WorkOS. Requires L1+.
-
-/**
- * Resolve the user's WorkOS org ID, creating a personal org if needed.
- * Returns the org ID or null if WorkOS is not configured or resolution fails.
- */
-async function resolveOrgForApiKeys(env: Env, identityId: string, stub: IdentityStub): Promise<string | null> {
-  if (!env.WORKOS_API_KEY) return null
-
-  // Extract WorkOS user ID from identity record
-  const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${identityId}` })
-  const record = stored.value as { workosUserId?: string; email?: string; name?: string; organizationId?: string } | null
-  if (!record?.workosUserId) return null
-
-  // If identity already has an org, use it
-  if (record.organizationId) return record.organizationId
-
-  // No org — ensure a personal org exists
-  const result = await ensurePersonalOrg(env.WORKOS_API_KEY, record.workosUserId, record.name, record.email || '')
-  if (!result) return null
-
-  // Persist org ID back to identity record so we don't re-check next time
-  await stub.oauthStorageOp({
-    op: 'put',
-    key: `identity:${identityId}`,
-    value: { ...record, organizationId: result.orgId },
-  })
-
-  return result.orgId
-}
-
-app.post('/api/keys', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to create API keys')
-  }
-
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
-  }
-
-  const body = (await c.req.json().catch(() => ({}))) as {
-    name?: string
-    scopes?: string[]
-    expiresAt?: string
-  }
-
-  if (!body.name) {
-    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
-  }
-
-  // Use WorkOS API keys when configured — WorkOS handles generation, rotation, validation
-  if (c.env.WORKOS_API_KEY) {
-    try {
-      const orgId = await resolveOrgForApiKeys(c.env, auth.identityId, stub)
-      const result = await createWorkOSApiKey(c.env.WORKOS_API_KEY, {
-        name: body.name,
-        organizationId: orgId || undefined,
-        permissions: body.scopes,
-        expiresAt: body.expiresAt,
-      })
-      return c.json({ id: result.id, key: result.key, name: result.name }, 201)
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-    }
-  }
-
-  // Fallback to custom hly_sk_* keys for tenants without WorkOS
-  try {
-    const result = await stub.createApiKey({
-      name: body.name,
-      identityId: auth.identityId,
-      scopes: body.scopes,
-      expiresAt: body.expiresAt,
-    })
-
-    // Write KV mapping so future requests with this key route to the correct DO shard
-    await c.env.SESSIONS.put(`apikey:${result.key}`, auth.identityId)
-
-    return c.json(result, 201)
-  } catch (err: any) {
-    const msg = err.message ?? 'Failed to create API key'
-    if (msg.includes('Invalid scope') || msg.includes('in the future') || msg.includes('required')) {
-      return errorResponse(c, 400, ErrorCode.InvalidRequest, msg)
-    }
-    return errorResponse(c, 500, ErrorCode.ServerError, msg)
-  }
-})
-
-app.get('/api/keys', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to list API keys')
-  }
-
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
-  }
-
-  // Use WorkOS API keys when configured — scoped to user's org
-  if (c.env.WORKOS_API_KEY) {
-    try {
-      const orgId = await resolveOrgForApiKeys(c.env, auth.identityId, stub)
-      const workosKeys = await listWorkOSApiKeys(c.env.WORKOS_API_KEY, orgId || undefined)
-      const keys = workosKeys.map((k) => ({
-        id: k.id,
-        name: k.name,
-        createdAt: k.created_at,
-        lastUsedAt: k.last_used_at,
-      }))
-      return c.json({ keys })
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-    }
-  }
-
-  // Fallback to custom hly_sk_* keys
-  try {
-    const keys = await stub.listApiKeys(auth.identityId)
-    return c.json({ keys })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-  }
-})
-
-app.delete('/api/keys/:id', async (c) => {
-  const auth = c.get('auth')
-  if (!auth.authenticated || !auth.identityId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to revoke API keys')
-  }
-
-  const stub = c.get('identityStub')
-  if (!stub) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
-  }
-
-  const keyId = c.req.param('id')
-
-  // Use WorkOS API keys when configured
-  if (c.env.WORKOS_API_KEY) {
-    try {
-      const revoked = await revokeWorkOSApiKey(c.env.WORKOS_API_KEY, keyId)
-      if (!revoked) {
-        return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to revoke WorkOS API key')
-      }
-      return c.json({ id: keyId, status: 'revoked', revokedAt: new Date().toISOString() })
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-    }
-  }
-
-  // Fallback to custom hly_sk_* keys
-  try {
-    const result = await stub.revokeApiKey(keyId, auth.identityId)
-    if (!result) {
-      return errorResponse(c, 404, ErrorCode.NotFound, 'API key not found')
-    }
-
-    // Clean up KV entry so the revoked key can't route to a DO anymore
-    if (result.key) {
-      await c.env.SESSIONS.delete(`apikey:${result.key}`)
-    }
-
-    // Don't expose the key string in the response
-    return c.json({ id: result.id, status: result.status, revokedAt: result.revokedAt })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
-  }
-})
+app.route('', mcpRoutes)
+app.route('', apiKeyRoutes)
 
 // ── Organization Management Endpoints ────────────────────────────────────
 // CRUD for organizations. Uses WorkOS Organization + Membership APIs.
@@ -1888,64 +1562,6 @@ async function handlePushWithSharding(
 // Null-safe Stub for L0 (Anonymous) Requests
 // ============================================================================
 
-/**
- * A no-op IdentityStub for L0 requests that don't have a real DO.
- * All methods return empty/null results. Only used for schema-only tools
- * (explore, search schema, fetch schema) at L0 that technically receive
- * a stub but never call write methods.
- */
-const nullStub: IdentityStub = {
-  async getIdentity() {
-    return null
-  },
-  async provisionAnonymous() {
-    throw new Error('Not available at L0')
-  },
-  async claim() {
-    return { success: false, error: 'Not available at L0' }
-  },
-  async getSession() {
-    return { valid: false }
-  },
-  async validateApiKey() {
-    return { valid: false }
-  },
-  async createApiKey() {
-    throw new Error('Not available at L0')
-  },
-  async listApiKeys() {
-    return []
-  },
-  async revokeApiKey() {
-    return null
-  },
-  async checkRateLimit() {
-    return { allowed: true, remaining: 30, resetAt: Date.now() + 60_000 }
-  },
-  async verifyClaimToken() {
-    return { valid: false }
-  },
-  async freezeIdentity() {
-    throw new Error('Not available at L0')
-  },
-  async mcpSearch() {
-    return { results: [], total: 0, limit: 20, offset: 0 }
-  },
-  async mcpFetch() {
-    return { type: '', data: null }
-  },
-  async mcpDo() {
-    return { success: false, entity: '', verb: '', error: 'Not available at L0' }
-  },
-  async oauthStorageOp() {
-    return {}
-  },
-  async writeAuditEvent() {},
-  async queryAuditLog() {
-    return { events: [], hasMore: false }
-  },
-}
-
 // ============================================================================
 // WorkOS Webhook Signature Verification
 // ============================================================================
@@ -1997,135 +1613,4 @@ async function verifyWorkOSWebhookSignature(body: string, signatureHeader: strin
   }
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-/**
- * Build the list of MCP tools available at the given auth level.
- *
- * Tools by level:
- *   L0+: explore, search, fetch
- *   L1+: try, do
- */
-function buildToolList(auth: MCPAuthResult): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
-  const tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = []
-
-  // explore — available at all levels (L0+)
-  tools.push({
-    name: 'explore',
-    description: 'Discover all 32 entity schemas with verbs, fields, and relationships. Start here to understand the system.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        type: { type: 'string', description: 'Specific entity type to explore (e.g. Contact, Deal, Subscription). Omit for full system overview.' },
-        depth: {
-          type: 'string',
-          enum: ['summary', 'full'],
-          description: 'Detail level: summary (names + verbs) or full (complete schemas with field types). Default: summary',
-        },
-      },
-    },
-  })
-
-  // search — available at all levels (L0+)
-  tools.push({
-    name: 'search',
-    description: 'Search entities across the graph — schemas, identities, organizations, and data',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search query' },
-        type: { type: 'string', description: 'Entity type to search (e.g. Contact, schema, identity)' },
-        limit: { type: 'number', description: 'Max results (default 10, max 100)' },
-      },
-      required: ['query'],
-    },
-  })
-
-  // fetch — available at all levels (L0+)
-  tools.push({
-    name: 'fetch',
-    description: 'Fetch a specific entity, schema, or session. Use type=schema to get entity definitions.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        type: { type: 'string', description: 'Resource type: schema, identity, session, or any entity name (Contact, Deal, etc.)' },
-        id: { type: 'string', description: 'Resource ID. For schema type, this is the entity name.' },
-        fields: { type: 'array', items: { type: 'string' }, description: 'Optional: specific fields to return' },
-      },
-      required: ['type'],
-    },
-  })
-
-  // try — available at L1+ (requires session)
-  if (auth.level >= 1) {
-    tools.push({
-      name: 'try',
-      description:
-        'Execute-with-rollback. Run a sequence of operations and see the results WITHOUT persisting anything. Shows what would happen: entities created, events emitted, side effects triggered.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          operations: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                entity: { type: 'string', description: 'Entity type (e.g. Contact, Deal, Subscription)' },
-                verb: { type: 'string', description: 'Verb to execute (e.g. create, close, qualify)' },
-                data: { type: 'object', description: 'Operation data' },
-              },
-              required: ['entity', 'verb', 'data'],
-            },
-            description: 'Sequence of operations to simulate (max 50)',
-          },
-        },
-        required: ['operations'],
-      },
-    })
-  }
-
-  // do — available at L1+ (requires session)
-  if (auth.level >= 1) {
-    tools.push({
-      name: 'do',
-      description: 'Execute any action on an entity for real. Creates/updates entities, emits events, triggers workflows.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          entity: { type: 'string', description: 'Entity type (e.g. Contact, Deal, Subscription)' },
-          verb: { type: 'string', description: 'Verb to execute (e.g. create, update, close, qualify)' },
-          data: { type: 'object', description: 'Operation data (fields, values, relationships)' },
-        },
-        required: ['entity', 'verb', 'data'],
-      },
-    })
-  }
-
-  return tools
-}
-
-/**
- * Build the list of MCP resources available at the given auth level.
- */
-function buildResourceList(auth: MCPAuthResult): Array<{ name: string; description: string; uri: string }> {
-  const resources: Array<{ name: string; description: string; uri: string }> = []
-
-  resources.push({
-    name: 'schema',
-    description: 'Identity schema and type definitions',
-    uri: 'id://schema',
-  })
-
-  if (auth.authenticated && auth.identityId) {
-    resources.push({
-      name: 'identity',
-      description: 'Current authenticated identity',
-      uri: `id://identity/${auth.identityId}`,
-    })
-  }
-
-  return resources
-}
 
