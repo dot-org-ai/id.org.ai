@@ -122,6 +122,16 @@ export class OAuthServiceImpl implements OAuthService {
         tokenEndpointAuthMethod: 'none',
       },
       {
+        id: 'auto_dev_cli',
+        name: 'auto.dev CLI',
+        redirectUris: [],
+        grantTypes: ['urn:ietf:params:oauth:grant-type:device_code'],
+        responseTypes: [],
+        scopes: ['openid', 'profile', 'email', 'offline_access'],
+        trusted: true,
+        tokenEndpointAuthMethod: 'none',
+      },
+      {
         id: 'id_org_ai_dash',
         name: 'id.org.ai Dashboard',
         redirectUris: ['https://id.org.ai/dash/profile'],
