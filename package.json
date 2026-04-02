@@ -41,6 +41,18 @@
     "./workos": {
       "types": "./dist/workos/index.d.ts",
       "import": "./dist/workos/index.js"
+    },
+    "./cli/device": {
+      "types": "./dist/cli/device.d.ts",
+      "import": "./dist/cli/device.js"
+    },
+    "./cli/auth": {
+      "types": "./dist/cli/auth.d.ts",
+      "import": "./dist/cli/auth.js"
+    },
+    "./cli/storage": {
+      "types": "./dist/cli/storage.d.ts",
+      "import": "./dist/cli/storage.js"
     }
   },
   "bin": {
