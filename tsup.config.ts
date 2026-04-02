@@ -4,6 +4,9 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/cli/index.ts',
+    'src/cli/device.ts',
+    'src/cli/auth.ts',
+    'src/cli/storage.ts',
     'src/db/index.ts',
     'src/auth/index.ts',
     'src/oauth/index.ts',
