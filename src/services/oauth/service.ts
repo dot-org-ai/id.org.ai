@@ -155,8 +155,8 @@ export class OAuthServiceImpl implements OAuthService {
         id: 'auto_dev_web',
         name: 'auto.dev Web',
         redirectUris: [
-          'https://auto.dev/api/auth/callback/id-org-ai',
-          'http://localhost:3000/api/auth/callback/id-org-ai',
+          'https://auto.dev/api/v2/auth/callback/id-org-ai',
+          'http://localhost:3000/api/v2/auth/callback/id-org-ai',
         ],
         grantTypes: ['authorization_code'],
         responseTypes: ['code'],
