@@ -151,6 +151,19 @@ export class OAuthServiceImpl implements OAuthService {
         trusted: true,
         tokenEndpointAuthMethod: 'none',
       },
+      {
+        id: 'auto_dev_web',
+        name: 'auto.dev Web',
+        redirectUris: [
+          'https://auto.dev/api/auth/callback/id-org-ai',
+          'http://localhost:3000/api/auth/callback/id-org-ai',
+        ],
+        grantTypes: ['authorization_code'],
+        responseTypes: ['code'],
+        scopes: ['openid', 'profile', 'email'],
+        trusted: true,
+        tokenEndpointAuthMethod: 'none',
+      },
     ]
 
     for (const client of defaults) {
