@@ -48,6 +48,8 @@
 // more ergonomic API surface for external consumers.
 // ============================================================================
 
+import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+
 export interface OAuthConfig {
   issuer: string
   authorizationEndpoint: string
@@ -238,15 +240,18 @@ export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
   private getIdentity: (id: string) => Promise<IdentityInfo | null>
+  private signingKeyManager?: SigningKeyManager
 
   constructor(options: {
     storage: StorageLike
     config: OAuthConfig
     getIdentity: (id: string) => Promise<IdentityInfo | null>
+    signingKeyManager?: SigningKeyManager
   }) {
     this.storage = options.storage
     this.config = options.config
     this.getIdentity = options.getIdentity
+    this.signingKeyManager = options.signingKeyManager
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -901,7 +906,7 @@ export class OAuthProvider {
     await this.storage.delete(`code:${code}`)
 
     // ── Issue tokens ────────────────────────────────────────────────────
-    return this.issueTokenPair(clientId, codeData.identityId, codeData.scopes)
+    return this.issueTokenPair(clientId, codeData.identityId, codeData.scopes, undefined, codeData.nonce)
   }
 
   private async handleRefreshTokenGrant(
@@ -1110,6 +1115,7 @@ export class OAuthProvider {
     identityId: string,
     scopes: string[],
     family?: string,
+    nonce?: string,
   ): Promise<Response> {
     const now = Date.now()
     const accessTokenId = generateId('at_')
@@ -1144,12 +1150,38 @@ export class OAuthProvider {
       expirationTtl: REFRESH_TOKEN_TTL + 60,
     })
 
+    // Mint OIDC id_token when openid scope is granted and signing is available
+    let id_token: string | undefined
+    if (this.signingKeyManager && scopes.includes('openid')) {
+      const key = await this.signingKeyManager.getCurrentKey()
+      const identity = await this.getIdentity(identityId)
+
+      const claims: Record<string, unknown> = {
+        sub: identityId,
+      }
+      if (nonce) claims.nonce = nonce
+      if (scopes.includes('email') && identity?.email) {
+        claims.email = identity.email
+        if (identity.emailVerified !== undefined) claims.email_verified = identity.emailVerified
+      }
+      if (scopes.includes('profile') && identity?.name) {
+        claims.name = identity.name
+      }
+
+      id_token = await signJWT(key, claims as AccessTokenClaims, {
+        issuer: this.config.issuer,
+        audience: clientId,
+        expiresIn: 3600,
+      })
+    }
+
     return jsonResponse({
       access_token: accessTokenId,
       token_type: 'Bearer',
       expires_in: ACCESS_TOKEN_TTL,
       refresh_token: refreshTokenId,
       scope: scopes.join(' '),
+      ...(id_token && { id_token }),
     })
   }
 
