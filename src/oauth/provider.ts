@@ -88,6 +88,7 @@ interface AuthorizationCode {
   codeChallengeMethod: 'S256'
   state?: string
   nonce?: string
+  resource?: string
   expiresAt: number
   createdAt: number
 }
@@ -408,6 +409,7 @@ export class OAuthProvider {
     const codeChallenge = params.get('code_challenge') || undefined
     const codeChallengeMethod = params.get('code_challenge_method') || undefined
     const nonce = params.get('nonce') || undefined
+    const resource = params.get('resource') || undefined
 
     // ── Validate client ─────────────────────────────────────────────────
     const client = await this.getClient(clientId)
@@ -468,6 +470,7 @@ export class OAuthProvider {
         codeChallenge,
         codeChallengeMethod: codeChallenge ? 'S256' : undefined,
         nonce,
+        resource,
       })
     }
 
@@ -479,6 +482,7 @@ export class OAuthProvider {
       codeChallengeMethod: 'S256',
       state,
       nonce,
+      resource,
     })
   }
 
@@ -496,6 +500,7 @@ export class OAuthProvider {
     const codeChallenge = body.code_challenge || undefined
     const codeChallengeMethod = body.code_challenge_method || undefined
     const nonce = body.nonce || undefined
+    const resource = body.resource || undefined
     const approved = body.approved === 'true'
 
     const client = await this.getClient(clientId)
@@ -523,6 +528,7 @@ export class OAuthProvider {
       codeChallengeMethod: 'S256',
       state,
       nonce,
+      resource,
     })
   }
 
@@ -910,7 +916,13 @@ export class OAuthProvider {
     await this.storage.delete(`code:${code}`)
 
     // ── Issue tokens ────────────────────────────────────────────────────
-    return this.issueTokenPair(clientId, codeData.identityId, codeData.scopes, undefined, codeData.nonce)
+    return this.issueTokenPair({
+      clientId,
+      identityId: codeData.identityId,
+      scopes: codeData.scopes,
+      nonce: codeData.nonce,
+      resource: codeData.resource,
+    })
   }
 
   private async handleRefreshTokenGrant(
@@ -960,7 +972,12 @@ export class OAuthProvider {
     } satisfies RefreshToken)
 
     // ── Issue new token pair (same family for rotation tracking) ─────────
-    return this.issueTokenPair(clientId, tokenData.identityId, tokenData.scopes, tokenData.family)
+    return this.issueTokenPair({
+      clientId,
+      identityId: tokenData.identityId,
+      scopes: tokenData.scopes,
+      family: tokenData.family,
+    })
   }
 
   private async handleClientCredentialsGrant(
@@ -1060,7 +1077,11 @@ export class OAuthProvider {
         await this.storage.delete(`device-user:${deviceCode.userCode}`)
 
         // Issue tokens
-        return this.issueTokenPair(clientId, deviceCode.identityId, deviceCode.scopes)
+        return this.issueTokenPair({
+          clientId,
+          identityId: deviceCode.identityId,
+          scopes: deviceCode.scopes,
+        })
       }
 
       default:
@@ -1082,6 +1103,7 @@ export class OAuthProvider {
       codeChallengeMethod: 'S256'
       state?: string
       nonce?: string
+      resource?: string
     },
   ): Promise<Response> {
     const codeId = generateId('ac_')
@@ -1097,6 +1119,7 @@ export class OAuthProvider {
       codeChallengeMethod: params.codeChallengeMethod,
       state: params.state,
       nonce: params.nonce,
+      resource: params.resource,
       expiresAt: now + AUTH_CODE_TTL * 1000,
       createdAt: now,
     }
@@ -1114,13 +1137,15 @@ export class OAuthProvider {
     return Response.redirect(redirectUrl.toString(), 302)
   }
 
-  private async issueTokenPair(
-    clientId: string,
-    identityId: string,
-    scopes: string[],
-    family?: string,
-    nonce?: string,
-  ): Promise<Response> {
+  private async issueTokenPair(options: {
+    clientId: string
+    identityId: string
+    scopes: string[]
+    family?: string
+    nonce?: string
+    resource?: string
+  }): Promise<Response> {
+    const { clientId, identityId, scopes, family, nonce, resource } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1265,6 +1290,7 @@ export class OAuthProvider {
       codeChallenge?: string
       codeChallengeMethod?: string
       nonce?: string
+      resource?: string
     },
   ): Response {
     const scopeDescriptions: Record<string, string> = {
@@ -1325,6 +1351,7 @@ export class OAuthProvider {
     ${params.codeChallenge ? `<input type="hidden" name="code_challenge" value="${this.escapeHtml(params.codeChallenge)}">` : ''}
     ${params.codeChallengeMethod ? `<input type="hidden" name="code_challenge_method" value="${this.escapeHtml(params.codeChallengeMethod)}">` : ''}
     ${params.nonce ? `<input type="hidden" name="nonce" value="${this.escapeHtml(params.nonce)}">` : ''}
+    ${params.resource ? `<input type="hidden" name="resource" value="${this.escapeHtml(params.resource)}">` : ''}
     <div class="buttons">
       <button type="submit" name="approved" value="false" class="deny">Deny</button>
       <button type="submit" name="approved" value="true" class="allow">Allow</button>

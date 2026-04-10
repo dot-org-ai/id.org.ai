@@ -114,6 +114,8 @@ export interface OAuthAuthorizationCode {
   upstreamState?: string
   /** Effective issuer for multi-tenant scenarios (stored from X-Issuer header) */
   effectiveIssuer?: string
+  /** RFC 8707 resource indicator — the resource server this code was requested for */
+  resource?: string
   /** Temporary storage for access token JWT during platform exchange flow */
   exchangeAccessToken?: string
   /** Temporary storage for refresh token during platform exchange flow */

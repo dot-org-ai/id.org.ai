@@ -153,12 +153,13 @@ export async function authenticateClient(
 async function signJWTAccessToken(
   claims: AccessTokenClaims,
   options: JWTSigningOptions,
-  expiresIn: number
+  expiresIn: number,
+  audienceOverride?: string,
 ): Promise<string> {
   const key = await options.getSigningKey()
   return signAccessToken(key, claims, {
     issuer: options.issuer,
-    audience: claims.client_id as string | undefined,
+    audience: audienceOverride || (claims.client_id as string | undefined),
     expiresIn,
   })
 }
@@ -237,6 +238,7 @@ export async function handleAuthorizationCodeGrant(
   if (jwtOptions) {
     // Use effectiveIssuer from auth code if set (for multi-tenant support)
     const tokenJwtOptions = authCode.effectiveIssuer ? { ...jwtOptions, issuer: authCode.effectiveIssuer } : jwtOptions
+    const tokenAudience = authCode.resource || undefined
     accessToken = await signJWTAccessToken(
       {
         sub: authCode.userId,
@@ -244,7 +246,8 @@ export async function handleAuthorizationCodeGrant(
         ...(authCode.scope && { scope: authCode.scope }),
       },
       tokenJwtOptions,
-      accessTokenTtl
+      accessTokenTtl,
+      tokenAudience,
     )
     // Note: JWT access tokens are stateless, so we don't store them
     // But we can optionally store metadata for tracking/revocation

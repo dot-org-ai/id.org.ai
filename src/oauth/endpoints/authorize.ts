@@ -177,6 +177,7 @@ export function createAuthorizeHandler(config: AuthorizeHandlerConfig) {
     const codeChallengeMethod = params['code_challenge_method']
     const scope = params['scope']
     const state = params['state']
+    const resource = params['resource']
 
     if (debug) {
       console.log('[OAuth] Authorize request:', { clientId, redirectUri, responseType, scope })
@@ -277,6 +278,7 @@ export function createAuthorizeHandler(config: AuthorizeHandlerConfig) {
       ...(state !== undefined && { state }), // Client's state (will be passed back to client)
       upstreamState, // Server's state for explicit validation in callback
       effectiveIssuer, // Store for multi-tenant token generation
+      ...(resource !== undefined && { resource }), // RFC 8707 resource indicator
       issuedAt: Date.now(),
       expiresAt: Date.now() + authCodeTtl * 1000,
     })
@@ -424,6 +426,7 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
     const state = String(formData['state'] || '')
     const codeChallenge = String(formData['code_challenge'] || '')
     const codeChallengeMethod = String(formData['code_challenge_method'] || 'S256')
+    const resource = String(formData['resource'] || '') || undefined
 
     // Get effective issuer for multi-tenant support
     const effectiveIssuer = getEffectiveIssuer(c)
@@ -496,6 +499,7 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
         codeChallenge,
         codeChallengeMethod: 'S256',
         ...(state && { state }),
+        ...(resource && { resource }),
         issuedAt: Date.now(),
         expiresAt: Date.now() + authCodeTtl * 1000,
       }
@@ -515,6 +519,7 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
       codeChallenge,
       codeChallengeMethod: 'S256',
       ...(state && { state }),
+      ...(resource && { resource }),
       issuedAt: Date.now(),
       expiresAt: Date.now() + authCodeTtl * 1000,
     })
@@ -701,6 +706,7 @@ export function createCallbackHandler(config: AuthorizeHandlerConfig) {
         codeChallengeMethod: 'S256',
         ...(pendingAuth.state !== undefined && { state: pendingAuth.state }),
         ...(pendingAuth.effectiveIssuer !== undefined && { effectiveIssuer: pendingAuth.effectiveIssuer }),
+        ...(pendingAuth.resource !== undefined && { resource: pendingAuth.resource }),
         issuedAt: Date.now(),
         expiresAt: Date.now() + authCodeTtl * 1000,
       })
@@ -789,6 +795,7 @@ export function createConsentPostHandler(config: AuthorizeHandlerConfig) {
       codeChallengeMethod: 'S256',
       ...(pendingAuth.state !== undefined && { state: pendingAuth.state }),
       ...(pendingAuth.effectiveIssuer !== undefined && { effectiveIssuer: pendingAuth.effectiveIssuer }),
+      ...(pendingAuth.resource !== undefined && { resource: pendingAuth.resource }),
       issuedAt: Date.now(),
       expiresAt: Date.now() + authCodeTtl * 1000,
     })
