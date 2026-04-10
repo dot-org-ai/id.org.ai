@@ -242,6 +242,10 @@ export class OAuthProvider {
   private getIdentity: (id: string) => Promise<IdentityInfo | null>
   private signingKeyManager?: SigningKeyManager
 
+  get issuer(): string {
+    return this.config.issuer
+  }
+
   constructor(options: {
     storage: StorageLike
     config: OAuthConfig

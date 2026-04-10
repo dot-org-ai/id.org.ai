@@ -1006,3 +1006,121 @@ describe('CSRF state encoding integration', () => {
     expect(extracted).toBe(decoded!.csrf)
   })
 })
+
+// ============================================================================
+// 11. RFC 8414 OAuth Authorization Server Metadata
+// ============================================================================
+
+describe('RFC 8414 OAuth Authorization Server Metadata (/.well-known/oauth-authorization-server)', () => {
+  // The metadata returned by the worker's /.well-known/oauth-authorization-server route.
+  // These values mirror what getOAuthProvider() configures in worker/routes/oauth.ts.
+
+  const base = 'https://id.org.ai'
+  const expectedMetadata = {
+    issuer: base,
+    authorization_endpoint: `${base}/oauth/authorize`,
+    token_endpoint: `${base}/oauth/token`,
+    registration_endpoint: `${base}/oauth/register`,
+    revocation_endpoint: `${base}/oauth/revoke`,
+    jwks_uri: `${base}/.well-known/jwks.json`,
+    introspection_endpoint: `${base}/oauth/introspect`,
+    userinfo_endpoint: `${base}/oauth/userinfo`,
+    device_authorization_endpoint: `${base}/oauth/device`,
+    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+    response_types_supported: ['code'],
+    grant_types_supported: [
+      'authorization_code',
+      'refresh_token',
+      'client_credentials',
+      'urn:ietf:params:oauth:grant-type:device_code',
+    ],
+    token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
+    code_challenge_methods_supported: ['S256'],
+  }
+
+  it('has issuer set to https://id.org.ai', () => {
+    expect(expectedMetadata.issuer).toBe('https://id.org.ai')
+  })
+
+  it('has authorization_endpoint at /oauth/authorize', () => {
+    expect(expectedMetadata.authorization_endpoint).toBe('https://id.org.ai/oauth/authorize')
+  })
+
+  it('has token_endpoint at /oauth/token', () => {
+    expect(expectedMetadata.token_endpoint).toBe('https://id.org.ai/oauth/token')
+  })
+
+  it('has registration_endpoint at /oauth/register', () => {
+    expect(expectedMetadata.registration_endpoint).toBe('https://id.org.ai/oauth/register')
+  })
+
+  it('has revocation_endpoint at /oauth/revoke', () => {
+    expect(expectedMetadata.revocation_endpoint).toBe('https://id.org.ai/oauth/revoke')
+  })
+
+  it('has jwks_uri pointing to /.well-known/jwks.json', () => {
+    expect(expectedMetadata.jwks_uri).toBe('https://id.org.ai/.well-known/jwks.json')
+  })
+
+  it('has introspection_endpoint at /oauth/introspect', () => {
+    expect(expectedMetadata.introspection_endpoint).toBe('https://id.org.ai/oauth/introspect')
+  })
+
+  it('has userinfo_endpoint at /oauth/userinfo', () => {
+    expect(expectedMetadata.userinfo_endpoint).toBe('https://id.org.ai/oauth/userinfo')
+  })
+
+  it('has device_authorization_endpoint at /oauth/device', () => {
+    expect(expectedMetadata.device_authorization_endpoint).toBe('https://id.org.ai/oauth/device')
+  })
+
+  it('response_types_supported contains only code', () => {
+    expect(expectedMetadata.response_types_supported).toEqual(['code'])
+  })
+
+  it('grant_types_supported contains authorization_code', () => {
+    expect(expectedMetadata.grant_types_supported).toContain('authorization_code')
+  })
+
+  it('grant_types_supported contains refresh_token', () => {
+    expect(expectedMetadata.grant_types_supported).toContain('refresh_token')
+  })
+
+  it('grant_types_supported contains client_credentials', () => {
+    expect(expectedMetadata.grant_types_supported).toContain('client_credentials')
+  })
+
+  it('grant_types_supported contains device_code grant (RFC 8628)', () => {
+    expect(expectedMetadata.grant_types_supported).toContain(
+      'urn:ietf:params:oauth:grant-type:device_code',
+    )
+  })
+
+  it('code_challenge_methods_supported is S256 only', () => {
+    expect(expectedMetadata.code_challenge_methods_supported).toEqual(['S256'])
+  })
+
+  it('scopes_supported includes openid, profile, email, offline_access', () => {
+    expect(expectedMetadata.scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access'])
+  })
+
+  it('token_endpoint_auth_methods_supported includes none, client_secret_basic, client_secret_post', () => {
+    expect(expectedMetadata.token_endpoint_auth_methods_supported).toContain('none')
+    expect(expectedMetadata.token_endpoint_auth_methods_supported).toContain('client_secret_basic')
+    expect(expectedMetadata.token_endpoint_auth_methods_supported).toContain('client_secret_post')
+  })
+
+  it('has all required RFC 8414 fields', () => {
+    const keys = Object.keys(expectedMetadata)
+    expect(keys).toContain('issuer')
+    expect(keys).toContain('authorization_endpoint')
+    expect(keys).toContain('token_endpoint')
+    expect(keys).toContain('jwks_uri')
+    expect(keys).toContain('registration_endpoint')
+    expect(keys).toContain('response_types_supported')
+    expect(keys).toContain('grant_types_supported')
+    expect(keys).toContain('code_challenge_methods_supported')
+    expect(keys).toContain('revocation_endpoint')
+    expect(keys).toContain('introspection_endpoint')
+  })
+})
