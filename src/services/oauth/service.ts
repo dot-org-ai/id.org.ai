@@ -167,7 +167,10 @@ export class OAuthServiceImpl implements OAuthService {
     ]
 
     for (const client of defaults) {
-      await this.storage.put(`client:${client.id}`, { ...client, createdAt: Date.now() })
+      const existing = await this.storage.get(`client:${client.id}`)
+      if (!existing) {
+        await this.storage.put(`client:${client.id}`, { ...client, createdAt: Date.now() })
+      }
     }
   }
 
