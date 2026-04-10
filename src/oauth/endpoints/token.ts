@@ -270,6 +270,7 @@ export async function handleAuthorizationCodeGrant(
     clientId: authCode.clientId,
     userId: authCode.userId,
     ...(authCode.scope !== undefined && { scope: authCode.scope }),
+    ...(authCode.resource !== undefined && { resource: authCode.resource }),
     issuedAt: now,
     ...(refreshExpiresAt !== undefined && { expiresAt: refreshExpiresAt }),
   })
@@ -348,6 +349,8 @@ export async function handleRefreshTokenGrant(
   const now = Date.now()
 
   // Generate access token (JWT if configured, otherwise opaque)
+  // RFC 8707: bind access token to the same resource as the original grant
+  const refreshResource = storedRefresh.resource || undefined
   let accessToken: string
   if (jwtOptions) {
     accessToken = await signJWTAccessToken(
@@ -357,7 +360,8 @@ export async function handleRefreshTokenGrant(
         ...(storedRefresh.scope && { scope: storedRefresh.scope }),
       },
       jwtOptions,
-      accessTokenTtl
+      accessTokenTtl,
+      refreshResource,
     )
   } else {
     accessToken = generateToken(48)
@@ -372,7 +376,7 @@ export async function handleRefreshTokenGrant(
     })
   }
 
-  // Rotate refresh token
+  // Rotate refresh token (RFC 8707: propagate resource binding)
   const refreshExpiresAt = computeRefreshTokenExpiry(refreshTokenTtl, now)
   await storage.revokeRefreshToken(refresh_token)
   await storage.saveRefreshToken({
@@ -380,6 +384,7 @@ export async function handleRefreshTokenGrant(
     clientId: storedRefresh.clientId,
     userId: storedRefresh.userId,
     ...(storedRefresh.scope !== undefined && { scope: storedRefresh.scope }),
+    ...(storedRefresh.resource !== undefined && { resource: storedRefresh.resource }),
     issuedAt: now,
     ...(refreshExpiresAt !== undefined && { expiresAt: refreshExpiresAt }),
   })

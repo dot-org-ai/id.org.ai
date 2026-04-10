@@ -113,6 +113,7 @@ interface RefreshToken {
   revoked: boolean
   expiresAt: number
   createdAt: number
+  resource?: string            // RFC 8707 resource indicator
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -977,6 +978,7 @@ export class OAuthProvider {
       identityId: tokenData.identityId,
       scopes: tokenData.scopes,
       family: tokenData.family,
+      resource: tokenData.resource,
     })
   }
 
@@ -1169,6 +1171,7 @@ export class OAuthProvider {
       revoked: false,
       expiresAt: now + REFRESH_TOKEN_TTL * 1000,
       createdAt: now,
+      ...(resource !== undefined && { resource }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {

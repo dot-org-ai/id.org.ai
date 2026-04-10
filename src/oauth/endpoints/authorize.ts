@@ -179,6 +179,21 @@ export function createAuthorizeHandler(config: AuthorizeHandlerConfig) {
     const state = params['state']
     const resource = params['resource']
 
+    // RFC 8707 §2: resource must be an absolute URI with no fragment
+    if (resource !== undefined) {
+      try {
+        const resourceUrl = new URL(resource)
+        if (resourceUrl.hash) {
+          return c.json({ error: 'invalid_request', error_description: 'resource must not contain a fragment' } as OAuthError, 400)
+        }
+        if (!['https:', 'http:'].includes(resourceUrl.protocol)) {
+          return c.json({ error: 'invalid_request', error_description: 'resource must be an http or https URI' } as OAuthError, 400)
+        }
+      } catch {
+        return c.json({ error: 'invalid_request', error_description: 'resource must be a valid absolute URI' } as OAuthError, 400)
+      }
+    }
+
     if (debug) {
       console.log('[OAuth] Authorize request:', { clientId, redirectUri, responseType, scope })
     }
@@ -428,6 +443,21 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
     const codeChallengeMethod = String(formData['code_challenge_method'] || 'S256')
     const resource = String(formData['resource'] || '') || undefined
 
+    // RFC 8707 §2: resource must be an absolute URI with no fragment
+    if (resource !== undefined) {
+      try {
+        const resourceUrl = new URL(resource)
+        if (resourceUrl.hash) {
+          return c.json({ error: 'invalid_request', error_description: 'resource must not contain a fragment' } as OAuthError, 400)
+        }
+        if (!['https:', 'http:'].includes(resourceUrl.protocol)) {
+          return c.json({ error: 'invalid_request', error_description: 'resource must be an http or https URI' } as OAuthError, 400)
+        }
+      } catch {
+        return c.json({ error: 'invalid_request', error_description: 'resource must be a valid absolute URI' } as OAuthError, 400)
+      }
+    }
+
     // Get effective issuer for multi-tenant support
     const effectiveIssuer = getEffectiveIssuer(c)
 
@@ -499,7 +529,7 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
         codeChallenge,
         codeChallengeMethod: 'S256',
         ...(state && { state }),
-        ...(resource && { resource }),
+        ...(resource !== undefined && { resource }),
         issuedAt: Date.now(),
         expiresAt: Date.now() + authCodeTtl * 1000,
       }
@@ -519,7 +549,7 @@ export function createLoginPostHandler(config: AuthorizeHandlerConfig) {
       codeChallenge,
       codeChallengeMethod: 'S256',
       ...(state && { state }),
-      ...(resource && { resource }),
+      ...(resource !== undefined && { resource }),
       issuedAt: Date.now(),
       expiresAt: Date.now() + authCodeTtl * 1000,
     })

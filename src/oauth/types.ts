@@ -160,6 +160,8 @@ export interface OAuthRefreshToken {
   expiresAt?: number
   /** Whether the token has been revoked */
   revoked?: boolean
+  /** RFC 8707 resource indicator bound to this refresh token */
+  resource?: string
 }
 
 /**
