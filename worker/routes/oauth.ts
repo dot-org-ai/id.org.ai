@@ -17,6 +17,7 @@ import {
   extractCSRFFromCookie,
 } from '../../src/csrf'
 import { AUDIT_EVENTS } from '../../src/audit'
+import { SigningKeyManager } from '../../src/jwt/signing'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -26,6 +27,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(c.env, 'oauth')
+  const signingKeyManager = new SigningKeyManager((op) => stub.oauthStorageOp(op))
   const base = 'https://id.org.ai'
   return new OAuthProvider({
     storage: {
@@ -63,6 +65,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
       if (!identity) return null
       return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
     },
+    signingKeyManager,
   })
 }
 
