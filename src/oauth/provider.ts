@@ -1151,28 +1151,39 @@ export class OAuthProvider {
     })
 
     // Mint OIDC id_token when openid scope is granted and signing is available
-    let id_token: string | undefined
+    let idToken: string | undefined
     if (this.signingKeyManager && scopes.includes('openid')) {
-      const key = await this.signingKeyManager.getCurrentKey()
-      const identity = await this.getIdentity(identityId)
+      try {
+        const key = await this.signingKeyManager.getCurrentKey()
+        const identity = await this.getIdentity(identityId)
 
-      const claims: Record<string, unknown> = {
-        sub: identityId,
-      }
-      if (nonce) claims.nonce = nonce
-      if (scopes.includes('email') && identity?.email) {
-        claims.email = identity.email
-        if (identity.emailVerified !== undefined) claims.email_verified = identity.emailVerified
-      }
-      if (scopes.includes('profile') && identity?.name) {
-        claims.name = identity.name
-      }
+        const claims: Record<string, unknown> = {
+          sub: identityId,
+        }
+        if (nonce) claims.nonce = nonce
+        if (scopes.includes('email') && identity?.email) {
+          claims.email = identity.email
+          if (identity.emailVerified !== undefined) claims.email_verified = identity.emailVerified
+        }
+        if (scopes.includes('profile') && identity?.name) {
+          claims.name = identity.name
+        }
 
-      id_token = await signJWT(key, claims as AccessTokenClaims, {
-        issuer: this.config.issuer,
-        audience: clientId,
-        expiresIn: 3600,
-      })
+        // Compute at_hash (OIDC Core Section 3.1.3.6)
+        const tokenHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessTokenId))
+        const halfHash = new Uint8Array(tokenHash).slice(0, 16)
+        let atHashBinary = ''
+        for (const byte of halfHash) atHashBinary += String.fromCharCode(byte)
+        claims.at_hash = btoa(atHashBinary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+
+        idToken = await signJWT(key, claims as AccessTokenClaims, {
+          issuer: this.config.issuer,
+          audience: clientId,
+          expiresIn: 3600,
+        })
+      } catch {
+        // Signing failure — degrade gracefully, return tokens without id_token
+      }
     }
 
     return jsonResponse({
@@ -1181,7 +1192,7 @@ export class OAuthProvider {
       expires_in: ACCESS_TOKEN_TTL,
       refresh_token: refreshTokenId,
       scope: scopes.join(' '),
-      ...(id_token && { id_token }),
+      ...(idToken && { id_token: idToken }),
     })
   }
 
