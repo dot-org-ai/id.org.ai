@@ -12,6 +12,7 @@
 import { Ok, Err } from '../../foundation'
 import type { Result } from '../../foundation'
 import { NotFoundError, ValidationError } from '../../foundation'
+import type { StorageAdapter } from '../../storage'
 
 // ── Interface ─────────────────────────────────────────────────────────────
 
@@ -47,9 +48,9 @@ export interface EntityStoreService {
 const NON_INDEXED_FIELDS = new Set(['id', 'metadata', 'properties', 'config', 'targeting', 'variants', 'steps', 'trigger', 'filters', 'fields', '$type'])
 
 export class EntityStoreServiceImpl implements EntityStoreService {
-  private readonly storage: DurableObjectStorage
+  private readonly storage: StorageAdapter
 
-  constructor(deps: { storage: DurableObjectStorage }) {
+  constructor(deps: { storage: StorageAdapter }) {
     this.storage = deps.storage
   }
 
@@ -67,12 +68,10 @@ export class EntityStoreServiceImpl implements EntityStoreService {
     const storageKey = `entity:${owner}:${entityType}:${entityId}`
     const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
 
-    const batch: Record<string, unknown> = {}
-    batch[storageKey] = record
+    await this.storage.put(storageKey, record)
     for (const [key, val] of indexes) {
-      batch[key] = val
+      await this.storage.put(key, val)
     }
-    await this.storage.put(batch)
 
     return Ok(record)
   }
@@ -95,16 +94,18 @@ export class EntityStoreServiceImpl implements EntityStoreService {
     }
 
     const indexes = this.indexKeysForEntity(owner, entityType, entityId, existing)
-    const keysToDelete = [storageKey, ...indexes.keys()]
-    await this.storage.delete(keysToDelete)
+    await this.storage.delete(storageKey)
+    for (const key of indexes.keys()) {
+      await this.storage.delete(key)
+    }
 
     return Ok({ deleted: true })
   }
 
   async deleteIndexes(owner: string, entityType: string, entityId: string, record: Record<string, unknown>): Promise<void> {
     const indexes = this.indexKeysForEntity(owner, entityType, entityId, record)
-    if (indexes.size > 0) {
-      await this.storage.delete([...indexes.keys()])
+    for (const key of indexes.keys()) {
+      await this.storage.delete(key)
     }
   }
 

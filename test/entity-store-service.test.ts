@@ -4,161 +4,60 @@
  * Tests generic indexed entity storage: CRUD, secondary indexes, query, and search.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { EntityStoreServiceImpl } from '../src/services/entity-store/service'
 import { isOk, isErr } from '../src/foundation/result'
+import { MemoryStorageAdapter } from '../src/storage'
+import type { StorageAdapter } from '../src/storage'
 
-// ── Mock DurableObjectStorage ─────────────────────────────────────────────
+/** MemoryStorageAdapter subclass that exposes its backing map for test assertions */
+class TestStorageAdapter extends MemoryStorageAdapter {
+  readonly store = new Map<string, unknown>()
 
-function createMockStorage(): DurableObjectStorage {
-  const store = new Map<string, unknown>()
+  override async get<T = unknown>(key: string): Promise<T | undefined> {
+    return this.store.get(key) as T | undefined
+  }
 
-  return {
-    get: vi.fn(async (key: string) => store.get(key)),
-    put: vi.fn(async (key: string | Record<string, unknown>, value?: unknown) => {
-      if (typeof key === 'string') {
-        store.set(key, value)
-      } else {
-        for (const [k, v] of Object.entries(key)) {
-          store.set(k, v)
-        }
+  override async put(key: string, value: unknown): Promise<void> {
+    this.store.set(key, value)
+  }
+
+  override async delete(key: string): Promise<boolean> {
+    return this.store.delete(key)
+  }
+
+  override async list<T = unknown>(options?: {
+    prefix?: string
+    limit?: number
+    start?: string
+    reverse?: boolean
+  }): Promise<Map<string, T>> {
+    const prefix = options?.prefix ?? ''
+    const entries: [string, unknown][] = []
+    for (const [k, v] of this.store) {
+      if (k.startsWith(prefix)) {
+        if (options?.start && k <= options.start) continue
+        entries.push([k, v])
       }
-    }),
-    delete: vi.fn(async (key: string | string[]) => {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) {
-          if (store.has(k)) {
-            store.delete(k)
-            count++
-          }
-        }
-        return count
-      }
-      const had = store.has(key)
-      store.delete(key)
-      return had
-    }),
-    list: vi.fn(async (options?: { prefix?: string; limit?: number; reverse?: boolean; start?: string }) => {
-      const entries = new Map<string, unknown>()
-      const prefix = options?.prefix ?? ''
-      const limit = options?.limit ?? Infinity
-
-      const matchingEntries: Array<[string, unknown]> = []
-      for (const [key, value] of store) {
-        if (key.startsWith(prefix)) {
-          if (options?.start && key <= options.start) continue
-          matchingEntries.push([key, value])
-        }
-      }
-
-      matchingEntries.sort((a, b) => a[0].localeCompare(b[0]))
-
-      for (const [key, value] of matchingEntries.slice(0, limit)) {
-        entries.set(key, value)
-      }
-      return entries
-    }),
-    // Stubs for unused methods
-    getAlarm: vi.fn(async () => null),
-    setAlarm: vi.fn(async () => {}),
-    deleteAlarm: vi.fn(async () => {}),
-    deleteAll: vi.fn(async () => {}),
-    transaction: vi.fn(async (fn: any) => fn({ get: vi.fn(), put: vi.fn(), delete: vi.fn() })),
-    sync: vi.fn(async () => {}),
-    getReader: vi.fn(),
-    getCurrentBookmark: vi.fn(async () => ''),
-    getBookmarkForTime: vi.fn(async () => ''),
-    onNextSessionRestoreBookmark: vi.fn(async () => {}),
-    sql: {} as any,
-    transactionSync: vi.fn((fn: any) => fn()),
-  } as unknown as DurableObjectStorage
-}
-
-/** Helper to inspect raw storage keys */
-function getStoreKeys(storage: DurableObjectStorage): string[] {
-  const store = (storage.list as any).mock as any
-  // Call list with empty prefix to get all keys
-  return []
-}
-
-// We need a way to inspect the raw store. Let's wrap it.
-function createTestStorage() {
-  const store = new Map<string, unknown>()
-  const storage = createMockStorageWithStore(store)
-  return { storage, store }
-}
-
-function createMockStorageWithStore(store: Map<string, unknown>): DurableObjectStorage {
-  return {
-    get: vi.fn(async (key: string) => store.get(key)),
-    put: vi.fn(async (key: string | Record<string, unknown>, value?: unknown) => {
-      if (typeof key === 'string') {
-        store.set(key, value)
-      } else {
-        for (const [k, v] of Object.entries(key)) {
-          store.set(k, v)
-        }
-      }
-    }),
-    delete: vi.fn(async (key: string | string[]) => {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) {
-          if (store.has(k)) {
-            store.delete(k)
-            count++
-          }
-        }
-        return count
-      }
-      const had = store.has(key)
-      store.delete(key)
-      return had
-    }),
-    list: vi.fn(async (options?: { prefix?: string; limit?: number }) => {
-      const entries = new Map<string, unknown>()
-      const prefix = options?.prefix ?? ''
-      const limit = options?.limit ?? Infinity
-
-      const matchingEntries: Array<[string, unknown]> = []
-      for (const [key, value] of store) {
-        if (key.startsWith(prefix)) {
-          matchingEntries.push([key, value])
-        }
-      }
-      matchingEntries.sort((a, b) => a[0].localeCompare(b[0]))
-      for (const [key, value] of matchingEntries.slice(0, limit)) {
-        entries.set(key, value)
-      }
-      return entries
-    }),
-    getAlarm: vi.fn(async () => null),
-    setAlarm: vi.fn(async () => {}),
-    deleteAlarm: vi.fn(async () => {}),
-    deleteAll: vi.fn(async () => {}),
-    transaction: vi.fn(async (fn: any) => fn({ get: vi.fn(), put: vi.fn(), delete: vi.fn() })),
-    sync: vi.fn(async () => {}),
-    getReader: vi.fn(),
-    getCurrentBookmark: vi.fn(async () => ''),
-    getBookmarkForTime: vi.fn(async () => ''),
-    onNextSessionRestoreBookmark: vi.fn(async () => {}),
-    sql: {} as any,
-    transactionSync: vi.fn((fn: any) => fn()),
-  } as unknown as DurableObjectStorage
+    }
+    entries.sort((a, b) => a[0].localeCompare(b[0]))
+    if (options?.reverse) entries.reverse()
+    const limited = options?.limit ? entries.slice(0, options.limit) : entries
+    return new Map(limited) as Map<string, T>
+  }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('EntityStoreService', () => {
   let store: Map<string, unknown>
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let svc: EntityStoreServiceImpl
 
   beforeEach(() => {
-    const t = createTestStorage()
-    store = t.store
-    storage = t.storage
+    const adapter = new TestStorageAdapter()
+    store = adapter.store
+    storage = adapter
     svc = new EntityStoreServiceImpl({ storage })
   })
 
