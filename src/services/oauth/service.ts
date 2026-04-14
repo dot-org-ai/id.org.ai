@@ -35,7 +35,7 @@ export class OAuthServiceImpl implements OAuthService {
   }
 
   async handleAuthorize(request: Request, identityId?: string | null): Promise<Response> {
-    return this.provider.handleAuthorize(request, identityId)
+    return this.provider.handleAuthorize(request, identityId ?? null)
   }
 
   async handleAuthorizeConsent(request: Request, identityId: string): Promise<Response> {
@@ -51,7 +51,7 @@ export class OAuthServiceImpl implements OAuthService {
   }
 
   async handleDeviceVerification(request: Request, identityId?: string | null): Promise<Response> {
-    return this.provider.handleDeviceVerification(request, identityId)
+    return this.provider.handleDeviceVerification(request, identityId ?? null)
   }
 
   async handleUserinfo(request: Request): Promise<Response> {

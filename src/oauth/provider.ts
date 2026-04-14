@@ -89,6 +89,7 @@ interface AuthorizationCode {
   state?: string
   nonce?: string
   resource?: string
+  effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
   expiresAt: number
   createdAt: number
 }
@@ -114,6 +115,7 @@ interface RefreshToken {
   expiresAt: number
   createdAt: number
   resource?: string            // RFC 8707 resource indicator
+  effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -245,6 +247,20 @@ export class OAuthProvider {
   private signingKeyManager?: SigningKeyManager
 
   get issuer(): string {
+    return this.config.issuer
+  }
+
+  /** Resolve effective issuer — respects X-Issuer header for multi-tenant MCP servers */
+  getEffectiveIssuer(request?: Request): string {
+    if (request) {
+      const xIssuer = request.headers.get('X-Issuer')
+      if (xIssuer) {
+        try {
+          new URL(xIssuer)
+          return xIssuer.replace(/\/$/, '')
+        } catch { /* invalid URL, fall through */ }
+      }
+    }
     return this.config.issuer
   }
 
@@ -452,7 +468,8 @@ export class OAuthProvider {
 
     // ── User must be authenticated ──────────────────────────────────────
     if (!identityId) {
-      const loginUrl = new URL('/login', this.config.issuer)
+      const effectiveIssuer = this.getEffectiveIssuer(request)
+      const loginUrl = new URL('/login', effectiveIssuer)
       loginUrl.searchParams.set('continue', request.url)
       return Response.redirect(loginUrl.toString(), 302)
     }
@@ -484,6 +501,7 @@ export class OAuthProvider {
       state,
       nonce,
       resource,
+      effectiveIssuer: this.getEffectiveIssuer(request),
     })
   }
 
@@ -530,6 +548,7 @@ export class OAuthProvider {
       state,
       nonce,
       resource,
+      effectiveIssuer: this.getEffectiveIssuer(request),
     })
   }
 
@@ -923,6 +942,7 @@ export class OAuthProvider {
       scopes: codeData.scopes,
       nonce: codeData.nonce,
       resource: codeData.resource,
+      effectiveIssuer: codeData.effectiveIssuer,
     })
   }
 
@@ -979,6 +999,7 @@ export class OAuthProvider {
       scopes: tokenData.scopes,
       family: tokenData.family,
       resource: tokenData.resource,
+      effectiveIssuer: tokenData.effectiveIssuer,
     })
   }
 
@@ -1106,6 +1127,7 @@ export class OAuthProvider {
       state?: string
       nonce?: string
       resource?: string
+      effectiveIssuer?: string
     },
   ): Promise<Response> {
     const codeId = generateId('ac_')
@@ -1122,6 +1144,7 @@ export class OAuthProvider {
       state: params.state,
       nonce: params.nonce,
       resource: params.resource,
+      effectiveIssuer: params.effectiveIssuer,
       expiresAt: now + AUTH_CODE_TTL * 1000,
       createdAt: now,
     }
@@ -1146,8 +1169,9 @@ export class OAuthProvider {
     family?: string
     nonce?: string
     resource?: string
+    effectiveIssuer?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource } = options
+    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1172,6 +1196,7 @@ export class OAuthProvider {
       expiresAt: now + REFRESH_TOKEN_TTL * 1000,
       createdAt: now,
       ...(resource !== undefined && { resource }),
+      ...(effectiveIssuer !== undefined && { effectiveIssuer }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1209,7 +1234,7 @@ export class OAuthProvider {
         claims.at_hash = btoa(atHashBinary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 
         idToken = await signJWT(key, claims as AccessTokenClaims, {
-          issuer: this.config.issuer,
+          issuer: effectiveIssuer || this.config.issuer,
           audience: clientId,
           expiresIn: 3600,
         })
