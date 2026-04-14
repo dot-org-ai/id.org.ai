@@ -53,6 +53,7 @@ export const ALLOWED_ORIGIN_PATTERNS = [
   /^https?:\/\/([a-z0-9-]+\.)*headless\.ly$/,
   /^https?:\/\/([a-z0-9-]+\.)*org\.ai$/,
   /^https?:\/\/([a-z0-9-]+\.)*[a-z0-9-]+\.do$/,
+  /^https?:\/\/([a-z0-9-]+\.)*auto\.dev$/,
   /^https?:\/\/localhost(:\d+)?$/,
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
 ]
