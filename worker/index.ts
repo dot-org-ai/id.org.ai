@@ -659,6 +659,21 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
   )
 })
 
+// ── OAuth Protected Resource Metadata (RFC 9728) ──────────────────────────────
+// Tells MCP clients which authorization server protects this resource.
+
+app.get('/.well-known/oauth-protected-resource', (c) => {
+  const provider = getOAuthProvider(c)
+  const xIssuer = c.req.header('X-Issuer')
+  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  return c.json({
+    resource: issuer,
+    authorization_servers: [issuer],
+    scopes_supported: ['openid', 'profile', 'email'],
+    bearer_methods_supported: ['header'],
+  }, 200, { 'Cache-Control': 'public, max-age=3600' })
+})
+
 // ── JWKS Endpoint (no auth required) ────────────────────────────────────────
 // Serves the public signing keys for JWT verification by other workers.
 // Other workers verify our JWTs by fetching this endpoint.
