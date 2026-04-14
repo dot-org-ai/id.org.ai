@@ -85,11 +85,19 @@ app.post('/oauth/register', async (c) => {
 app.get('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
-
-  // Generate CSRF token for the consent form
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   // Lazily seed web OAuth clients on first authorize request
   await oauthStub.ensureWebClients()
+
+  // Skip CSRF wrapping for service binding callers — the proxy handles its own security
+  const isServiceBinding = !!c.req.header('X-Issuer')
+
+  if (isServiceBinding) {
+    const provider = getOAuthProvider(c)
+    return provider.handleAuthorize(c.req.raw, identityId)
+  }
+
+  // Generate CSRF token for the consent form (browser-direct requests only)
   const csrfToken = generateCSRFToken()
   // Store the CSRF token in the oauth DO's storage via RPC
   await oauthStub.oauthStorageOp({
