@@ -9,89 +9,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AuditLog, AUDIT_EVENTS } from '../src/audit'
 import type { CSRFToken } from '../src/csrf'
 import { CSRFProtection, generateCSRFToken } from '../src/csrf'
-
-// ── Mock DurableObjectStorage ─────────────────────────────────────────────
-
-function createMockStorage(): DurableObjectStorage {
-  const store = new Map<string, unknown>()
-
-  return {
-    get: vi.fn(async (key: string) => store.get(key)),
-    put: vi.fn(async (key: string | Record<string, unknown>, value?: unknown) => {
-      if (typeof key === 'string') {
-        store.set(key, value)
-      } else {
-        // Batch put
-        for (const [k, v] of Object.entries(key)) {
-          store.set(k, v)
-        }
-      }
-    }),
-    delete: vi.fn(async (key: string | string[]) => {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) {
-          if (store.has(k)) {
-            store.delete(k)
-            count++
-          }
-        }
-        return count
-      }
-      const had = store.has(key)
-      store.delete(key)
-      return had
-    }),
-    list: vi.fn(async (options?: { prefix?: string; limit?: number; reverse?: boolean; start?: string }) => {
-      const entries = new Map<string, unknown>()
-      const prefix = options?.prefix ?? ''
-      const limit = options?.limit ?? Infinity
-
-      // Collect matching entries
-      const matchingEntries: Array<[string, unknown]> = []
-      for (const [key, value] of store) {
-        if (key.startsWith(prefix)) {
-          if (options?.start && key <= options.start) continue
-          matchingEntries.push([key, value])
-        }
-      }
-
-      // Sort keys (lexicographic)
-      matchingEntries.sort((a, b) => {
-        if (options?.reverse) return b[0].localeCompare(a[0])
-        return a[0].localeCompare(b[0])
-      })
-
-      // Apply limit
-      for (let i = 0; i < Math.min(matchingEntries.length, limit); i++) {
-        entries.set(matchingEntries[i][0], matchingEntries[i][1])
-      }
-
-      return entries
-    }),
-    // Minimal stubs for other methods
-    deleteAll: vi.fn(),
-    getAlarm: vi.fn(),
-    setAlarm: vi.fn(),
-    deleteAlarm: vi.fn(),
-    sync: vi.fn(),
-    transaction: vi.fn(),
-    transactionSync: vi.fn(),
-    getCurrentBookmark: vi.fn(),
-    getBookmarkForTime: vi.fn(),
-    onNextSessionRestoreBookmark: vi.fn(),
-    sql: {} as any,
-  } as unknown as DurableObjectStorage
-}
+import { MemoryStorageAdapter } from '../src/storage'
+import type { StorageAdapter } from '../src/storage'
 
 // ── Audit Log Tests ───────────────────────────────────────────────────────
 
 describe('AuditLog', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let auditLog: AuditLog
 
   beforeEach(() => {
-    storage = createMockStorage()
+    storage = new MemoryStorageAdapter()
     auditLog = new AuditLog(storage)
   })
 
@@ -155,7 +83,8 @@ describe('AuditLog', () => {
       expect(event.key).toContain('key.registered')
 
       // Verify it was actually stored
-      expect(storage.put).toHaveBeenCalled()
+      const stored = await storage.get(event.key)
+      expect(stored).toBeDefined()
     })
 
     it('generates unique keys for events at the same timestamp', async () => {
@@ -358,11 +287,11 @@ describe('AUDIT_EVENTS', () => {
 // ── CSRFProtection Class ──────────────────────────────────────────────────
 
 describe('CSRFProtection', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let csrf: CSRFProtection
 
   beforeEach(() => {
-    storage = createMockStorage()
+    storage = new MemoryStorageAdapter()
     csrf = new CSRFProtection(storage)
   })
 
@@ -374,11 +303,11 @@ describe('CSRFProtection', () => {
 
     it('stores the token in DO storage', async () => {
       const token = await csrf.generate()
-      expect(storage.put).toHaveBeenCalledWith(`csrf:${token}`, expect.objectContaining({
-        token,
-        createdAt: expect.any(Number),
-        expiresAt: expect.any(Number),
-      }))
+      const stored = await storage.get<CSRFToken>(`csrf:${token}`)
+      expect(stored).toBeDefined()
+      expect(stored!.token).toBe(token)
+      expect(stored!.createdAt).toEqual(expect.any(Number))
+      expect(stored!.expiresAt).toEqual(expect.any(Number))
     })
 
     it('sets expiration ~30 minutes from now', async () => {

@@ -183,6 +183,8 @@ export function extractCSRFFromCookie(request: Request): string | null {
 // CSRF Validator (uses DO storage for server-side validation)
 // ============================================================================
 
+import type { StorageAdapter } from '../storage'
+
 /**
  * CSRFProtection provides server-side CSRF token management.
  *
@@ -193,9 +195,9 @@ export function extractCSRFFromCookie(request: Request): string | null {
  *   const result = csrf.validate(cookieToken, formToken)
  */
 export class CSRFProtection {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
 
-  constructor(storage: DurableObjectStorage) {
+  constructor(storage: StorageAdapter) {
     this.storage = storage
   }
 

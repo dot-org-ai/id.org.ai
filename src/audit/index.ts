@@ -105,6 +105,8 @@ export const AUDIT_EVENTS = {
 // AuditLog
 // ============================================================================
 
+import type { StorageAdapter } from '../storage'
+
 /**
  * AuditLog writes and queries immutable audit events in DO storage.
  *
@@ -114,9 +116,9 @@ export const AUDIT_EVENTS = {
  *   const { events } = await audit.query({ limit: 50 })
  */
 export class AuditLog {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
 
-  constructor(storage: DurableObjectStorage) {
+  constructor(storage: StorageAdapter) {
     this.storage = storage
   }
 
