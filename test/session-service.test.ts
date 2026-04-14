@@ -3,48 +3,33 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SessionServiceImpl } from '../src/services/auth/service'
 import type { SessionData, CapabilityLevel } from '../src/services/auth/types'
 import type { IdentityReader } from '../src/services/identity/types'
+import type { StorageAdapter } from '../src/storage'
 
-// ── Mock Storage ────────────────────────────────────────────────────────
+// ── Test Storage Helper ────────────────────────────────────────────────
 
-function createMockStorage() {
+function createTestStorage() {
   const store = new Map<string, unknown>()
 
-  const storage = {
-    get: vi.fn(async (key: string) => store.get(key)),
-    put: vi.fn(async (key: string | Record<string, unknown>, value?: unknown) => {
-      if (typeof key === 'string') {
-        store.set(key, value)
-      } else {
-        for (const [k, v] of Object.entries(key)) {
-          store.set(k, v)
-        }
-      }
-    }),
-    delete: vi.fn(async (key: string | string[]) => {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) {
-          if (store.has(k)) { store.delete(k); count++ }
-        }
-        return count
-      }
-      const had = store.has(key)
-      store.delete(key)
-      return had
-    }),
-    list: vi.fn(async (options?: { prefix?: string }) => {
-      const entries = new Map<string, unknown>()
+  const storage: StorageAdapter = {
+    async get<T = unknown>(key: string): Promise<T | undefined> {
+      return store.get(key) as T | undefined
+    },
+    async put(key: string, value: unknown): Promise<void> {
+      store.set(key, value)
+    },
+    async delete(key: string): Promise<boolean> {
+      return store.delete(key)
+    },
+    async list<T = unknown>(options?: { prefix?: string; limit?: number; start?: string; reverse?: boolean }): Promise<Map<string, T>> {
+      const entries = new Map<string, T>()
       for (const [k, v] of store) {
         if (!options?.prefix || k.startsWith(options.prefix)) {
-          entries.set(k, v)
+          entries.set(k, v as T)
         }
       }
       return entries
-    }),
-    deleteAll: vi.fn(),
-    getAlarm: vi.fn(),
-    setAlarm: vi.fn(),
-  } as unknown as DurableObjectStorage
+    },
+  }
 
   return { storage, store }
 }
@@ -82,13 +67,13 @@ function createMockIdentityReader(overrides: { frozen?: boolean; exists?: boolea
 // ============================================================================
 
 describe('SessionServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let store: Map<string, unknown>
   let identityReader: IdentityReader
   let service: SessionServiceImpl
 
   beforeEach(() => {
-    const mock = createMockStorage()
+    const mock = createTestStorage()
     storage = mock.storage
     store = mock.store
     identityReader = createMockIdentityReader()

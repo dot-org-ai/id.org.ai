@@ -2,6 +2,7 @@
 import { Ok } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
 import type { AuthError } from '../../foundation/errors'
+import type { StorageAdapter } from '../../storage'
 import type { IdentityReader } from '../identity/types'
 import type {
   SessionService,
@@ -14,10 +15,10 @@ import type {
 const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 export class SessionServiceImpl implements SessionService {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
   private identityReader: IdentityReader
 
-  constructor(deps: { storage: DurableObjectStorage; identityReader: IdentityReader }) {
+  constructor(deps: { storage: StorageAdapter; identityReader: IdentityReader }) {
     this.storage = deps.storage
     this.identityReader = deps.identityReader
   }
@@ -108,8 +109,8 @@ export class SessionServiceImpl implements SessionService {
       }
     }
 
-    if (keysToDelete.length > 0) {
-      await this.storage.delete(keysToDelete)
+    for (const key of keysToDelete) {
+      await this.storage.delete(key)
     }
 
     return keysToDelete.length
