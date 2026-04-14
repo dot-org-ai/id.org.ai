@@ -8,84 +8,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AuditServiceImpl } from '../src/services/audit/service'
 import { AUDIT_EVENTS } from '../src/audit'
 import { isOk, isErr } from '../src/foundation/result'
-
-// ── Mock DurableObjectStorage ─────────────────────────────────────────────
-
-function createMockStorage(): DurableObjectStorage {
-  const store = new Map<string, unknown>()
-
-  return {
-    get: vi.fn(async (key: string) => store.get(key)),
-    put: vi.fn(async (key: string | Record<string, unknown>, value?: unknown) => {
-      if (typeof key === 'string') {
-        store.set(key, value)
-      } else {
-        for (const [k, v] of Object.entries(key)) {
-          store.set(k, v)
-        }
-      }
-    }),
-    delete: vi.fn(async (key: string | string[]) => {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) {
-          if (store.has(k)) {
-            store.delete(k)
-            count++
-          }
-        }
-        return count
-      }
-      const had = store.has(key)
-      store.delete(key)
-      return had
-    }),
-    list: vi.fn(async (options?: { prefix?: string; limit?: number; reverse?: boolean; start?: string }) => {
-      const entries = new Map<string, unknown>()
-      const prefix = options?.prefix ?? ''
-      const limit = options?.limit ?? Infinity
-
-      const matchingEntries: Array<[string, unknown]> = []
-      for (const [key, value] of store) {
-        if (key.startsWith(prefix)) {
-          if (options?.start && key <= options.start) continue
-          matchingEntries.push([key, value])
-        }
-      }
-
-      matchingEntries.sort((a, b) => {
-        if (options?.reverse) return b[0].localeCompare(a[0])
-        return a[0].localeCompare(b[0])
-      })
-
-      for (let i = 0; i < Math.min(matchingEntries.length, limit); i++) {
-        entries.set(matchingEntries[i][0], matchingEntries[i][1])
-      }
-
-      return entries
-    }),
-    deleteAll: vi.fn(),
-    getAlarm: vi.fn(),
-    setAlarm: vi.fn(),
-    deleteAlarm: vi.fn(),
-    sync: vi.fn(),
-    transaction: vi.fn(),
-    transactionSync: vi.fn(),
-    getCurrentBookmark: vi.fn(),
-    getBookmarkForTime: vi.fn(),
-    onNextSessionRestoreBookmark: vi.fn(),
-    sql: {} as any,
-  } as unknown as DurableObjectStorage
-}
+import { MemoryStorageAdapter } from '../src/storage'
+import type { StorageAdapter } from '../src/storage'
 
 // ── AuditService Tests ────────────────────────────────────────────────────
 
 describe('AuditServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let service: AuditServiceImpl
 
   beforeEach(() => {
-    storage = createMockStorage()
+    storage = new MemoryStorageAdapter()
     service = new AuditServiceImpl({ storage })
   })
 
@@ -179,8 +112,12 @@ describe('AuditServiceImpl', () => {
     })
 
     it('swallows storage errors silently', async () => {
-      const failStorage = createMockStorage()
-      ;(failStorage.put as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('storage failure'))
+      const failStorage: StorageAdapter = {
+        async get() { return undefined },
+        async put() { throw new Error('storage failure') },
+        async delete() { return false },
+        async list() { return new Map() },
+      }
 
       const failService = new AuditServiceImpl({ storage: failStorage })
 

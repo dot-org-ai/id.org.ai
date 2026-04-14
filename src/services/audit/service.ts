@@ -11,6 +11,7 @@ import type { AuditEvent, AuditQueryOptions, AuditQueryResult, StoredAuditEvent 
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
 import { ValidationError } from '../../foundation/errors'
+import type { StorageAdapter } from '../../storage'
 
 // ============================================================================
 // Interface
@@ -29,7 +30,7 @@ export interface AuditService {
 export class AuditServiceImpl implements AuditService {
   private auditLog: AuditLog
 
-  constructor({ storage }: { storage: DurableObjectStorage }) {
+  constructor({ storage }: { storage: StorageAdapter }) {
     this.auditLog = new AuditLog(storage)
   }
 
