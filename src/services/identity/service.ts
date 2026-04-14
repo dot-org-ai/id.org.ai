@@ -1,6 +1,7 @@
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
 import { NotFoundError, ValidationError, ConflictError, AuthError } from '../../foundation/errors'
+import type { StorageAdapter } from '../../storage'
 import type { AuditService } from '../audit/service'
 import type {
   IdentityWriter,
@@ -25,10 +26,10 @@ import type {
 // ============================================================================
 
 export class IdentityServiceImpl implements IdentityWriter {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
   private audit: AuditService
 
-  constructor({ storage, audit }: { storage: DurableObjectStorage; audit: AuditService }) {
+  constructor({ storage, audit }: { storage: StorageAdapter; audit: AuditService }) {
     this.storage = storage
     this.audit = audit
   }
