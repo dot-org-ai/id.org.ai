@@ -128,11 +128,18 @@ app.get('/oauth/authorize', async (c) => {
   return newResponse
 })
 
-// Authorization Consent Submission — CSRF validated
+// Authorization Consent Submission — CSRF validated (skipped for service binding)
 app.post('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
     return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'Authentication required to submit authorization consent')
+  }
+
+  // Skip CSRF validation for service binding callers — the proxy handles its own security
+  const isServiceBinding = !!c.req.header('X-Issuer')
+  if (isServiceBinding) {
+    const provider = getOAuthProvider(c)
+    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
   }
 
   // Extract CSRF token from cookie
