@@ -1,28 +1,29 @@
 // src/services/oauth/service.ts
 
 import { OAuthProvider } from '../../oauth/provider'
+import type { StorageAdapter } from '../../storage'
 import type { OAuthService, OAuthConfig } from './types'
 
 /**
  * OAuthServiceImpl — thin facade over OAuthProvider.
  *
- * Constructs an OAuthProvider with a storage bridge to DurableObjectStorage
- * and delegates all flow handlers directly. Client seeding logic is consolidated
- * from Identity.ts (ensureCliClient + ensureOAuthDoClient + ensureWebClients).
+ * Constructs an OAuthProvider with StorageAdapter and delegates all flow
+ * handlers directly. Client seeding logic is consolidated from Identity.ts
+ * (ensureCliClient + ensureOAuthDoClient + ensureWebClients).
  *
  * NOTE: OAuthProvider.getOpenIDConfiguration() returns a Response. The facade
  * parses it and returns a plain Record to match the OAuthService interface.
  */
 export class OAuthServiceImpl implements OAuthService {
   private provider: OAuthProvider
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
   private config: OAuthConfig
 
-  constructor(deps: { storage: DurableObjectStorage; config: OAuthConfig }) {
+  constructor(deps: { storage: StorageAdapter; config: OAuthConfig }) {
     this.storage = deps.storage
     this.config = deps.config
     this.provider = new OAuthProvider({
-      storage: this.buildStorageBridge(),
+      storage: deps.storage,
       config: deps.config,
       getIdentity: async () => null, // Identity resolution happens at the worker layer, not here
     })
@@ -174,27 +175,4 @@ export class OAuthServiceImpl implements OAuthService {
     }
   }
 
-  // ── Storage Bridge ───────────────────────────────────────────────────
-
-  private buildStorageBridge() {
-    const storage = this.storage
-    return {
-      async get<T = unknown>(key: string): Promise<T | undefined> {
-        const value = await storage.get(key)
-        return (value ?? undefined) as T | undefined
-      },
-      async put(key: string, value: unknown, _options?: { expirationTtl?: number }): Promise<void> {
-        await storage.put(key, value)
-      },
-      async delete(key: string): Promise<boolean> {
-        return !!(await storage.delete(key))
-      },
-      async list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>> {
-        const opts: { prefix?: string; limit?: number } = {}
-        if (options?.prefix) opts.prefix = options.prefix
-        if (options?.limit) opts.limit = options.limit
-        return storage.list(opts) as Promise<Map<string, T>>
-      },
-    }
-  }
 }
