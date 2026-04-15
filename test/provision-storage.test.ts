@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { ProvisionStorage } from '../src/cli/provision-storage'
+import { ProvisionStorage } from '../src/sdk/cli/provision-storage'
 import { mkdtemp, rm } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'

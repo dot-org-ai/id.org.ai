@@ -4,8 +4,8 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/errors'
-import type { AuditQueryOptions } from '../../src/audit'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import type { AuditQueryOptions } from '../../src/sdk/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 

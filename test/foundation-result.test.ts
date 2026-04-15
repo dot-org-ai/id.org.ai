@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Ok, Err, isOk, isErr, map, flatMap, unwrapOr } from '../src/foundation/result'
+import { Ok, Err, isOk, isErr, map, flatMap, unwrapOr } from '../src/sdk/foundation/result'
 
 describe('Ok', () => {
   it('creates { success: true, data: value }', () => {

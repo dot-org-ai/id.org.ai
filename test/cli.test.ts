@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SecureFileTokenStorage, createStorage } from '../src/cli/storage'
-import type { StoredTokenData, TokenStorage } from '../src/cli/storage'
+import { SecureFileTokenStorage, createStorage } from '../src/sdk/cli/storage'
+import type { StoredTokenData, TokenStorage } from '../src/sdk/cli/storage'
 
 // ── Storage Tests ───────────────────────────────────────────────────────────
 

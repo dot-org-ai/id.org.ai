@@ -3,9 +3,9 @@
  * Extracted from worker/index.ts to allow reuse across route modules.
  */
 
-import type { MCPAuthResult } from '../src/mcp/auth'
-import type { IdentityStub } from '../src/do/Identity'
-import type { AuthUser, VerifyResult, AuthResult } from '../src/auth/index.js'
+import type { MCPAuthResult } from '../src/sdk/mcp/auth'
+import type { IdentityStub } from '../src/server/do/Identity'
+import type { AuthUser, VerifyResult, AuthResult } from '../src/sdk/auth/index.js'
 
 export type { MCPAuthResult, IdentityStub, AuthUser, VerifyResult, AuthResult }
 

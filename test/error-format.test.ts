@@ -19,8 +19,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { ErrorCode, errorJson, errorResponse } from '../src/errors'
-import type { ErrorResponse, ErrorCodeValue } from '../src/errors'
+import { ErrorCode, errorJson, errorResponse } from '../src/sdk/errors'
+import type { ErrorResponse, ErrorCodeValue } from '../src/sdk/errors'
 
 // ── ErrorCode Constants ─────────────────────────────────────────────────
 

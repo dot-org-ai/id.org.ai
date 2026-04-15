@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import * as oauthExports from '../src/oauth/index'
-import * as typesExports from '../src/oauth/types'
+import * as oauthExports from '../src/sdk/oauth/index'
+import * as typesExports from '../src/sdk/oauth/types'
 
 describe('OAuth types exports', () => {
   it('exports all types from types.ts via oauth/index.ts', () => {

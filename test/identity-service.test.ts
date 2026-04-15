@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { IdentityServiceImpl } from '../src/services/identity/service'
-import { AuditServiceImpl } from '../src/services/audit/service'
-import { MemoryStorageAdapter } from '../src/storage'
-import type { StorageAdapter } from '../src/storage'
-import type { Identity } from '../src/services/identity/types'
+import { IdentityServiceImpl } from '../src/server/services/identity/service'
+import { AuditServiceImpl } from '../src/server/services/audit/service'
+import { MemoryStorageAdapter } from '../src/sdk/storage'
+import type { StorageAdapter } from '../src/sdk/storage'
+import type { Identity } from '../src/server/services/identity/types'
 
 // ============================================================================
 // Fixtures

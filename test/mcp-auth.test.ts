@@ -8,8 +8,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { MCPAuth } from '../src/mcp/auth'
-import type { IdentityStub, CapabilityLevel } from '../src/do/Identity'
+import { MCPAuth } from '../src/sdk/mcp/auth'
+import type { IdentityStub, CapabilityLevel } from '../src/server/do/Identity'
 
 // ── Mock Identity Stub ──────────────────────────────────────────────────
 

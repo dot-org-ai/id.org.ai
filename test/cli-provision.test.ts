@@ -21,7 +21,7 @@ describe('provisionCommand', () => {
   })
 
   it('provisions and prints human-readable output', async () => {
-    const { provisionCommand } = await import('../src/cli/provision')
+    const { provisionCommand } = await import('../src/sdk/cli/provision')
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -47,7 +47,7 @@ describe('provisionCommand', () => {
   })
 
   it('outputs JSON with --json flag', async () => {
-    const { provisionCommand } = await import('../src/cli/provision')
+    const { provisionCommand } = await import('../src/sdk/cli/provision')
 
     mockFetch.mockResolvedValueOnce({
       ok: true,

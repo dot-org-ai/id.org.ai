@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState, listUserOrgMemberships, listOrgMembers, sendOrgInvitation } from '../src/workos/upstream'
-import { validateWorkOSApiKey } from '../src/workos/apikey'
-import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/workos/keys'
+import { buildWorkOSAuthUrl, exchangeWorkOSCode, encodeLoginState, decodeLoginState, listUserOrgMemberships, listOrgMembers, sendOrgInvitation } from '../src/sdk/workos/upstream'
+import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
+import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../src/sdk/workos/keys'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

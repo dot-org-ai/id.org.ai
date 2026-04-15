@@ -33,7 +33,7 @@ const MOCK_PUBLIC_KEY_B64 = btoa(String.fromCharCode(...MOCK_PUBLIC_KEY))
 const MOCK_DID = 'did:agent:ed25519:MockBase58EncodedPublicKey1234'
 const MOCK_DID_2 = 'did:agent:ed25519:MockBase58EncodedPublicKey5678'
 
-vi.mock('../src/crypto/keys', () => ({
+vi.mock('../src/sdk/crypto/keys', () => ({
   publicKeyToDID: vi.fn((_pk: Uint8Array) => MOCK_DID),
   didToPublicKey: vi.fn((_did: string) => MOCK_PUBLIC_KEY),
   pemToPublicKey: vi.fn((_pem: string) => MOCK_PUBLIC_KEY),
@@ -53,7 +53,7 @@ vi.mock('../src/crypto/keys', () => ({
 }))
 
 // Mock the audit module — writeAuditEvent / queryAuditLog delegate to AuditLog
-vi.mock('../src/audit', () => {
+vi.mock('../src/sdk/audit', () => {
   class AuditLog {
     storage: any
     constructor(storage: any) {
@@ -117,7 +117,7 @@ class MockStorage {
 
 async function createTestDO() {
   // Dynamic import after mocks are set up
-  const mod = await import('../src/do/Identity')
+  const mod = await import('../src/server/do/Identity')
   const IdentityDO = mod.IdentityDO
 
   const storage = new MockStorage()
@@ -910,7 +910,7 @@ describe('IdentityDO', () => {
     })
 
     it('computes DID from public key', async () => {
-      const { publicKeyToDID } = await import('../src/crypto/keys')
+      const { publicKeyToDID } = await import('../src/sdk/crypto/keys')
       const { identity: anon } = await identity.provisionAnonymous()
 
       await identity.registerAgentKey({ identityId: anon.id, publicKey: MOCK_PUBLIC_KEY_B64 })
@@ -927,7 +927,7 @@ describe('IdentityDO', () => {
     })
 
     it('rejects non-32-byte keys', async () => {
-      const { base64Decode } = await import('../src/crypto/keys')
+      const { base64Decode } = await import('../src/sdk/crypto/keys')
       const shortKey = new Uint8Array(16)
       ;(base64Decode as any).mockReturnValueOnce(shortKey)
 
@@ -938,9 +938,9 @@ describe('IdentityDO', () => {
     })
 
     it('accepts PEM format', async () => {
-      const { pemToPublicKey } = await import('../src/crypto/keys')
+      const { pemToPublicKey } = await import('../src/sdk/crypto/keys')
       // Make publicKeyToDID return a different DID for this test
-      const { publicKeyToDID } = await import('../src/crypto/keys')
+      const { publicKeyToDID } = await import('../src/sdk/crypto/keys')
       ;(publicKeyToDID as any).mockReturnValueOnce(MOCK_DID_2)
 
       const { identity: anon } = await identity.provisionAnonymous()
@@ -1001,7 +1001,7 @@ describe('IdentityDO', () => {
     })
 
     it('rejects invalid signature', async () => {
-      const { verify } = await import('../src/crypto/keys')
+      const { verify } = await import('../src/sdk/crypto/keys')
       ;(verify as any).mockResolvedValueOnce(false)
 
       const { identity: anon } = await identity.provisionAnonymous()
@@ -1053,7 +1053,7 @@ describe('IdentityDO', () => {
     })
 
     it('rejects invalid DID format', async () => {
-      const { isValidDID } = await import('../src/crypto/keys')
+      const { isValidDID } = await import('../src/sdk/crypto/keys')
       ;(isValidDID as any).mockReturnValueOnce(false)
 
       const result = await identity.verifyAgentSignature({

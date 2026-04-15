@@ -20,9 +20,9 @@ import {
   signJWT,
   exportPublicKeyToJWKS,
   exportKeysToJWKS,
-} from '../src/jwt/signing'
-import type { SigningKey, AccessTokenClaims } from '../src/jwt/signing'
-import { encodeLoginState, decodeLoginState } from '../src/workos/upstream'
+} from '../src/sdk/jwt/signing'
+import type { SigningKey, AccessTokenClaims } from '../src/sdk/jwt/signing'
+import { encodeLoginState, decodeLoginState } from '../src/sdk/workos/upstream'
 
 // ============================================================================
 // Helpers

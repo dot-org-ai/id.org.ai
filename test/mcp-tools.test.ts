@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { handleExplore, handleTry, handleSearch, handleFetch, handleDo, dispatchTool } from '../src/mcp/tools'
-import type { MCPAuthResult } from '../src/mcp/auth'
-import type { IdentityStub, CapabilityLevel } from '../src/do/Identity'
+import { handleExplore, handleTry, handleSearch, handleFetch, handleDo, dispatchTool } from '../src/sdk/mcp/tools'
+import type { MCPAuthResult } from '../src/sdk/mcp/auth'
+import type { IdentityStub, CapabilityLevel } from '../src/server/do/Identity'
 
 // ── Auth Fixtures ───────────────────────────────────────────────────────
 

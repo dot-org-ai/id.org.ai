@@ -5,11 +5,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { AuditServiceImpl } from '../src/services/audit/service'
-import { AUDIT_EVENTS } from '../src/audit'
-import { isOk, isErr } from '../src/foundation/result'
-import { MemoryStorageAdapter } from '../src/storage'
-import type { StorageAdapter } from '../src/storage'
+import { AuditServiceImpl } from '../src/server/services/audit/service'
+import { AUDIT_EVENTS } from '../src/sdk/audit'
+import { isOk, isErr } from '../src/sdk/foundation/result'
+import { MemoryStorageAdapter } from '../src/sdk/storage'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 // ── AuditService Tests ────────────────────────────────────────────────────
 

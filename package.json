@@ -10,53 +10,57 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
     "./db": {
-      "types": "./dist/db/index.d.ts",
-      "import": "./dist/db/index.js"
+      "types": "./dist/server/db/index.d.ts",
+      "import": "./dist/server/db/index.js"
     },
     "./auth": {
-      "types": "./dist/auth/index.d.ts",
-      "import": "./dist/auth/index.js"
+      "types": "./dist/sdk/auth/index.d.ts",
+      "import": "./dist/sdk/auth/index.js"
     },
     "./oauth": {
-      "types": "./dist/oauth/index.d.ts",
-      "import": "./dist/oauth/index.js"
+      "types": "./dist/sdk/oauth/index.d.ts",
+      "import": "./dist/sdk/oauth/index.js"
     },
     "./mcp": {
-      "types": "./dist/mcp/index.d.ts",
-      "import": "./dist/mcp/index.js"
+      "types": "./dist/sdk/mcp/index.d.ts",
+      "import": "./dist/sdk/mcp/index.js"
     },
     "./github": {
-      "types": "./dist/github/index.d.ts",
-      "import": "./dist/github/index.js"
+      "types": "./dist/sdk/github/index.d.ts",
+      "import": "./dist/sdk/github/index.js"
     },
     "./claim": {
-      "types": "./dist/claim/index.d.ts",
-      "import": "./dist/claim/index.js"
+      "types": "./dist/sdk/claim/index.d.ts",
+      "import": "./dist/sdk/claim/index.js"
     },
     "./jwt": {
-      "types": "./dist/jwt/index.d.ts",
-      "import": "./dist/jwt/index.js"
+      "types": "./dist/sdk/jwt/index.d.ts",
+      "import": "./dist/sdk/jwt/index.js"
     },
     "./workos": {
-      "types": "./dist/workos/index.d.ts",
-      "import": "./dist/workos/index.js"
+      "types": "./dist/sdk/workos/index.d.ts",
+      "import": "./dist/sdk/workos/index.js"
     },
     "./cli/device": {
-      "types": "./dist/cli/device.d.ts",
-      "import": "./dist/cli/device.js"
+      "types": "./dist/sdk/cli/device.d.ts",
+      "import": "./dist/sdk/cli/device.js"
     },
     "./cli/auth": {
-      "types": "./dist/cli/auth.d.ts",
-      "import": "./dist/cli/auth.js"
+      "types": "./dist/sdk/cli/auth.d.ts",
+      "import": "./dist/sdk/cli/auth.js"
     },
     "./cli/storage": {
-      "types": "./dist/cli/storage.d.ts",
-      "import": "./dist/cli/storage.js"
+      "types": "./dist/sdk/cli/storage.d.ts",
+      "import": "./dist/sdk/cli/storage.js"
     }
   },
   "bin": {
-    "id.org.ai": "./dist/cli/index.js"
+    "id.org.ai": "./dist/sdk/cli/index.js"
   },
   "files": [
     "dist",

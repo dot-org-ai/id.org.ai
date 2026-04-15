@@ -4,8 +4,8 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import type { IdentityStub } from '../../src/do/Identity'
-import { errorResponse, ErrorCode } from '../../src/errors'
+import type { IdentityStub } from '../../src/server/do/Identity'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { extractWorkOSUserFromJWT } from '../middleware/tenant'
 import {
   createWorkOSOrganization,
@@ -18,7 +18,7 @@ import {
   extractGitHubId,
   fetchGitHubUsername,
   updateWorkOSUser,
-} from '../../src/workos/upstream'
+} from '../../src/sdk/workos/upstream'
 import {
   ensureSCIMTables,
   handleDSyncUserCreated,
@@ -30,10 +30,10 @@ import {
   handleDSyncGroupUserAdded,
   handleDSyncGroupUserRemoved,
   getAdminPortalUrl,
-} from '../../src/workos/scim'
-import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '../../src/workos/scim'
-import { FGA_RESOURCE_TYPES, defineResourceTypes, checkPermission, shareResource, unshareResource, listAccessible, entityTypeToFGA } from '../../src/workos/fga'
-import type { FGACheckRequest, FGARelation } from '../../src/workos/fga'
+} from '../../src/sdk/workos/scim'
+import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '../../src/sdk/workos/scim'
+import { FGA_RESOURCE_TYPES, defineResourceTypes, checkPermission, shareResource, unshareResource, listAccessible, entityTypeToFGA } from '../../src/sdk/workos/fga'
+import type { FGACheckRequest, FGARelation } from '../../src/sdk/workos/fga'
 import {
   createVaultSecret,
   getVaultSecret,
@@ -44,10 +44,10 @@ import {
   resolveSecret,
   resolveSecrets,
   interpolateSecrets,
-} from '../../src/workos/vault'
-import type { CreateSecretOptions, UpdateSecretOptions } from '../../src/workos/vault'
-import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../../src/workos/pipes'
-import type { PipesProvider } from '../../src/workos/pipes'
+} from '../../src/sdk/workos/vault'
+import type { CreateSecretOptions, UpdateSecretOptions } from '../../src/sdk/workos/vault'
+import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../../src/sdk/workos/pipes'
+import type { PipesProvider } from '../../src/sdk/workos/pipes'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 

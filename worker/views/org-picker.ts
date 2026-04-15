@@ -2,7 +2,7 @@
  * Org picker page renderer for id.org.ai
  */
 import { escapeHtml } from '../utils/html'
-import type { OrgSelectionError } from '../../src/workos/upstream'
+import type { OrgSelectionError } from '../../src/sdk/workos/upstream'
 
 // ── Org Picker Page Renderer ────────────────────────────────────────────────
 export function renderOrgPickerPage(err: OrgSelectionError, state: string): Response {

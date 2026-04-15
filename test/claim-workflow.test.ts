@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildClaimWorkflow } from '../src/claim/workflow'
+import { buildClaimWorkflow } from '../src/sdk/claim/workflow'
 
 describe('buildClaimWorkflow', () => {
   it('generates valid workflow YAML with claim token', () => {

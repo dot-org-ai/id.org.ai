@@ -1,9 +1,9 @@
 // test/session-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { SessionServiceImpl } from '../src/services/auth/service'
-import type { SessionData, CapabilityLevel } from '../src/services/auth/types'
-import type { IdentityReader } from '../src/services/identity/types'
-import type { StorageAdapter } from '../src/storage'
+import { SessionServiceImpl } from '../src/server/services/auth/service'
+import type { SessionData, CapabilityLevel } from '../src/server/services/auth/types'
+import type { IdentityReader } from '../src/server/services/identity/types'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 // ── Test Storage Helper ────────────────────────────────────────────────
 

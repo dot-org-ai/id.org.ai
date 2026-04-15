@@ -5,12 +5,12 @@
 import { Hono } from 'hono'
 import * as jose from 'jose'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/errors'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tenant'
-import { ClaimService } from '../../src/claim/provision'
-import { verifyClaim } from '../../src/claim/verify'
-import { buildClaimWorkflow } from '../../src/claim/workflow'
-import { AUDIT_EVENTS } from '../../src/audit'
+import { ClaimService } from '../../src/sdk/claim/provision'
+import { verifyClaim } from '../../src/sdk/claim/verify'
+import { buildClaimWorkflow } from '../../src/sdk/claim/workflow'
+import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()

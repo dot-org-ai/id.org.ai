@@ -10,7 +10,7 @@ import {
   KeyError,
   toErrorResponse,
   type DomainError,
-} from '../src/foundation/errors'
+} from '../src/sdk/foundation/errors'
 
 describe('NotFoundError', () => {
   it('constructs with correct fields', () => {

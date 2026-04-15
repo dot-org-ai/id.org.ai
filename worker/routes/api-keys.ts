@@ -5,10 +5,10 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import type { IdentityStub } from '../../src/do/Identity'
-import { errorResponse, ErrorCode } from '../../src/errors'
-import { ensurePersonalOrg } from '../../src/workos/upstream'
-import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../../src/workos/keys'
+import type { IdentityStub } from '../../src/server/do/Identity'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { ensurePersonalOrg } from '../../src/sdk/workos/upstream'
+import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../../src/sdk/workos/keys'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 

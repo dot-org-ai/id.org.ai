@@ -23,7 +23,7 @@ import {
   buildWorkOSAuthUrl,
   encodeLoginState,
   decodeLoginState,
-} from '../src/workos/upstream'
+} from '../src/sdk/workos/upstream'
 import {
   isAllowedOrigin,
   generateCSRFToken,
@@ -33,8 +33,8 @@ import {
   decodeStateWithCSRF,
   validateOrigin,
   CSRF_COOKIE_NAME,
-} from '../src/csrf'
-import type { MCPAuthResult } from '../src/mcp/auth'
+} from '../src/sdk/csrf'
+import type { MCPAuthResult } from '../src/sdk/mcp/auth'
 
 // ============================================================================
 // Local re-implementations of worker/index.ts helper functions
@@ -162,7 +162,7 @@ function buildResourceList(auth: MCPAuthResult): Array<{ name: string; descripti
   return resources
 }
 
-import { buildClaimWorkflow } from '../src/claim/workflow'
+import { buildClaimWorkflow } from '../src/sdk/claim/workflow'
 
 /**
  * Mirror of parseCookieValue from worker/index.ts (~line 155).
