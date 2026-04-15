@@ -16,8 +16,8 @@ import {
   ClaimError,
   KeyError,
   toErrorResponse,
-} from '../src/foundation'
-import type { Result, DomainError } from '../src/foundation'
+} from '../src/sdk/foundation'
+import type { Result, DomainError } from '../src/sdk/foundation'
 
 describe('Foundation index re-exports', () => {
   it('exports all Result helpers', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { MemoryStorageAdapter } from '../src/storage'
+import { MemoryStorageAdapter } from '../src/sdk/storage'
 
 describe('MemoryStorageAdapter', () => {
   let storage: MemoryStorageAdapter

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { refreshWorkOSAccessToken } from '../src/workos/upstream'
+import { refreshWorkOSAccessToken } from '../src/sdk/workos/upstream'
 
 describe('refreshWorkOSAccessToken', () => {
   beforeEach(() => {

@@ -5,10 +5,10 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { EntityStoreServiceImpl } from '../src/services/entity-store/service'
-import { isOk, isErr } from '../src/foundation/result'
-import { MemoryStorageAdapter } from '../src/storage'
-import type { StorageAdapter } from '../src/storage'
+import { EntityStoreServiceImpl } from '../src/server/services/entity-store/service'
+import { isOk, isErr } from '../src/sdk/foundation/result'
+import { MemoryStorageAdapter } from '../src/sdk/storage'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 /** MemoryStorageAdapter subclass that exposes its backing map for test assertions */
 class TestStorageAdapter extends MemoryStorageAdapter {

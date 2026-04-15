@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { AuditServiceImpl } from '../src/services/audit/service'
-import { generateKeypair, sign, base64Encode } from '../src/crypto/keys'
-import type { StorageAdapter } from '../src/storage'
+import { AuditServiceImpl } from '../src/server/services/audit/service'
+import { generateKeypair, sign, base64Encode } from '../src/sdk/crypto/keys'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 // ============================================================================
 // Test Storage Helper
@@ -43,12 +43,12 @@ describe('RateLimitServiceImpl', () => {
   })
 
   it('should be importable', async () => {
-    const { RateLimitServiceImpl } = await import('../src/services/keys/rate-limit')
+    const { RateLimitServiceImpl } = await import('../src/server/services/keys/rate-limit')
     expect(RateLimitServiceImpl).toBeDefined()
   })
 
   it('L3 always returns allowed with Infinity remaining', async () => {
-    const { RateLimitServiceImpl } = await import('../src/services/keys/rate-limit')
+    const { RateLimitServiceImpl } = await import('../src/server/services/keys/rate-limit')
     const svc = new RateLimitServiceImpl({ storage })
     const result = await svc.check('usr_1', 3)
     expect(result.allowed).toBe(true)
@@ -57,7 +57,7 @@ describe('RateLimitServiceImpl', () => {
   })
 
   it('L0 allows first request and tracks remaining', async () => {
-    const { RateLimitServiceImpl } = await import('../src/services/keys/rate-limit')
+    const { RateLimitServiceImpl } = await import('../src/server/services/keys/rate-limit')
     const svc = new RateLimitServiceImpl({ storage })
     const result = await svc.check('usr_1', 0)
     expect(result.allowed).toBe(true)
@@ -66,7 +66,7 @@ describe('RateLimitServiceImpl', () => {
   })
 
   it('denies after max requests exceeded', async () => {
-    const { RateLimitServiceImpl } = await import('../src/services/keys/rate-limit')
+    const { RateLimitServiceImpl } = await import('../src/server/services/keys/rate-limit')
     const svc = new RateLimitServiceImpl({ storage })
     // Fill up the window
     for (let i = 0; i < 30; i++) {
@@ -78,7 +78,7 @@ describe('RateLimitServiceImpl', () => {
   })
 
   it('resets after window expires', async () => {
-    const { RateLimitServiceImpl } = await import('../src/services/keys/rate-limit')
+    const { RateLimitServiceImpl } = await import('../src/server/services/keys/rate-limit')
     const svc = new RateLimitServiceImpl({ storage })
     // Pre-seed an expired window
     backingMap.set('rateLimit:usr_1', {
@@ -105,7 +105,7 @@ describe('ApiKeyServiceImpl', () => {
 
   describe('create()', () => {
     it('creates an API key with hly_sk_ prefix', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.create({ name: 'Test Key', identityId: 'usr_1' })
       expect(result.success).toBe(true)
@@ -118,7 +118,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns ValidationError for empty name', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.create({ name: '', identityId: 'usr_1' })
       expect(result.success).toBe(false)
@@ -129,7 +129,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns ValidationError for invalid scope', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.create({ name: 'Key', identityId: 'usr_1', scopes: ['nope'] })
       expect(result.success).toBe(false)
@@ -140,7 +140,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns ValidationError for past expiresAt', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.create({
         name: 'Key',
@@ -157,14 +157,14 @@ describe('ApiKeyServiceImpl', () => {
 
   describe('list()', () => {
     it('returns empty array when no keys exist', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const keys = await svc.list('usr_1')
       expect(keys).toEqual([])
     })
 
     it('returns only keys for the given identity', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       await svc.create({ name: 'Key 1', identityId: 'usr_1' })
       await svc.create({ name: 'Key 2', identityId: 'usr_2' })
@@ -177,7 +177,7 @@ describe('ApiKeyServiceImpl', () => {
 
   describe('revoke()', () => {
     it('revokes an existing key', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const created = await svc.create({ name: 'Key', identityId: 'usr_1' })
       if (!created.success) throw new Error('create failed')
@@ -191,7 +191,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns NotFoundError for non-existent key', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.revoke('nope', 'usr_1')
       expect(result.success).toBe(false)
@@ -199,7 +199,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns KeyError for already-revoked key', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const created = await svc.create({ name: 'Key', identityId: 'usr_1' })
       if (!created.success) throw new Error('create failed')
@@ -211,7 +211,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('prevents validation after revocation', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({
         storage,
         audit,
@@ -229,7 +229,7 @@ describe('ApiKeyServiceImpl', () => {
 
   describe('validate()', () => {
     it('validates a live key and returns identity context', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({
         storage,
         audit,
@@ -249,7 +249,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns valid=false for unknown key', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({ storage, audit })
       const result = await svc.validate('hly_sk_nonexistent')
       expect(result.success).toBe(true)
@@ -257,7 +257,7 @@ describe('ApiKeyServiceImpl', () => {
     })
 
     it('returns valid=false for expired key', async () => {
-      const { ApiKeyServiceImpl } = await import('../src/services/keys/api-keys')
+      const { ApiKeyServiceImpl } = await import('../src/server/services/keys/api-keys')
       const svc = new ApiKeyServiceImpl({
         storage,
         audit,
@@ -288,7 +288,7 @@ describe('AgentKeyServiceImpl', () => {
 
   describe('register()', () => {
     it('registers an Ed25519 key and returns DID', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({
         storage,
         audit,
@@ -308,7 +308,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns NotFoundError for non-existent identity', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({
         storage,
         audit,
@@ -324,7 +324,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns ConflictError for duplicate DID', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({
         storage,
         audit,
@@ -339,7 +339,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns ValidationError for wrong key size', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({
         storage,
         audit,
@@ -355,14 +355,14 @@ describe('AgentKeyServiceImpl', () => {
 
   describe('list()', () => {
     it('returns empty array when no keys exist', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const keys = await svc.list('agt_1')
       expect(keys).toEqual([])
     })
 
     it('lists registered keys', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey), label: 'test' })
@@ -373,7 +373,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('excludes keys revoked more than 30 days ago', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       const reg = await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey) })
@@ -391,7 +391,7 @@ describe('AgentKeyServiceImpl', () => {
 
   describe('revoke()', () => {
     it('revokes an existing key', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       const reg = await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey) })
@@ -403,7 +403,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns NotFoundError for non-existent key', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit })
       const result = await svc.revoke('nope')
       expect(result.success).toBe(false)
@@ -411,7 +411,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns KeyError for already-revoked key', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       const reg = await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey) })
@@ -426,7 +426,7 @@ describe('AgentKeyServiceImpl', () => {
 
   describe('verify()', () => {
     it('verifies a valid signature', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       const reg = await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey) })
@@ -446,7 +446,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns valid=false for invalid DID format', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit })
       const result = await svc.verify({ did: 'not-a-did', message: 'x', signature: 'x' })
       expect(result.success).toBe(true)
@@ -454,7 +454,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns valid=false for revoked key', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({ storage, audit, identityExists: async () => true })
       const kp = await generateKeypair()
       const reg = await svc.register({ identityId: 'agt_1', publicKey: base64Encode(kp.publicKey) })
@@ -471,7 +471,7 @@ describe('AgentKeyServiceImpl', () => {
     })
 
     it('returns valid=false for frozen identity', async () => {
-      const { AgentKeyServiceImpl } = await import('../src/services/keys/agent-keys')
+      const { AgentKeyServiceImpl } = await import('../src/server/services/keys/agent-keys')
       const svc = new AgentKeyServiceImpl({
         storage,
         audit,
@@ -505,7 +505,7 @@ describe('KeyServiceImpl', () => {
   })
 
   it('composes apiKeys, agentKeys, and rateLimit', async () => {
-    const { KeyServiceImpl } = await import('../src/services/keys/service')
+    const { KeyServiceImpl } = await import('../src/server/services/keys/service')
     const svc = new KeyServiceImpl({ storage, audit })
     expect(svc.apiKeys).toBeDefined()
     expect(svc.agentKeys).toBeDefined()
@@ -513,7 +513,7 @@ describe('KeyServiceImpl', () => {
   })
 
   it('is importable from barrel export', async () => {
-    const mod = await import('../src/services/keys')
+    const mod = await import('../src/server/services/keys')
     expect(mod.KeyServiceImpl).toBeDefined()
     expect(mod.ApiKeyServiceImpl).toBeDefined()
     expect(mod.AgentKeyServiceImpl).toBeDefined()

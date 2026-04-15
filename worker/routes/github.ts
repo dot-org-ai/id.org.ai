@@ -4,12 +4,12 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/errors'
-import { GitHubApp } from '../../src/github/app'
-import type { PushEvent } from '../../src/github/app'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { GitHubApp } from '../../src/sdk/github/app'
+import type { PushEvent } from '../../src/sdk/github/app'
 import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tenant'
-import { updateWorkOSUser } from '../../src/workos/upstream'
-import { AUDIT_EVENTS } from '../../src/audit'
+import { updateWorkOSUser } from '../../src/sdk/workos/upstream'
+import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()

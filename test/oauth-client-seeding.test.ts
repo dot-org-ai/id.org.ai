@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { OAuthProvider } from '../src/oauth/provider'
-import type { OAuthConfig } from '../src/oauth/provider'
+import { OAuthProvider } from '../src/sdk/oauth/provider'
+import type { OAuthConfig } from '../src/sdk/oauth/provider'
 
 // ============================================================================
 // Helpers (same pattern as oauth-provider.test.ts)

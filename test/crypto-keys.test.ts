@@ -22,7 +22,7 @@ import {
   signMessage,
   verifyMessage,
   verifyFromDID,
-} from '../src/crypto/keys'
+} from '../src/sdk/crypto/keys'
 
 // ── Base58 Tests ────────────────────────────────────────────────────────
 

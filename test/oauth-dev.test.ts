@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { createTestHelpers, generateLoginFormHtml } from '../src/oauth/dev'
-import type { DevUser, TestHelpers } from '../src/oauth/dev'
-import { MemoryOAuthStorage } from '../src/oauth/storage'
+import { createTestHelpers, generateLoginFormHtml } from '../src/sdk/oauth/dev'
+import type { DevUser, TestHelpers } from '../src/sdk/oauth/dev'
+import { MemoryOAuthStorage } from '../src/sdk/oauth/storage'
 
 describe('OAuth Dev Helpers', () => {
   describe('createTestHelpers', () => {

@@ -5,7 +5,7 @@
  */
 
 import { cors } from 'hono/cors'
-import { isAllowedOrigin, validateOrigin } from '../../src/csrf'
+import { isAllowedOrigin, validateOrigin } from '../../src/sdk/csrf'
 
 // Re-export for consumers that need the raw functions
 export { isAllowedOrigin, validateOrigin }

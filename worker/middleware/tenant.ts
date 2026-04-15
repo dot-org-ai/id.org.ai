@@ -7,8 +7,8 @@
  */
 
 import * as jose from 'jose'
-import type { IdentityStub } from '../../src/do/Identity'
-import { SigningKeyManager } from '../../src/jwt/signing'
+import type { IdentityStub } from '../../src/server/do/Identity'
+import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import { parseCookieValue } from '../utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'

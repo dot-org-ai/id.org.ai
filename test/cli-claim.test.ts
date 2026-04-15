@@ -15,7 +15,7 @@ describe('writeClaimWorkflow', () => {
   })
 
   it('writes workflow file to .github/workflows/', async () => {
-    const { writeClaimWorkflow } = await import('../src/claim/workflow-fs')
+    const { writeClaimWorkflow } = await import('../src/sdk/claim/workflow-fs')
 
     const filePath = await writeClaimWorkflow('clm_test123', tempDir)
 
@@ -45,7 +45,7 @@ describe('claimCommand error handling', () => {
   })
 
   it('errors when no claim token available', async () => {
-    const { claimCommand } = await import('../src/cli/claim')
+    const { claimCommand } = await import('../src/sdk/cli/claim')
     const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('exit')
     })

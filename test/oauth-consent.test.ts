@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { generateConsentScreenHtml, getScopeDescription, consentCoversScopes } from '../src/oauth/consent'
-import type { OAuthConsent } from '../src/oauth/types'
+import { generateConsentScreenHtml, getScopeDescription, consentCoversScopes } from '../src/sdk/oauth/consent'
+import type { OAuthConsent } from '../src/sdk/oauth/types'
 
 describe('OAuth Consent', () => {
   describe('generateConsentScreenHtml', () => {

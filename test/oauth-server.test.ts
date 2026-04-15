@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { createOAuth21Server } from '../src/oauth/server'
-import { MemoryOAuthStorage } from '../src/oauth/storage'
-import { generateCodeVerifier, generateCodeChallenge } from '../src/oauth/pkce'
+import { createOAuth21Server } from '../src/sdk/oauth/server'
+import { MemoryOAuthStorage } from '../src/sdk/oauth/storage'
+import { generateCodeVerifier, generateCodeChallenge } from '../src/sdk/oauth/pkce'
 
 describe('createOAuth21Server', () => {
   it('creates a Hono app with discovery endpoint', async () => {

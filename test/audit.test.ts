@@ -6,11 +6,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { AuditLog, AUDIT_EVENTS } from '../src/audit'
-import type { CSRFToken } from '../src/csrf'
-import { CSRFProtection, generateCSRFToken } from '../src/csrf'
-import { MemoryStorageAdapter } from '../src/storage'
-import type { StorageAdapter } from '../src/storage'
+import { AuditLog, AUDIT_EVENTS } from '../src/sdk/audit'
+import type { CSRFToken } from '../src/sdk/csrf'
+import { CSRFProtection, generateCSRFToken } from '../src/sdk/csrf'
+import { MemoryStorageAdapter } from '../src/sdk/storage'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 // ── Audit Log Tests ───────────────────────────────────────────────────────
 

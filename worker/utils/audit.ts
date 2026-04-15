@@ -5,8 +5,8 @@
  * This is intentionally fire-and-forget: audit logging MUST NEVER break
  * the primary request flow.
  */
-import type { IdentityStub } from '../../src/do/Identity'
-import type { StoredAuditEvent } from '../../src/audit'
+import type { IdentityStub } from '../../src/server/do/Identity'
+import type { StoredAuditEvent } from '../../src/sdk/audit'
 
 export async function logAuditEvent(
   stub: IdentityStub,

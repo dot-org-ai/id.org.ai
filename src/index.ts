@@ -3,72 +3,21 @@
  *
  * "Humans. Agents. Identity."
  *
- * Open identity standard for the agent era:
- *   - Humans: WorkOS AuthKit (SSO, social login, MFA)
- *   - Agents: Ed25519 keypairs, GitHub identity, MCP auth
- *   - Organizations: Groups of humans and agents
+ * This is the compatibility shim. It re-exports from sdk/ and server/
+ * so existing consumers keep working.
  *
- * The core innovation: Connect → Operate → Claim
- *   1. Agent connects to MCP with no auth
- *   2. Server provisions a real sandbox tenant
- *   3. Agent operates freely (creates contacts, deals, workflows)
- *   4. Agent commits a GitHub Action workflow file to claim the tenant
- *   5. The commit IS the identity — GitHub authenticates who pushed
- *
- * @example
- * ```typescript
- * import { IdentityDO } from 'id.org.ai'
- * import { schema } from 'id.org.ai/db'
- * import { MCPAuth } from 'id.org.ai/mcp'
- * import { ClaimService } from 'id.org.ai/claim'
- * ```
+ * New consumers should import from specific paths:
+ *   - id.org.ai          → SDK (portable)
+ *   - id.org.ai/server   → Cloudflare-specific (IdentityDO, services)
+ *   - id.org.ai/auth     → Constants, URLs, RPC types
+ *   - id.org.ai/oauth    → OAuth provider + types
+ *   - id.org.ai/mcp      → MCP auth + tools
  */
 
-// Core DO
-export { IdentityDO } from './do/Identity'
-export type { Identity, IdentityType, IdentityEnv } from './do/Identity'
+// SDK exports (portable)
+export * from './sdk'
 
-// Database schema
-export * from './db'
-
-// OAuth provider
-export * from './oauth'
-
-// MCP authentication
-export * from './mcp'
-
-// Auth utilities
-export * from './auth'
-
-// Claim-by-commit
-export * from './claim'
-
-// GitHub integration
-export * from './github'
-
-// Ed25519 cryptographic identity
-export * from './crypto'
-
-// JWT signing + JWKS
-export * from './jwt'
-
-// WorkOS upstream auth + API key validation
-export * from './workos'
-
-// CSRF protection
-export * from './csrf'
-
-// Audit logging
-export * from './audit'
-
-// Standardized error responses
-export * from './errors'
-
-// Storage abstraction
-export type { StorageAdapter } from './storage'
-export { MemoryStorageAdapter } from './storage'
-
-// Foundation primitives (error classes live in their domain modules; export only the non-conflicting pieces)
-export { Ok, Err, isOk, isErr, map, flatMap, unwrapOr, toErrorResponse } from './foundation'
-export type { Result, DomainError } from './foundation'
-export { NotFoundError, AuthError, ConflictError, RateLimitError, ClaimError, KeyError } from './foundation'
+// Server exports (Cloudflare-specific) — deprecated from main barrel
+// Consumers should use 'id.org.ai/server' instead
+export { IdentityDO } from './server/do/Identity'
+export type { Identity, IdentityType, IdentityEnv } from './server/do/Identity'

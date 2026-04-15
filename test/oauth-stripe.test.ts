@@ -8,7 +8,7 @@ import {
   parseStripeSignature,
   computeStripeSignature,
   timingSafeEqual,
-} from '../src/oauth/stripe'
+} from '../src/sdk/oauth/stripe'
 import type {
   StripeCustomer,
   StripeSubscription,
@@ -17,7 +17,7 @@ import type {
   StripeStorage,
   OAuthUserWithStripe,
   StripeClient,
-} from '../src/oauth/stripe'
+} from '../src/sdk/oauth/stripe'
 
 describe('OAuth Stripe Identity Linkage', () => {
   describe('createStripeClient', () => {

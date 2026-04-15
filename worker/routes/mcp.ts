@@ -5,11 +5,11 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import type { IdentityStub } from '../../src/do/Identity'
-import { MCPAuth } from '../../src/mcp/auth'
-import type { MCPAuthResult } from '../../src/mcp/auth'
-import { dispatchTool } from '../../src/mcp/tools'
-import { AUDIT_EVENTS } from '../../src/audit'
+import type { IdentityStub } from '../../src/server/do/Identity'
+import { MCPAuth } from '../../src/sdk/mcp/auth'
+import type { MCPAuthResult } from '../../src/sdk/mcp/auth'
+import { dispatchTool } from '../../src/sdk/mcp/tools'
+import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()

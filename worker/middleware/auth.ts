@@ -6,8 +6,8 @@
  * for human logins.
  */
 
-import { MCPAuth } from '../../src/mcp/auth'
-import { errorResponse, ErrorCode } from '../../src/errors'
+import { MCPAuth } from '../../src/sdk/mcp/auth'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { parseCookieValue } from '../utils/cookies'
 import { extractApiKey, extractSessionToken } from '../utils/extract'
 

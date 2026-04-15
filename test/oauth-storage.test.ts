@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { MemoryOAuthStorage } from '../src/oauth/storage'
+import { MemoryOAuthStorage } from '../src/sdk/oauth/storage'
 import type {
   OAuthUser,
   OAuthClient,
@@ -9,7 +9,7 @@ import type {
   OAuthGrant,
   OAuthConsent,
   OAuthDeviceCode,
-} from '../src/oauth/types'
+} from '../src/sdk/oauth/types'
 
 describe('MemoryOAuthStorage', () => {
   let storage: MemoryOAuthStorage

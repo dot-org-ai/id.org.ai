@@ -18,7 +18,7 @@ import {
   validateOrigin,
   CSRF_COOKIE_NAME,
   ALLOWED_ORIGIN_PATTERNS,
-} from '../src/csrf'
+} from '../src/sdk/csrf'
 
 // ── Token Generation ──────────────────────────────────────────────────────
 

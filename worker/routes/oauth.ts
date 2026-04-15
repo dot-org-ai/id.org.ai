@@ -5,19 +5,19 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/errors'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
-import { OAuthProvider } from '../../src/oauth/provider'
+import { OAuthProvider } from '../../src/sdk/oauth/provider'
 import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
-} from '../../src/csrf'
-import { AUDIT_EVENTS } from '../../src/audit'
-import { SigningKeyManager } from '../../src/jwt/signing'
+} from '../../src/sdk/csrf'
+import { AUDIT_EVENTS } from '../../src/sdk/audit'
+import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 

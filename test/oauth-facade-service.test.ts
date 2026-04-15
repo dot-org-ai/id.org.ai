@@ -1,7 +1,7 @@
 // test/oauth-facade-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { OAuthServiceImpl } from '../src/services/oauth/service'
-import type { StorageAdapter } from '../src/storage'
+import { OAuthServiceImpl } from '../src/server/services/oauth/service'
+import type { StorageAdapter } from '../src/sdk/storage'
 
 // ── Test Storage Helper ────────────────────────────────────────────────
 

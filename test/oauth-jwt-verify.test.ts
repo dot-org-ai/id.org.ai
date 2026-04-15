@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { decodeJWT, isJWTExpired, clearJWKSCache } from '../src/oauth/jwt-verify'
-import type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from '../src/oauth/jwt-verify'
+import { decodeJWT, isJWTExpired, clearJWKSCache } from '../src/sdk/oauth/jwt-verify'
+import type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from '../src/sdk/oauth/jwt-verify'
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 

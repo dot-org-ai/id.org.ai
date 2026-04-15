@@ -5,9 +5,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { ClaimService } from '../src/claim/provision'
-import { verifyClaim } from '../src/claim/verify'
-import type { IdentityStub } from '../src/do/Identity'
+import { ClaimService } from '../src/sdk/claim/provision'
+import { verifyClaim } from '../src/sdk/claim/verify'
+import type { IdentityStub } from '../src/server/do/Identity'
 
 // ── Mock Identity Stub ──────────────────────────────────────────────────
 

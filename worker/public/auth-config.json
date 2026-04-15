@@ -1,9 +1,0 @@
-{
-  "clientId": "id_org_ai_dash",
-  "apiHostname": "https://id.org.ai",
-  "redirectUri": "https://id.org.ai/dash/profile",
-  "appName": "id.org.ai",
-  "tagline": "Humans. Agents. Identity.",
-  "onUnauthenticated": "redirect",
-  "loginUrl": "https://id.org.ai/login"
-}

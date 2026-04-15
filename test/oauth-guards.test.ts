@@ -9,7 +9,7 @@ import {
   isSerializedSigningKey,
   isStringArray,
   isIntrospectionResponse,
-} from '../src/oauth/guards'
+} from '../src/sdk/oauth/guards'
 
 describe('OAuth Guards', () => {
   describe('ValidationError', () => {

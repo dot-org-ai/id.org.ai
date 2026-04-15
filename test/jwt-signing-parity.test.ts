@@ -26,8 +26,8 @@ import {
   signAccessToken,
   verifyJWTWithKeyManager,
   SigningKeyManager,
-} from '../src/jwt/signing'
-import type { SigningKey, SerializedSigningKey, AccessTokenClaims, JWKS, JWKSPublicKey, VerifyJWTOptions } from '../src/jwt/signing'
+} from '../src/sdk/jwt/signing'
+import type { SigningKey, SerializedSigningKey, AccessTokenClaims, JWKS, JWKSPublicKey, VerifyJWTOptions } from '../src/sdk/jwt/signing'
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 

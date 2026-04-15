@@ -13,7 +13,7 @@ describe('provision', () => {
   })
 
   it('calls POST /api/provision and returns result', async () => {
-    const { provision } = await import('../src/claim/client')
+    const { provision } = await import('../src/sdk/claim/client')
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -41,7 +41,7 @@ describe('provision', () => {
   })
 
   it('throws on non-ok response', async () => {
-    const { provision } = await import('../src/claim/client')
+    const { provision } = await import('../src/sdk/claim/client')
 
     mockFetch.mockResolvedValueOnce({
       ok: false,
@@ -66,7 +66,7 @@ describe('getClaimStatus', () => {
   })
 
   it('calls GET /api/claim/:token/status', async () => {
-    const { getClaimStatus } = await import('../src/claim/client')
+    const { getClaimStatus } = await import('../src/sdk/claim/client')
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -81,7 +81,7 @@ describe('getClaimStatus', () => {
   })
 
   it('returns unclaimed on 404', async () => {
-    const { getClaimStatus } = await import('../src/claim/client')
+    const { getClaimStatus } = await import('../src/sdk/claim/client')
 
     mockFetch.mockResolvedValueOnce({
       ok: false,

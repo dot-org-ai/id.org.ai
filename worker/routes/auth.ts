@@ -7,12 +7,12 @@
 import { Hono } from 'hono'
 import * as jose from 'jose'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/errors'
+import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
-import { SigningKeyManager } from '../../src/jwt/signing'
+import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import {
   buildWorkOSAuthUrl,
   exchangeWorkOSCode,
@@ -26,9 +26,9 @@ import {
   encodeLoginState,
   decodeLoginState,
   listUserOrgMemberships,
-} from '../../src/workos/upstream'
-import type { OrgSelectionError } from '../../src/workos/upstream'
-import { isSafeRedirectUrl } from '../../src/csrf'
+} from '../../src/sdk/workos/upstream'
+import type { OrgSelectionError } from '../../src/sdk/workos/upstream'
+import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
