@@ -1,3 +1,4 @@
+import type { StorageAdapter } from '../../storage'
 import type { RateLimitService, CapabilityLevel, RateLimitEntry, RateLimitResult, RateLimitConfig } from './types'
 
 // ============================================================================
@@ -16,9 +17,9 @@ export const RATE_LIMITS: Record<CapabilityLevel, RateLimitConfig> = {
 // ============================================================================
 
 export class RateLimitServiceImpl implements RateLimitService {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
 
-  constructor({ storage }: { storage: DurableObjectStorage }) {
+  constructor({ storage }: { storage: StorageAdapter }) {
     this.storage = storage
   }
 

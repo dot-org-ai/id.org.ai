@@ -1,6 +1,7 @@
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
 import { ValidationError, NotFoundError, ConflictError, KeyError } from '../../foundation/errors'
+import type { StorageAdapter } from '../../storage'
 import {
   publicKeyToDID,
   didToPublicKey,
@@ -26,7 +27,7 @@ import type {
 // ============================================================================
 
 export class AgentKeyServiceImpl implements AgentKeyWriter {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
   private audit: AuditService
   private identityExists: (id: string) => Promise<boolean>
   private isIdentityFrozen: (id: string) => Promise<boolean>
@@ -37,7 +38,7 @@ export class AgentKeyServiceImpl implements AgentKeyWriter {
     identityExists,
     isIdentityFrozen,
   }: {
-    storage: DurableObjectStorage
+    storage: StorageAdapter
     audit: AuditService
     identityExists?: (id: string) => Promise<boolean>
     isIdentityFrozen?: (id: string) => Promise<boolean>

@@ -1,6 +1,7 @@
 import { ApiKeyServiceImpl } from './api-keys'
 import { AgentKeyServiceImpl } from './agent-keys'
 import { RateLimitServiceImpl } from './rate-limit'
+import type { StorageAdapter } from '../../storage'
 import type { AuditService } from '../audit/service'
 import type { IdentityReader } from '../identity/types'
 import type { KeyService } from './types'
@@ -20,7 +21,7 @@ export class KeyServiceImpl implements KeyService {
     audit,
     identity,
   }: {
-    storage: DurableObjectStorage
+    storage: StorageAdapter
     audit: AuditService
     identity?: IdentityReader
   }) {

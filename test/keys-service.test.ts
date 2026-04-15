@@ -1,46 +1,32 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { AuditServiceImpl } from '../src/services/audit/service'
 import { generateKeypair, sign, base64Encode } from '../src/crypto/keys'
+import type { StorageAdapter } from '../src/storage'
 
 // ============================================================================
-// Mock Storage (same pattern as identity-service.test.ts)
+// Test Storage Helper
 // ============================================================================
 
-function createMockStorage(data: Map<string, unknown> = new Map()): DurableObjectStorage {
-  const backing = data
+function createTestStorage(data: Map<string, unknown> = new Map()): StorageAdapter {
   return {
-    async get(key: string | string[]) {
-      if (Array.isArray(key)) {
-        const result = new Map()
-        for (const k of key) result.set(k, backing.get(k))
-        return result
-      }
-      return backing.get(key)
+    async get<T = unknown>(key: string): Promise<T | undefined> {
+      return data.get(key) as T | undefined
     },
-    async put(key: string | Record<string, unknown>, value?: unknown) {
-      if (typeof key === 'string') {
-        backing.set(key, value)
-      } else {
-        for (const [k, v] of Object.entries(key)) backing.set(k, v)
-      }
+    async put(key: string, value: unknown): Promise<void> {
+      data.set(key, value)
     },
-    async delete(key: string | string[]) {
-      if (Array.isArray(key)) {
-        let count = 0
-        for (const k of key) if (backing.delete(k)) count++
-        return count
-      }
-      return backing.delete(key)
+    async delete(key: string): Promise<boolean> {
+      return data.delete(key)
     },
-    async list(options?: { prefix?: string; limit?: number }) {
+    async list<T = unknown>(options?: { prefix?: string; limit?: number; start?: string; reverse?: boolean }): Promise<Map<string, T>> {
       const prefix = options?.prefix ?? ''
-      const result = new Map()
-      for (const [k, v] of backing) {
-        if (k.startsWith(prefix)) result.set(k, v)
+      const result = new Map<string, T>()
+      for (const [k, v] of data) {
+        if (k.startsWith(prefix)) result.set(k, v as T)
       }
       return result
     },
-  } as unknown as DurableObjectStorage
+  }
 }
 
 // ============================================================================
@@ -48,12 +34,12 @@ function createMockStorage(data: Map<string, unknown> = new Map()): DurableObjec
 // ============================================================================
 
 describe('RateLimitServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let backingMap: Map<string, unknown>
 
   beforeEach(() => {
     backingMap = new Map()
-    storage = createMockStorage(backingMap)
+    storage = createTestStorage(backingMap)
   })
 
   it('should be importable', async () => {
@@ -107,13 +93,13 @@ describe('RateLimitServiceImpl', () => {
 })
 
 describe('ApiKeyServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let backingMap: Map<string, unknown>
   let audit: AuditServiceImpl
 
   beforeEach(() => {
     backingMap = new Map()
-    storage = createMockStorage(backingMap)
+    storage = createTestStorage(backingMap)
     audit = new AuditServiceImpl({ storage })
   })
 
@@ -290,13 +276,13 @@ describe('ApiKeyServiceImpl', () => {
 })
 
 describe('AgentKeyServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let backingMap: Map<string, unknown>
   let audit: AuditServiceImpl
 
   beforeEach(() => {
     backingMap = new Map()
-    storage = createMockStorage(backingMap)
+    storage = createTestStorage(backingMap)
     audit = new AuditServiceImpl({ storage })
   })
 
@@ -508,13 +494,13 @@ describe('AgentKeyServiceImpl', () => {
 })
 
 describe('KeyServiceImpl', () => {
-  let storage: DurableObjectStorage
+  let storage: StorageAdapter
   let backingMap: Map<string, unknown>
   let audit: AuditServiceImpl
 
   beforeEach(() => {
     backingMap = new Map()
-    storage = createMockStorage(backingMap)
+    storage = createTestStorage(backingMap)
     audit = new AuditServiceImpl({ storage })
   })
 

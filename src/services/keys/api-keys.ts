@@ -1,6 +1,7 @@
 import { Ok, Err } from '../../foundation/result'
 import type { Result } from '../../foundation/result'
 import { ValidationError, NotFoundError, KeyError } from '../../foundation/errors'
+import type { StorageAdapter } from '../../storage'
 import type { AuditService } from '../audit/service'
 import type {
   ApiKeyWriter,
@@ -23,7 +24,7 @@ const VALID_SCOPES = new Set(['read', 'write', 'admin'])
 // ============================================================================
 
 export class ApiKeyServiceImpl implements ApiKeyWriter {
-  private storage: DurableObjectStorage
+  private storage: StorageAdapter
   private audit: AuditService
   private getIdentityLevel: (id: string) => Promise<CapabilityLevel | null>
 
@@ -32,7 +33,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
     audit,
     getIdentityLevel,
   }: {
-    storage: DurableObjectStorage
+    storage: StorageAdapter
     audit: AuditService
     getIdentityLevel?: (id: string) => Promise<CapabilityLevel | null>
   }) {
