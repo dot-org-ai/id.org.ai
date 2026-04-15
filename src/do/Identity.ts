@@ -23,6 +23,8 @@
 import { DurableObject } from 'cloudflare:workers'
 // errorJson/ErrorCode no longer needed — fetch() is health-check only, all routes are RPC
 // crypto/keys imports removed — now handled by KeyService (Phase 5)
+import { DurableObjectStorageAdapter } from './storage-adapter'
+import type { StorageAdapter } from '../storage'
 import type { AuditQueryOptions, StoredAuditEvent } from '../audit'
 import { AuditServiceImpl } from '../services/audit'
 import type { AuditService } from '../services/audit'
@@ -176,11 +178,20 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── Service Layer ────────────────────────────────────────────────────
 
+  private _storageAdapter?: StorageAdapter
+
+  private get storageAdapter(): StorageAdapter {
+    if (!this._storageAdapter) {
+      this._storageAdapter = new DurableObjectStorageAdapter(this.ctx.storage)
+    }
+    return this._storageAdapter
+  }
+
   private _auditService?: AuditService
 
   private get auditService(): AuditService {
     if (!this._auditService) {
-      this._auditService = new AuditServiceImpl({ storage: this.ctx.storage })
+      this._auditService = new AuditServiceImpl({ storage: this.storageAdapter })
     }
     return this._auditService
   }
@@ -189,7 +200,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   private get entityStore(): EntityStoreService {
     if (!this._entityStore) {
-      this._entityStore = new EntityStoreServiceImpl({ storage: this.ctx.storage })
+      this._entityStore = new EntityStoreServiceImpl({ storage: this.storageAdapter })
     }
     return this._entityStore
   }
@@ -198,7 +209,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   private get identityService(): IdentityServiceImpl {
     if (!this._identityService) {
-      this._identityService = new IdentityServiceImpl({ storage: this.ctx.storage, audit: this.auditService })
+      this._identityService = new IdentityServiceImpl({ storage: this.storageAdapter, audit: this.auditService })
     }
     return this._identityService
   }
@@ -208,7 +219,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   private get keyService(): KeyServiceImpl {
     if (!this._keyService) {
       this._keyService = new KeyServiceImpl({
-        storage: this.ctx.storage,
+        storage: this.storageAdapter,
         audit: this.auditService,
         identity: this.identityService,
       })
@@ -220,7 +231,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   private get sessionService(): SessionServiceImpl {
     if (!this._sessionService) {
-      this._sessionService = new SessionServiceImpl({ storage: this.ctx.storage, identityReader: this.identityService })
+      this._sessionService = new SessionServiceImpl({ storage: this.storageAdapter, identityReader: this.identityService })
     }
     return this._sessionService
   }
@@ -230,7 +241,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   private get oauthService(): OAuthServiceImpl {
     if (!this._oauthService) {
       this._oauthService = new OAuthServiceImpl({
-        storage: this.ctx.storage,
+        storage: this.storageAdapter,
         config: {
           issuer: 'https://id.org.ai',
           authorizationEndpoint: 'https://id.org.ai/oauth/authorize',
