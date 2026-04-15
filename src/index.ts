@@ -64,6 +64,10 @@ export * from './audit'
 // Standardized error responses
 export * from './errors'
 
+// Storage abstraction
+export type { StorageAdapter } from './storage'
+export { MemoryStorageAdapter } from './storage'
+
 // Foundation primitives (error classes live in their domain modules; export only the non-conflicting pieces)
 export { Ok, Err, isOk, isErr, map, flatMap, unwrapOr, toErrorResponse } from './foundation'
 export type { Result, DomainError } from './foundation'
