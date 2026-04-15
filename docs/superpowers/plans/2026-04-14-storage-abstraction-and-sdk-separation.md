@@ -1109,3 +1109,28 @@ Expected: Worker deploys successfully
 ```bash
 git push
 ```
+
+---
+
+## Phases Not Planned Here
+
+### Phase 3: Remove compatibility shims
+
+**When:** After Phase 2 is merged and all three consumers verified working (`auto-dot-dev/sdk`, `auto-dot-dev/mcp`, `dot-do/oauth.do`).
+
+**What:** Remove `IdentityDO` re-export from the main `src/index.ts` barrel. Consumers that need it should use `id.org.ai/server` instead.
+
+**Scope:** ~5 lines changed, no planning needed. Just delete the shim, verify, push.
+
+### Future Phase: Split oauth exports (optional)
+
+**When:** If/when you want `id.org.ai/oauth` to be pure portable (no Hono dependency).
+
+**What:**
+1. Create `id.org.ai/oauth/server` export path for `createOAuth21Server` + Hono routes
+2. Update oauth.do to import Hono stuff from `id.org.ai/oauth/server`
+3. Remove Hono exports from `id.org.ai/oauth`
+
+**Why not planned now:** oauth.do is the only consumer of the Hono parts, and it works fine today. This is a design decision, not a committed task.
+
+**Planning approach:** Brainstorming skill recommended — touches oauth.do's architecture and import path design. Not just a mechanical refactor.
