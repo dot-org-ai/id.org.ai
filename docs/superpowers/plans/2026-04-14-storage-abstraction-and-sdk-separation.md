@@ -764,7 +764,7 @@ git commit -m "feat: export StorageAdapter interface from package"
 - Move all portable modules from `src/` to `src/sdk/`
 - Create: `src/sdk/index.ts`
 
-- [ ] **Step 1: Create sdk directory and move modules**
+- [x] **Step 1: Create sdk directory and move modules**
 
 ```bash
 mkdir -p src/sdk
@@ -784,7 +784,7 @@ mv src/storage.ts src/sdk/storage.ts
 mv src/errors.ts src/sdk/errors.ts
 ```
 
-- [ ] **Step 2: Create `src/sdk/index.ts`**
+- [x] **Step 2: Create `src/sdk/index.ts`**
 
 Mirror the current `src/index.ts` exports but without `IdentityDO` and server internals:
 
@@ -814,7 +814,7 @@ export type { Result, DomainError } from './foundation'
 export { NotFoundError, AuthError, ConflictError, RateLimitError, ClaimError, KeyError } from './foundation'
 ```
 
-- [ ] **Step 3: Fix all internal imports within sdk/**
+- [x] **Step 3: Fix all internal imports within sdk/**
 
 Every file in `src/sdk/` that imports from sibling modules needs path updates. For example:
 
@@ -824,12 +824,12 @@ Every file in `src/sdk/` that imports from sibling modules needs path updates. F
 
 Run `pnpm typecheck` after each batch of fixes.
 
-- [ ] **Step 4: Type-check**
+- [x] **Step 4: Type-check**
 
 Run: `pnpm typecheck`
 Fix any broken imports iteratively.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/sdk/
@@ -844,7 +844,7 @@ git commit -m "refactor: move portable code to src/sdk/"
 - Move DO, services, audit implementation to `src/server/`
 - Create: `src/server/index.ts`
 
-- [ ] **Step 1: Create server directory and move modules**
+- [x] **Step 1: Create server directory and move modules**
 
 ```bash
 mkdir -p src/server
@@ -854,7 +854,7 @@ mv src/audit src/server/audit
 mv src/db src/server/db
 ```
 
-- [ ] **Step 2: Create `src/server/index.ts`**
+- [x] **Step 2: Create `src/server/index.ts`**
 
 ```typescript
 // src/server/index.ts
@@ -876,7 +876,7 @@ export { OAuthServiceImpl } from './services/oauth/service'
 export { AuditLog } from './audit'
 ```
 
-- [ ] **Step 3: Fix all internal imports within server/**
+- [x] **Step 3: Fix all internal imports within server/**
 
 Files in `src/server/` that import from `src/sdk/` need updated paths:
 
@@ -886,12 +886,12 @@ Files in `src/server/` that import from `src/sdk/` need updated paths:
 
 Run `pnpm typecheck` after each batch.
 
-- [ ] **Step 4: Type-check**
+- [x] **Step 4: Type-check**
 
 Run: `pnpm typecheck`
 Fix broken imports iteratively.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/
@@ -905,7 +905,7 @@ git commit -m "refactor: move Cloudflare-specific code to src/server/"
 **Files:**
 - Modify: `src/index.ts`
 
-- [ ] **Step 1: Replace src/index.ts with compatibility re-exports**
+- [x] **Step 1: Replace src/index.ts with compatibility re-exports**
 
 ```typescript
 // src/index.ts — compatibility shim
@@ -918,17 +918,17 @@ export { IdentityDO } from './server'
 export type { Identity, IdentityType, IdentityEnv } from './server'
 ```
 
-- [ ] **Step 2: Type-check**
+- [x] **Step 2: Type-check**
 
 Run: `pnpm typecheck`
 Expected: No errors
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 Run: `pnpm vitest run`
 Expected: All tests PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/index.ts
@@ -943,7 +943,7 @@ git commit -m "refactor: src/index.ts now re-exports from sdk/ and server/"
 - Modify: `tsup.config.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: Update tsup entry points**
+- [x] **Step 1: Update tsup entry points**
 
 ```typescript
 import { defineConfig } from 'tsup'
@@ -975,7 +975,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 2: Add `id.org.ai/server` export to package.json**
+- [x] **Step 2: Add `id.org.ai/server` export to package.json**
 
 In the `exports` field of `package.json`, add:
 
@@ -1005,22 +1005,22 @@ Update existing export paths to point to `sdk/`:
 
 (Apply the same pattern to all existing export paths — just insert `sdk/` in the path.)
 
-- [ ] **Step 3: Build and verify**
+- [x] **Step 3: Build and verify**
 
 Run: `pnpm build`
 Expected: Build succeeds, `dist/` contains both `sdk/` and `server/` subdirectories
 
-- [ ] **Step 4: Type-check**
+- [x] **Step 4: Type-check**
 
 Run: `pnpm typecheck`
 Expected: No errors
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 Run: `pnpm vitest run`
 Expected: All tests PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tsup.config.ts package.json
@@ -1036,7 +1036,7 @@ git commit -m "feat: add id.org.ai/server export path, update tsup entries for s
 - Modify: `worker/routes/*.ts`
 - Modify: `worker/middleware/*.ts`
 
-- [ ] **Step 1: Update worker imports**
+- [x] **Step 1: Update worker imports**
 
 All files in `worker/` that import from `../../src/` need path updates:
 
@@ -1048,21 +1048,21 @@ All files in `worker/` that import from `../../src/` need path updates:
 - `../../src/do/Identity` → `../../src/server/do/Identity`
 - `../../src/services/*` → `../../src/server/services/*`
 
-- [ ] **Step 2: Update test imports**
+- [x] **Step 2: Update test imports**
 
 All test files that import from `../src/` need similar path updates.
 
-- [ ] **Step 3: Type-check**
+- [x] **Step 3: Type-check**
 
 Run: `pnpm typecheck`
 Expected: No errors
 
-- [ ] **Step 4: Run full test suite**
+- [x] **Step 4: Run full test suite**
 
 Run: `pnpm vitest run`
 Expected: All tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add worker/ test/
@@ -1075,22 +1075,22 @@ git commit -m "refactor: update worker and test imports for sdk/server split"
 
 **Files:** None (verification only)
 
-- [ ] **Step 1: Full type-check**
+- [x] **Step 1: Full type-check**
 
 Run: `pnpm typecheck`
 Expected: No errors
 
-- [ ] **Step 2: Full test suite**
+- [x] **Step 2: Full test suite**
 
 Run: `pnpm vitest run`
 Expected: All tests PASS
 
-- [ ] **Step 3: Build**
+- [x] **Step 3: Build**
 
 Run: `pnpm build`
 Expected: Clean build, all entry points produce dist files
 
-- [ ] **Step 4: Verify export paths work**
+- [x] **Step 4: Verify export paths work**
 
 ```bash
 # Check that dist has the expected structure
@@ -1099,12 +1099,12 @@ ls dist/server/index.js dist/server/index.d.ts
 ls dist/index.js dist/index.d.ts
 ```
 
-- [ ] **Step 5: Deploy**
+- [x] **Step 5: Deploy**
 
 Run: `pnpm deploy`
 Expected: Worker deploys successfully
 
-- [ ] **Step 6: Commit and push**
+- [x] **Step 6: Commit and push**
 
 ```bash
 git push
