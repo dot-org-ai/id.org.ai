@@ -14,10 +14,6 @@
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
     },
-    "./db": {
-      "types": "./dist/server/db/index.d.ts",
-      "import": "./dist/server/db/index.js"
-    },
     "./auth": {
       "types": "./dist/sdk/auth/index.d.ts",
       "import": "./dist/sdk/auth/index.js"
@@ -94,8 +90,6 @@
     "@cloudflare/vitest-pool-workers": "^0.12.12",
     "@cloudflare/workers-types": "^4.20250109.0",
     "@types/node": "^22.0.0",
-    "drizzle-kit": "^0.31.0",
-    "drizzle-orm": "^0.45.1",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
     "vitest": "^2.0.0",

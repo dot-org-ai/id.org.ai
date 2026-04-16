@@ -16,12 +16,11 @@ export default defineConfig({
     'src/sdk/jwt/index.ts',
     'src/sdk/workos/index.ts',
     'src/server/index.ts',    // server barrel
-    'src/server/db/index.ts',
   ],
   format: ['esm'],
   dts: true,
   sourcemap: true,
   clean: true,
   splitting: false,
-  external: ['open', 'drizzle-orm', 'drizzle-orm/sqlite-core', 'cloudflare:workers'],
+  external: ['open', 'cloudflare:workers'],
 })
