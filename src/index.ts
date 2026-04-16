@@ -3,10 +3,10 @@
  *
  * "Humans. Agents. Identity."
  *
- * This is the compatibility shim. It re-exports from sdk/ and server/
- * so existing consumers keep working.
+ * SDK-only exports. For Cloudflare-specific code (IdentityDO, services),
+ * import from 'id.org.ai/server' instead.
  *
- * New consumers should import from specific paths:
+ * Import paths:
  *   - id.org.ai          → SDK (portable)
  *   - id.org.ai/server   → Cloudflare-specific (IdentityDO, services)
  *   - id.org.ai/auth     → Constants, URLs, RPC types
@@ -16,8 +16,3 @@
 
 // SDK exports (portable)
 export * from './sdk'
-
-// Server exports (Cloudflare-specific) — deprecated from main barrel
-// Consumers should use 'id.org.ai/server' instead
-export { IdentityDO } from './server/do/Identity'
-export type { Identity, IdentityType, IdentityEnv } from './server/do/Identity'
