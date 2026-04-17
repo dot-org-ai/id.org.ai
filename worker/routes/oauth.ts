@@ -63,7 +63,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
       const identityStub = getStubForIdentity(c.env, id)
       const identity = await identityStub.getIdentity(id)
       if (!identity) return null
-      return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string }
+      return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string; level?: number }
     },
     signingKeyManager,
   })

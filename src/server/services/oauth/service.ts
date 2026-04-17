@@ -1,6 +1,6 @@
 // src/services/oauth/service.ts
 
-import { OAuthProvider } from '../../../sdk/oauth/provider'
+import { OAuthProvider, buildOpenIDConfiguration } from '../../../sdk/oauth/provider'
 import type { StorageAdapter } from '../../../sdk/storage'
 import type { OAuthService, OAuthConfig } from './types'
 
@@ -8,11 +8,8 @@ import type { OAuthService, OAuthConfig } from './types'
  * OAuthServiceImpl — thin facade over OAuthProvider.
  *
  * Constructs an OAuthProvider with StorageAdapter and delegates all flow
- * handlers directly. Client seeding logic is consolidated from Identity.ts
- * (ensureCliClient + ensureOAuthDoClient + ensureWebClients).
- *
- * NOTE: OAuthProvider.getOpenIDConfiguration() returns a Response. The facade
- * parses it and returns a plain Record to match the OAuthService interface.
+ * handlers directly. Discovery is produced by the shared buildOpenIDConfiguration
+ * so provider and facade cannot drift.
  */
 export class OAuthServiceImpl implements OAuthService {
   private provider: OAuthProvider
@@ -70,32 +67,7 @@ export class OAuthServiceImpl implements OAuthService {
   // ── Discovery ────────────────────────────────────────────────────────
 
   getOpenIDConfiguration(): Record<string, unknown> {
-    // OAuthProvider.getOpenIDConfiguration() returns a Response — extract the JSON synchronously
-    // by reconstructing from config (provider builds the same shape)
-    return {
-      issuer: this.config.issuer,
-      authorization_endpoint: this.config.authorizationEndpoint,
-      token_endpoint: this.config.tokenEndpoint,
-      userinfo_endpoint: this.config.userinfoEndpoint,
-      registration_endpoint: this.config.registrationEndpoint,
-      device_authorization_endpoint: this.config.deviceAuthorizationEndpoint,
-      revocation_endpoint: this.config.revocationEndpoint,
-      introspection_endpoint: this.config.introspectionEndpoint,
-      jwks_uri: this.config.jwksUri,
-      response_types_supported: ['code'],
-      grant_types_supported: [
-        'authorization_code',
-        'refresh_token',
-        'client_credentials',
-        'urn:ietf:params:oauth:grant-type:device_code',
-      ],
-      subject_types_supported: ['public'],
-      id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-      scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
-      token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
-      code_challenge_methods_supported: ['S256'],
-      claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
-    }
+    return buildOpenIDConfiguration(this.config)
   }
 
   // ── Client Seeding ───────────────────────────────────────────────────

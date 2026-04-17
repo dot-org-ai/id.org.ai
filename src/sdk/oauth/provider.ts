@@ -145,6 +145,40 @@ interface IdentityInfo {
   email?: string
   emailVerified?: boolean
   image?: string
+  level?: number
+}
+
+function tierFromLevel(level: number | undefined): string | undefined {
+  if (level === undefined || !Number.isInteger(level) || level < 0) return undefined
+  return `L${level}`
+}
+
+/** Build the OIDC discovery document. Shared between OAuthProvider and server-side facade. */
+export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, unknown> {
+  return {
+    issuer: config.issuer,
+    authorization_endpoint: config.authorizationEndpoint,
+    token_endpoint: config.tokenEndpoint,
+    userinfo_endpoint: config.userinfoEndpoint,
+    registration_endpoint: config.registrationEndpoint,
+    device_authorization_endpoint: config.deviceAuthorizationEndpoint,
+    revocation_endpoint: config.revocationEndpoint,
+    introspection_endpoint: config.introspectionEndpoint,
+    jwks_uri: config.jwksUri,
+    response_types_supported: ['code'],
+    grant_types_supported: [
+      'authorization_code',
+      'refresh_token',
+      'client_credentials',
+      'urn:ietf:params:oauth:grant-type:device_code',
+    ],
+    subject_types_supported: ['public'],
+    id_token_signing_alg_values_supported: ['RS256', 'ES256'],
+    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
+    code_challenge_methods_supported: ['S256'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier'],
+  }
 }
 
 // Internal storage abstraction — see OAuthStorage in ./storage.ts for canonical API type
@@ -281,30 +315,7 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   getOpenIDConfiguration(): Response {
-    return jsonResponse({
-      issuer: this.config.issuer,
-      authorization_endpoint: this.config.authorizationEndpoint,
-      token_endpoint: this.config.tokenEndpoint,
-      userinfo_endpoint: this.config.userinfoEndpoint,
-      registration_endpoint: this.config.registrationEndpoint,
-      device_authorization_endpoint: this.config.deviceAuthorizationEndpoint,
-      revocation_endpoint: this.config.revocationEndpoint,
-      introspection_endpoint: this.config.introspectionEndpoint,
-      jwks_uri: this.config.jwksUri,
-      response_types_supported: ['code'],
-      grant_types_supported: [
-        'authorization_code',
-        'refresh_token',
-        'client_credentials',
-        'urn:ietf:params:oauth:grant-type:device_code',
-      ],
-      subject_types_supported: ['public'],
-      id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-      scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
-      token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
-      code_challenge_methods_supported: ['S256'],
-      claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
-    })
+    return jsonResponse(buildOpenIDConfiguration(this.config))
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -791,6 +802,8 @@ export class OAuthProvider {
     if (token.startsWith('at_')) {
       const tokenData = await this.storage.get<AccessToken>(`access:${token}`)
       if (tokenData && tokenData.expiresAt > Date.now()) {
+        const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
+        const tier = tierFromLevel(identity?.level)
         return jsonResponse({
           active: true,
           client_id: tokenData.clientId,
@@ -799,6 +812,7 @@ export class OAuthProvider {
           token_type: 'Bearer',
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
+          ...(tier && { tier }),
         })
       }
     }
@@ -807,6 +821,8 @@ export class OAuthProvider {
     if (token.startsWith('rt_')) {
       const tokenData = await this.storage.get<RefreshToken>(`refresh:${token}`)
       if (tokenData && !tokenData.revoked && tokenData.expiresAt > Date.now()) {
+        const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
+        const tier = tierFromLevel(identity?.level)
         return jsonResponse({
           active: true,
           client_id: tokenData.clientId,
@@ -815,6 +831,7 @@ export class OAuthProvider {
           token_type: 'refresh_token',
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
+          ...(tier && { tier }),
         })
       }
     }
@@ -1225,6 +1242,8 @@ export class OAuthProvider {
         if (scopes.includes('profile') && identity?.name) {
           claims.name = identity.name
         }
+        const tier = tierFromLevel(identity?.level)
+        if (tier) claims.tier = tier
 
         // Compute at_hash (OIDC Core Section 3.1.3.6)
         const tokenHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessTokenId))

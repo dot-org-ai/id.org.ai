@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { OAuthProvider } from '../src/sdk/oauth/provider'
 import type { OAuthConfig } from '../src/sdk/oauth/provider'
+import { SigningKeyManager } from '../src/sdk/jwt/signing'
 
 // ============================================================================
 // Helpers
@@ -35,6 +36,7 @@ interface IdentityInfo {
   email?: string
   emailVerified?: boolean
   image?: string
+  level?: number
 }
 
 function createMockStorage(): StorageLike {
@@ -83,6 +85,7 @@ const TEST_IDENTITIES: Record<string, IdentityInfo> = {
     email: 'alice@example.com',
     emailVerified: true,
     image: 'https://example.com/alice.png',
+    level: 2,
   },
   'user-2': {
     id: 'user-2',
@@ -90,6 +93,13 @@ const TEST_IDENTITIES: Record<string, IdentityInfo> = {
     handle: 'bob',
     email: 'bob@example.com',
     emailVerified: false,
+    level: 1,
+  },
+  'user-no-level': {
+    id: 'user-no-level',
+    name: 'No Level',
+    email: 'nolevel@example.com',
+    emailVerified: true,
   },
 }
 
@@ -270,6 +280,11 @@ describe('OAuthProvider', () => {
       expect(d.scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access'])
       expect(d.claims_supported).toContain('sub')
       expect(d.claims_supported).toContain('email')
+    })
+
+    it('advertises tier in claims_supported', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      expect(d.claims_supported).toContain('tier')
     })
 
     it('includes token endpoint auth methods', async () => {
@@ -1639,6 +1654,123 @@ describe('OAuthProvider', () => {
       expect(ir.active).toBe(true)
       expect(ir.client_id).toBe(cid)
       expect(ir.sub).toBeUndefined()
+    })
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Capability tier claim (issue #3)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  describe('Capability tier claim', () => {
+    async function createProviderWithSigning(storage: StorageLike): Promise<OAuthProvider> {
+      const store = new Map<string, unknown>()
+      const storageOp = async (op: { op: string; key?: string; value?: unknown }) => {
+        switch (op.op) {
+          case 'get': return { value: store.get(op.key!) }
+          case 'put': store.set(op.key!, op.value); return {}
+          case 'delete': store.delete(op.key!); return {}
+          case 'list': return Object.fromEntries(store)
+          default: return {}
+        }
+      }
+      const keyManager = new SigningKeyManager(storageOp as never)
+      await keyManager.getCurrentKey()
+      return new OAuthProvider({
+        storage,
+        config: TEST_CONFIG,
+        getIdentity: async (id: string) => TEST_IDENTITIES[id] ?? null,
+        signingKeyManager: keyManager,
+      })
+    }
+
+    function decodeJwtPayload(jwt: string): Record<string, unknown> {
+      const part = jwt.split('.')[1]
+      let b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+      while (b64.length % 4 !== 0) b64 += '='
+      return JSON.parse(atob(b64))
+    }
+
+    const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
+    const redir = 'https://app.example.com/callback'
+
+    async function setup(): Promise<{ p: OAuthProvider; s: StorageLike; clientId: string }> {
+      const s = createMockStorage()
+      const p = await createProviderWithSigning(s)
+      const d = await registerClient(p)
+      const clientId = d.client_id as string
+      const c = await s.get<Record<string, unknown>>(`client:${clientId}`)
+      await s.put(`client:${clientId}`, { ...c, trusted: true })
+      return { p, s, clientId }
+    }
+
+    it('includes tier claim in id_token for L2 identity', async () => {
+      const { p, clientId } = await setup()
+      const t = await getAuthCodeTokens(p, clientId, redir, 'user-1', verifier)
+      expect(t.id_token).toBeDefined()
+      const payload = decodeJwtPayload(t.id_token as string)
+      expect(payload.tier).toBe('L2')
+    })
+
+    it('omits tier claim when identity has no level', async () => {
+      const { p, clientId } = await setup()
+      const t = await getAuthCodeTokens(p, clientId, redir, 'user-no-level', verifier)
+      expect(t.id_token).toBeDefined()
+      const payload = decodeJwtPayload(t.id_token as string)
+      expect(payload.tier).toBeUndefined()
+      expect(payload.sub).toBe('user-no-level')
+    })
+
+    it('returns tier in introspect response for active access token', async () => {
+      const { p, clientId } = await setup()
+      const t = await getAuthCodeTokens(p, clientId, redir, 'user-1', verifier)
+      const res = await p.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: t.access_token as string }),
+      }))
+      const body = await res.json() as Record<string, unknown>
+      expect(body.active).toBe(true)
+      expect(body.tier).toBe('L2')
+    })
+
+    it('reflects live level on introspect after upgrade (without re-auth)', async () => {
+      const s = createMockStorage()
+      const store = new Map<string, unknown>()
+      const storageOp = async (op: { op: string; key?: string; value?: unknown }) => {
+        switch (op.op) {
+          case 'get': return { value: store.get(op.key!) }
+          case 'put': store.set(op.key!, op.value); return {}
+          case 'delete': store.delete(op.key!); return {}
+          case 'list': return Object.fromEntries(store)
+          default: return {}
+        }
+      }
+      const keyManager = new SigningKeyManager(storageOp as never)
+      await keyManager.getCurrentKey()
+
+      // Mutable identity — mint token at L1, then "upgrade" to L2
+      const mutable: IdentityInfo = { id: 'user-upgrade', email: 'up@example.com', level: 1 }
+      const p = new OAuthProvider({
+        storage: s,
+        config: TEST_CONFIG,
+        getIdentity: async (id: string) => (id === 'user-upgrade' ? mutable : null),
+        signingKeyManager: keyManager,
+      })
+      const d = await registerClient(p)
+      const clientId = d.client_id as string
+      const c = await s.get<Record<string, unknown>>(`client:${clientId}`)
+      await s.put(`client:${clientId}`, { ...c, trusted: true })
+
+      const t = await getAuthCodeTokens(p, clientId, redir, 'user-upgrade', verifier)
+      mutable.level = 2
+
+      const res = await p.handleIntrospect(new Request('https://id.org.ai/oauth/introspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: t.access_token as string }),
+      }))
+      const body = await res.json() as Record<string, unknown>
+      expect(body.tier).toBe('L2')
     })
   })
 })
