@@ -28,13 +28,14 @@ export interface AuthResult {
 /**
  * Get the current authenticated user by verifying the token.
  */
-export async function getUser(token: string): Promise<AuthResult> {
+export async function getUser(token: string, headers?: Record<string, string>): Promise<AuthResult> {
   try {
     const response = await fetch(`${API_BASE}/oauth/userinfo`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        ...headers,
       },
     })
 
@@ -61,15 +62,18 @@ export async function getUser(token: string): Promise<AuthResult> {
  * Calls POST /oauth/token with grant_type=refresh_token.
  * Returns new token data or null if refresh failed.
  */
-export async function refreshAccessToken(refreshToken: string): Promise<StoredTokenData | null> {
+export async function refreshAccessToken(
+  refreshToken: string,
+  options?: { clientId?: string; headers?: Record<string, string> },
+): Promise<StoredTokenData | null> {
   try {
     const response = await fetch(`${API_BASE}/oauth/token`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...options?.headers },
       body: new URLSearchParams({
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
-        client_id: CLIENT_ID,
+        client_id: options?.clientId ?? CLIENT_ID,
       }).toString(),
     })
 
@@ -124,11 +128,15 @@ export async function ensureValidToken(storage: TokenStorage): Promise<string | 
 /**
  * Revoke a token server-side via the OAuth revocation endpoint (RFC 7009).
  */
-async function revokeToken(token: string, tokenTypeHint?: 'access_token' | 'refresh_token'): Promise<void> {
+async function revokeToken(
+  token: string,
+  tokenTypeHint?: 'access_token' | 'refresh_token',
+  headers?: Record<string, string>,
+): Promise<void> {
   try {
     await fetch(`${API_BASE}/oauth/revoke`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
       body: new URLSearchParams({
         token,
         client_id: CLIENT_ID,
@@ -144,9 +152,13 @@ async function revokeToken(token: string, tokenTypeHint?: 'access_token' | 'refr
  * Logout: revoke tokens server-side, then clear local storage.
  * Revokes both access and refresh tokens for proper cleanup.
  */
-export async function logout(accessToken: string, refreshToken?: string): Promise<void> {
+export async function logout(
+  accessToken: string,
+  refreshToken?: string,
+  headers?: Record<string, string>,
+): Promise<void> {
   await Promise.all([
-    revokeToken(accessToken, 'access_token'),
-    refreshToken ? revokeToken(refreshToken, 'refresh_token') : Promise.resolve(),
+    revokeToken(accessToken, 'access_token', headers),
+    refreshToken ? revokeToken(refreshToken, 'refresh_token', headers) : Promise.resolve(),
   ])
 }

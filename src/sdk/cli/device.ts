@@ -30,10 +30,13 @@ const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 /**
  * Initiate device authorization flow
  */
-export async function authorizeDevice(clientId: string): Promise<DeviceAuthorizationResponse> {
+export async function authorizeDevice(
+  clientId: string,
+  headers?: Record<string, string>,
+): Promise<DeviceAuthorizationResponse> {
   const response = await fetch(`${API_BASE}/oauth/device`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
     body: new URLSearchParams({
       client_id: clientId,
       scope: 'openid profile email',
@@ -51,7 +54,13 @@ export async function authorizeDevice(clientId: string): Promise<DeviceAuthoriza
 /**
  * Poll for tokens after device authorization
  */
-export async function pollForTokens(clientId: string, deviceCode: string, interval: number = 5, expiresIn: number = 600): Promise<TokenResponse> {
+export async function pollForTokens(
+  clientId: string,
+  deviceCode: string,
+  interval: number = 5,
+  expiresIn: number = 600,
+  headers?: Record<string, string>,
+): Promise<TokenResponse> {
   const startTime = Date.now()
   const timeout = expiresIn * 1000
   let currentInterval = interval * 1000
@@ -66,7 +75,7 @@ export async function pollForTokens(clientId: string, deviceCode: string, interv
     try {
       const response = await fetch(`${API_BASE}/oauth/token`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
         body: new URLSearchParams({
           grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
           device_code: deviceCode,

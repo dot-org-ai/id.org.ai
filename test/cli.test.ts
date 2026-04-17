@@ -480,3 +480,106 @@ describe('Token Lifecycle', () => {
     expect(data!.expiresAt).toBeGreaterThan(Date.now())
   })
 })
+
+// ── cli/auth header + clientId plumbing (issue #2) ───────────────────────────
+
+describe('cli/auth refreshAccessToken options', () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ access_token: 'new_at', refresh_token: 'new_rt', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+  })
+
+  afterEach(() => {
+    fetchSpy.mockRestore()
+  })
+
+  it('sends caller-provided client_id instead of env default', async () => {
+    const { refreshAccessToken } = await import('../src/sdk/cli/auth')
+    await refreshAccessToken('rt_abc', { clientId: 'custom_client_xyz' })
+    const init = fetchSpy.mock.calls[0][1] as RequestInit
+    const body = new URLSearchParams(init.body as string)
+    expect(body.get('client_id')).toBe('custom_client_xyz')
+    expect(body.get('refresh_token')).toBe('rt_abc')
+    expect(body.get('grant_type')).toBe('refresh_token')
+  })
+
+  it('forwards custom headers on refresh request', async () => {
+    const { refreshAccessToken } = await import('../src/sdk/cli/auth')
+    await refreshAccessToken('rt_abc', { clientId: 'c', headers: { 'User-Agent': 'my-sdk/1.0', 'X-Client-Type': 'cli' } })
+    const init = fetchSpy.mock.calls[0][1] as RequestInit
+    const headers = init.headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('my-sdk/1.0')
+    expect(headers['X-Client-Type']).toBe('cli')
+    expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded')
+  })
+
+  it('omitting options preserves legacy single-arg behavior', async () => {
+    const { refreshAccessToken } = await import('../src/sdk/cli/auth')
+    await refreshAccessToken('rt_abc')
+    const init = fetchSpy.mock.calls[0][1] as RequestInit
+    const body = new URLSearchParams(init.body as string)
+    expect(body.get('client_id')).toBe('id_org_ai_cli')
+    expect(body.get('refresh_token')).toBe('rt_abc')
+  })
+})
+
+describe('cli/auth existing exports forward custom headers', () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ sub: 'user-1', email: 'a@b.c' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+  })
+
+  afterEach(() => {
+    fetchSpy.mockRestore()
+  })
+
+  it('getUser forwards custom headers', async () => {
+    const { getUser } = await import('../src/sdk/cli/auth')
+    await getUser('at_abc', { 'User-Agent': 'my-sdk/1.0' })
+    const headers = (fetchSpy.mock.calls[0][1] as RequestInit).headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('my-sdk/1.0')
+    expect(headers['Authorization']).toBe('Bearer at_abc')
+  })
+
+  it('logout forwards custom headers on both revocations', async () => {
+    const { logout } = await import('../src/sdk/cli/auth')
+    await logout('at_abc', 'rt_abc', { 'User-Agent': 'my-sdk/1.0' })
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    for (const call of fetchSpy.mock.calls) {
+      const headers = (call[1] as RequestInit).headers as Record<string, string>
+      expect(headers['User-Agent']).toBe('my-sdk/1.0')
+    }
+  })
+
+  it('authorizeDevice forwards custom headers', async () => {
+    const { authorizeDevice } = await import('../src/sdk/cli/device')
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ device_code: 'd', user_code: 'u', verification_uri: 'v', verification_uri_complete: 'vc', expires_in: 600, interval: 5 }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    await authorizeDevice('cid_abc', { 'User-Agent': 'my-sdk/1.0' })
+    const headers = (fetchSpy.mock.calls[0][1] as RequestInit).headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('my-sdk/1.0')
+  })
+
+  it('pollForTokens forwards custom headers', async () => {
+    const { pollForTokens } = await import('../src/sdk/cli/device')
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: 'at', token_type: 'Bearer' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    await pollForTokens('cid_abc', 'device_abc', 0, 60, { 'User-Agent': 'my-sdk/1.0' })
+    const headers = (fetchSpy.mock.calls[0][1] as RequestInit).headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('my-sdk/1.0')
+  })
+})
