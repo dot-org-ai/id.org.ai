@@ -30,6 +30,7 @@ export interface Identity {
   verified: boolean
   level: CapabilityLevel
   claimStatus: ClaimStatus
+  organizationId?: string
   frozen?: boolean
   frozenAt?: number
   githubUserId?: string

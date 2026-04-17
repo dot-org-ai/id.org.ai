@@ -60,6 +60,9 @@ export const nullStub: IdentityStub = {
   async mcpDo() {
     return { success: false, entity: '', verb: '', error: 'Not available at L0' }
   },
+  async ensureCliClient() {},
+  async ensureOAuthDoClient() {},
+  async ensureWebClients() {},
   async oauthStorageOp() {
     return {}
   },
@@ -67,6 +70,11 @@ export const nullStub: IdentityStub = {
   async queryAuditLog() {
     return { events: [], hasMore: false }
   },
+  async storeWorkOSRefreshToken() {},
+  async refreshWorkOSToken() {
+    throw new Error('Not available at L0')
+  },
+  async clearWorkOSRefreshToken() {},
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -153,11 +153,11 @@ export function errorJson(
  * ```
  */
 export function errorResponse(
-  c: { json: (data: unknown, status?: number) => unknown },
+  c: { json: (data: unknown, status?: number) => Response },
   status: number,
   error: string,
   description?: string,
-): unknown {
+): Response {
   const body: ErrorResponse = { error }
   if (description) body.error_description = description
   return c.json(body, status)
