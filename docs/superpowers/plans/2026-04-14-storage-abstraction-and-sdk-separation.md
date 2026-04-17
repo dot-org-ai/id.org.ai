@@ -1,6 +1,12 @@
 # id.org.ai Storage Abstraction & SDK/Server Separation
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: COMPLETE** — All phases shipped and deployed 2026-04-16. Published as id.org.ai@0.2.4.
+>
+> - Phase 1 (Storage Abstraction): 2026-04-14
+> - Phase 2 (SDK/Server Split): 2026-04-15
+> - Phase 3 (Remove compat shims): 2026-04-16
+> - Drizzle schema cleanup: 2026-04-16
+> - Worker TS error fixes (errorResponse, Identity.organizationId, nullStub): 2026-04-16
 
 **Goal:** Introduce a portable `StorageAdapter` interface to decouple services from `DurableObjectStorage`, then reorganize `src/` into `sdk/` and `server/` directories with clean export boundaries.
 
