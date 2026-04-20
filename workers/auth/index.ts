@@ -253,6 +253,7 @@ function jwtPayloadToUser(payload: jose.JWTPayload): AuthUser {
     org: orgId,
     roles: extractRoles(payload),
     permissions: payload.permissions as string[] | undefined,
+    platformRole: payload.platformRole === 'superadmin' ? 'superadmin' : undefined,
   }
 }
 
@@ -584,10 +585,21 @@ export class AuthRPC extends WorkerEntrypoint<Env> {
   }
 
   /**
-   * Check if token belongs to an admin user
+   * Check if token belongs to a tenant admin.
+   * Tenant-scoped — platform superadmin uses isPlatformAdmin instead.
    */
   async isAdmin(token: string): Promise<boolean> {
     return this.hasRoles(token, ['admin'])
+  }
+
+  /**
+   * Check if token belongs to a platform-level superadmin.
+   * Reads the platformRole claim (set when user's org is PLATFORM_ORG_ID) —
+   * orthogonal to tenant roles[].
+   */
+  async isPlatformAdmin(token: string): Promise<boolean> {
+    const user = await this.getUser(token)
+    return user?.platformRole === 'superadmin'
   }
 
   /**

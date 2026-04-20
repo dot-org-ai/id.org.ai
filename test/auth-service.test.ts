@@ -364,7 +364,12 @@ class MockAuthService {
   }
 
   async isAdmin(token: string): Promise<boolean> {
-    return this.hasRoles(token, ['admin', 'superadmin'])
+    return this.hasRoles(token, ['admin'])
+  }
+
+  async isPlatformAdmin(token: string): Promise<boolean> {
+    const user = await this.getUser(token)
+    return user?.platformRole === 'superadmin'
   }
 
   async invalidate(token: string): Promise<boolean> {
@@ -1897,18 +1902,18 @@ describe('AuthService.isAdmin', () => {
     expect(await service.isAdmin('eyJ.test.jwt')).toBe(true)
   })
 
-  it('returns true for user with superadmin role', async () => {
+  it('returns false for user with only superadmin in roles[] (platform admin uses platformRole claim, not roles)', async () => {
     const jwtUser: AuthUser = { id: 'u1', roles: ['superadmin'] }
     const service = new MockAuthService(
       { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
       { verifyOwnJWT: async () => jwtUser },
     )
 
-    expect(await service.isAdmin('eyJ.test.jwt')).toBe(true)
+    expect(await service.isAdmin('eyJ.test.jwt')).toBe(false)
   })
 
-  it('returns true for user with both admin and superadmin', async () => {
-    const jwtUser: AuthUser = { id: 'u1', roles: ['admin', 'superadmin'] }
+  it('returns true when admin is present alongside other roles', async () => {
+    const jwtUser: AuthUser = { id: 'u1', roles: ['admin', 'editor'] }
     const service = new MockAuthService(
       { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
       { verifyOwnJWT: async () => jwtUser },
@@ -1943,6 +1948,46 @@ describe('AuthService.isAdmin', () => {
     )
 
     expect(await service.isAdmin('bad_token')).toBe(false)
+  })
+})
+
+describe('AuthService.isPlatformAdmin', () => {
+  it('returns true when platformRole claim is "superadmin"', async () => {
+    const jwtUser: AuthUser = { id: 'u1', platformRole: 'superadmin' }
+    const service = new MockAuthService(
+      { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
+      { verifyOwnJWT: async () => jwtUser },
+    )
+
+    expect(await service.isPlatformAdmin('eyJ.test.jwt')).toBe(true)
+  })
+
+  it('returns false when platformRole is absent (even if user is tenant admin)', async () => {
+    const jwtUser: AuthUser = { id: 'u1', roles: ['admin'] }
+    const service = new MockAuthService(
+      { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
+      { verifyOwnJWT: async () => jwtUser },
+    )
+
+    expect(await service.isPlatformAdmin('eyJ.test.jwt')).toBe(false)
+  })
+
+  it('returns false for superadmin role in roles[] (must be on platformRole claim)', async () => {
+    const jwtUser: AuthUser = { id: 'u1', roles: ['superadmin'] }
+    const service = new MockAuthService(
+      { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
+      { verifyOwnJWT: async () => jwtUser },
+    )
+
+    expect(await service.isPlatformAdmin('eyJ.test.jwt')).toBe(false)
+  })
+
+  it('returns false for invalid token', async () => {
+    const service = new MockAuthService(
+      { SESSIONS: createMockKV(), IDENTITY: createMockIdentityNS() },
+    )
+
+    expect(await service.isPlatformAdmin('bad_token')).toBe(false)
   })
 })
 

@@ -239,7 +239,18 @@ export class AuthService extends WorkerEntrypoint<Env> {
   // Check if token belongs to an admin user.
 
   async isAdmin(token: string): Promise<boolean> {
-    return this.hasRoles(token, ['admin', 'superadmin'])
+    return this.hasRoles(token, ['admin'])
+  }
+
+  // ── isPlatformAdmin ─────────────────────────────────────────────────
+  // Check if token belongs to a platform-level superadmin.
+  // This is distinct from tenant admin — reads the platformRole claim,
+  // not roles[]. Members of PLATFORM_ORG_ID get platformRole: 'superadmin'
+  // injected into their JWT.
+
+  async isPlatformAdmin(token: string): Promise<boolean> {
+    const user = await this.getUser(token)
+    return user?.platformRole === 'superadmin'
   }
 
   // ── invalidate ──────────────────────────────────────────────────────
@@ -291,6 +302,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         organizationId: org?.id || (payload.org_id as string | undefined),
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
+        platformRole: payload.platformRole === 'superadmin' ? 'superadmin' : undefined,
         metadata: payload.metadata as Record<string, unknown> | undefined,
       }
     } catch {

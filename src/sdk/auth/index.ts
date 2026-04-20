@@ -69,6 +69,11 @@ export interface AuthUser {
   org?: string
   roles?: string[]
   permissions?: string[]
+  /**
+   * Platform-scoped role, orthogonal to tenant `roles[]`.
+   * Set to 'superadmin' when the user's org is the platform org (PLATFORM_ORG_ID).
+   */
+  platformRole?: 'superadmin'
   metadata?: Record<string, unknown>
 }
 
