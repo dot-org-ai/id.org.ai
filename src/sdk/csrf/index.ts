@@ -184,6 +184,7 @@ export function extractCSRFFromCookie(request: Request): string | null {
 // ============================================================================
 
 import type { StorageAdapter } from '../storage'
+import { constantTimeEqual } from '../oauth/pkce'
 
 /**
  * CSRFProtection provides server-side CSRF token management.
@@ -236,7 +237,7 @@ export class CSRFProtection {
     }
 
     // Must match (constant-time comparison)
-    if (!timingSafeEqual(cookieToken, formToken)) {
+    if (!(await constantTimeEqual(cookieToken, formToken))) {
       return { valid: false, error: 'CSRF token mismatch' }
     }
 
@@ -318,18 +319,3 @@ export function validateOrigin(request: Request): Response | null {
   return null
 }
 
-// ============================================================================
-// Timing-safe string comparison
-// ============================================================================
-
-/**
- * Constant-time string comparison to prevent timing attacks on CSRF tokens.
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let mismatch = 0
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  }
-  return mismatch === 0
-}
