@@ -23,6 +23,23 @@ export function getStubForIdentity(env: Env, identityId: string): IdentityStub {
 }
 
 /**
+ * Module-level cache for the SigningKeyManager.
+ *
+ * Workers run one env per isolate, so a single manager is safe to reuse across
+ * requests. This avoids rebuilding the manager (and re-hitting the DO for keys)
+ * on every JWT verify / JWKS read / token sign.
+ */
+let cachedSigningKeyManager: SigningKeyManager | null = null
+
+export function getSigningKeyManager(env: Env): SigningKeyManager {
+  if (!cachedSigningKeyManager) {
+    const oauthStub = getStubForIdentity(env, 'oauth')
+    cachedSigningKeyManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+  }
+  return cachedSigningKeyManager
+}
+
+/**
  * Resolve the identity ID (shard key) from the request's auth credentials.
  * Returns null for anonymous/L0 requests that don't need a DO.
  */
@@ -47,8 +64,7 @@ export async function resolveIdentityId(request: Request, env: Env): Promise<str
     const jwt = parseCookieValue(cookie, 'auth')
     if (jwt) {
       try {
-        const oauthStub = getStubForIdentity(env, 'oauth')
-        const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+        const manager = getSigningKeyManager(env)
         const jwks = await manager.getJWKS()
         const localJwks = jose.createLocalJWKSet(jwks)
         const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })

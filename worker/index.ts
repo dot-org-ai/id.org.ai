@@ -32,11 +32,11 @@ import { parseCookieValue } from './utils/cookies'
 import { authenticateRequest } from './middleware/auth'
 import {
   getStubForIdentity,
+  getSigningKeyManager,
   identityStubMiddleware,
 } from './middleware/tenant'
 import { oauthRoutes, getOAuthProvider } from './routes/oauth'
 import { claimRoutes } from './routes/claim'
-import { SigningKeyManager } from '../src/sdk/jwt/signing'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 import { errorResponse, ErrorCode } from '../src/sdk/errors'
@@ -275,8 +275,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
     // Verify JWTs signed by us using keys from DO storage directly.
     // No HTTP round-trip — avoids circular self-fetch to our own JWKS endpoint.
     try {
-      const oauthStub = this.env.IDENTITY.get(this.env.IDENTITY.idFromName('oauth')) as unknown as IdentityStub
-      const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+      const manager = getSigningKeyManager(this.env)
       const jwksData = await manager.getJWKS()
       const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
       const { payload } = await jose.jwtVerify(token, localJWKS, {
@@ -468,8 +467,7 @@ app.use('/dash/*', async (c, next) => {
   }
 
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
     await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
@@ -555,8 +553,7 @@ app.get('/me', async (c) => {
 
   // JWT — verify against our own JWKS (id.org.ai-signed)
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwksData = await manager.getJWKS()
     const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
     const { payload } = await jose.jwtVerify(token, localJWKS, { issuer: 'https://id.org.ai' })
@@ -679,8 +676,7 @@ app.get('/.well-known/oauth-protected-resource', (c) => {
 // Other workers verify our JWTs by fetching this endpoint.
 
 app.get('/.well-known/jwks.json', async (c) => {
-  const oauthStub = getStubForIdentity(c.env, 'oauth')
-  const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+  const manager = getSigningKeyManager(c.env)
   const jwks = await manager.getJWKS()
   return c.json(jwks, 200, {
     'Cache-Control': 'public, max-age=3600',
@@ -730,8 +726,7 @@ app.get('/', async (c) => {
     const jwt = parseCookieValue(cookie, 'auth')
     if (jwt) {
       try {
-        const oauthStub = getStubForIdentity(c.env, 'oauth')
-        const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+        const manager = getSigningKeyManager(c.env)
         const jwks = await manager.getJWKS()
         const localJwks = jose.createLocalJWKSet(jwks)
         await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })

@@ -9,10 +9,9 @@ import * as jose from 'jose'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
-import { getStubForIdentity, resolveIdentityId } from '../middleware/tenant'
+import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
-import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import {
   buildWorkOSAuthUrl,
   exchangeWorkOSCode,
@@ -27,7 +26,7 @@ import {
   decodeLoginState,
   listUserOrgMemberships,
 } from '../../src/sdk/workos/upstream'
-import type { OrgSelectionError } from '../../src/sdk/workos/upstream'
+import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -161,7 +160,7 @@ app.post('/api/org-select', async (c) => {
   }
 
   // Exchange pending token + org selection for real auth result
-  let authResult
+  let authResult: WorkOSAuthResult
   try {
     authResult = await exchangeWorkOSOrgSelection(clientId, apiKey, pendingToken, organizationId, {
       userAgent: c.req.header('user-agent'),
@@ -241,7 +240,7 @@ app.get('/api/callback', async (c) => {
   }
 
   // Exchange code with WorkOS (or retrieve stored auth result from org selection)
-  let authResult
+  let authResult: WorkOSAuthResult
   if (authResultKey) {
     // Coming back from org picker — retrieve stored auth result
     const stored = await oauthStub.oauthStorageOp({ op: 'get', key: authResultKey })
@@ -367,7 +366,7 @@ app.get('/api/callback', async (c) => {
   // Sign our own JWT for the auth cookie (camelCase claims, nested org object)
   const platformOrgId = c.env.PLATFORM_ORG_ID
   const isSuperadmin = !!(platformOrgId && orgId && orgId === platformOrgId)
-  const signingManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+  const signingManager = getSigningKeyManager(c.env)
   const jwt = await signingManager.sign(
     {
       sub: authResult.user.id,
@@ -479,8 +478,7 @@ app.get('/api/me', async (c) => {
   if (!jwt) return c.json({ authenticated: false }, 200)
 
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
@@ -512,8 +510,7 @@ app.get('/api/session', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
@@ -570,8 +567,7 @@ app.get('/api/widget-token', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
@@ -583,10 +579,7 @@ app.get('/api/widget-token', async (c) => {
     const org = payload.org as { id?: string } | undefined
     const organizationId = org?.id || (payload.org_id as string) || undefined
 
-    const token = await identityStub.refreshWorkOSToken(
-      { clientId: c.env.WORKOS_CLIENT_ID, apiKey: c.env.WORKOS_API_KEY },
-      organizationId,
-    )
+    const token = await identityStub.refreshWorkOSToken({ clientId: c.env.WORKOS_CLIENT_ID!, apiKey: c.env.WORKOS_API_KEY! }, organizationId)
 
     return c.json({ token })
   } catch (err) {
@@ -612,8 +605,7 @@ app.post('/api/session/organization', async (c) => {
   }
 
   try {
-    const oauthStub = getStubForIdentity(c.env, 'oauth')
-    const manager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    const manager = getSigningKeyManager(c.env)
     const jwks = await manager.getJWKS()
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })

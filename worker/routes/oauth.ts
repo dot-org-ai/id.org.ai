@@ -6,7 +6,7 @@
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
-import { getStubForIdentity } from '../middleware/tenant'
+import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
 import { OAuthProvider } from '../../src/sdk/oauth/provider'
 import {
@@ -17,7 +17,6 @@ import {
   extractCSRFFromCookie,
 } from '../../src/sdk/csrf'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
-import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -27,7 +26,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(c.env, 'oauth')
-  const signingKeyManager = new SigningKeyManager((op) => stub.oauthStorageOp(op))
+  const signingKeyManager = getSigningKeyManager(c.env)
   const base = 'https://id.org.ai'
   return new OAuthProvider({
     storage: {
