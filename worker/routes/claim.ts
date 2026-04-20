@@ -5,7 +5,7 @@
 import { Hono } from 'hono'
 import * as jose from 'jose'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tenant'
 import { ClaimService } from '../../src/sdk/claim/provision'
 import { verifyClaim } from '../../src/sdk/claim/verify'
@@ -66,8 +66,8 @@ app.post('/api/provision', async (c) => {
     })
 
     return c.json(result, 201)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ProvisionFailed, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ProvisionFailed, errorMessage(err))
   }
 })
 
@@ -86,8 +86,8 @@ app.get('/api/claim/:token', async (c) => {
   try {
     const status = await verifyClaim(token, stub)
     return c.json(status, status.valid ? 200 : 404)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.VerificationFailed, errorMessage(err))
   }
 })
 
@@ -121,8 +121,8 @@ app.get('/api/claim/:token/status', async (c) => {
       status: result.status || 'unclaimed',
       level: result.level,
     })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.VerificationFailed, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.VerificationFailed, errorMessage(err))
   }
 })
 
@@ -161,8 +161,8 @@ app.post('/api/claim', async (c) => {
       audience: 'id.org.ai',
     })
     oidcPayload = payload
-  } catch (err: any) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token verification failed: ${err.message}`)
+  } catch (err: unknown) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token verification failed: ${errorMessage(err)}`)
   }
 
   // Parse request body
@@ -223,8 +223,8 @@ app.post('/api/claim', async (c) => {
       success: true,
       identity: result.identity,
     })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
 })
 
@@ -258,8 +258,8 @@ app.post('/api/freeze', async (c) => {
     })
 
     return c.json(result)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.FreezeFailed, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.FreezeFailed, errorMessage(err))
   }
 })
 

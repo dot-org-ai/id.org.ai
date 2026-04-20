@@ -8,6 +8,8 @@
  *   4. Optionally syncs agent public keys from .headless.ly/agents/*.pub
  */
 
+import { errorMessage } from '../errors'
+
 const CLAIM_API = 'https://id.org.ai/api/claim'
 const OIDC_AUDIENCE = 'id.org.ai'
 const MAX_RETRIES = 3
@@ -134,8 +136,8 @@ export async function verifyClaimFromAction(input: ActionInput): Promise<ActionO
         level: result.identity?.level,
         claimed: true,
       }
-    } catch (err: any) {
-      lastError = err.message
+    } catch (err: unknown) {
+      lastError = errorMessage(err)
       if (attempt < MAX_RETRIES) {
         await sleep(RETRY_DELAY_MS * attempt)
         continue

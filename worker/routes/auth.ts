@@ -7,7 +7,7 @@
 import { Hono } from 'hono'
 import * as jose from 'jose'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
@@ -166,8 +166,8 @@ app.post('/api/org-select', async (c) => {
       userAgent: c.req.header('user-agent'),
       ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for'),
     })
-  } catch (err: any) {
-    return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 502, ErrorCode.ServerError, errorMessage(err))
   }
 
   // Decode state to get CSRF + continue URL + origin
@@ -255,13 +255,12 @@ app.get('/api/callback', async (c) => {
         userAgent: c.req.header('user-agent'),
         ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for'),
       })
-    } catch (err: any) {
+    } catch (err: unknown) {
       // User belongs to multiple orgs — show org picker (don't consume CSRF yet)
-      if (err.code === 'organization_selection_required') {
-        const orgErr = err as OrgSelectionError
-        return renderOrgPickerPage(orgErr, state)
+      if (err && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'organization_selection_required') {
+        return renderOrgPickerPage(err as OrgSelectionError, state)
       }
-      return errorResponse(c, 502, ErrorCode.ServerError, err.message)
+      return errorResponse(c, 502, ErrorCode.ServerError, errorMessage(err))
     }
   } else {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing code or _auth_result parameter')

@@ -6,7 +6,7 @@
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import type { IdentityStub } from '../../src/server/do/Identity'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { ensurePersonalOrg } from '../../src/sdk/workos/upstream'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../../src/sdk/workos/keys'
 
@@ -77,8 +77,8 @@ app.post('/api/keys', async (c) => {
         expiresAt: body.expiresAt,
       })
       return c.json({ id: result.id, key: result.key, name: result.name }, 201)
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    } catch (err: unknown) {
+      return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
     }
   }
 
@@ -95,8 +95,8 @@ app.post('/api/keys', async (c) => {
     await c.env.SESSIONS.put(`apikey:${result.key}`, auth.identityId)
 
     return c.json(result, 201)
-  } catch (err: any) {
-    const msg = err.message ?? 'Failed to create API key'
+  } catch (err: unknown) {
+    const msg = errorMessage(err) || 'Failed to create API key'
     if (msg.includes('Invalid scope') || msg.includes('in the future') || msg.includes('required')) {
       return errorResponse(c, 400, ErrorCode.InvalidRequest, msg)
     }
@@ -127,8 +127,8 @@ app.get('/api/keys', async (c) => {
         lastUsedAt: k.last_used_at,
       }))
       return c.json({ keys })
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    } catch (err: unknown) {
+      return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
     }
   }
 
@@ -136,8 +136,8 @@ app.get('/api/keys', async (c) => {
   try {
     const keys = await stub.listApiKeys(auth.identityId)
     return c.json({ keys })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
 })
 
@@ -162,8 +162,8 @@ app.delete('/api/keys/:id', async (c) => {
         return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to revoke WorkOS API key')
       }
       return c.json({ id: keyId, status: 'revoked', revokedAt: new Date().toISOString() })
-    } catch (err: any) {
-      return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+    } catch (err: unknown) {
+      return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
     }
   }
 
@@ -181,8 +181,8 @@ app.delete('/api/keys/:id', async (c) => {
 
     // Don't expose the key string in the response
     return c.json({ id: result.id, status: result.status, revokedAt: result.revokedAt })
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
 })
 

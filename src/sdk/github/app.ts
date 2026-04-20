@@ -10,6 +10,8 @@
  * The commit IS the identity — GitHub authenticates who pushed.
  */
 
+import { errorMessage } from '../errors'
+
 export interface PushEvent {
   ref: string
   installation?: {
@@ -127,11 +129,11 @@ export class GitHubApp {
 
     try {
       yamlContent = await this.fetchWorkflowContent(repo, ref, event.installation.id)
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         claimed: false,
         branch,
-        error: `fetch_workflow_failed: ${err.message}`,
+        error: `fetch_workflow_failed: ${errorMessage(err)}`,
       }
     }
 
@@ -192,12 +194,12 @@ export class GitHubApp {
         level: result.identity?.level,
         branch,
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         claimed: false,
         claimToken,
         branch,
-        error: `claim_request_failed: ${err.message}`,
+        error: `claim_request_failed: ${errorMessage(err)}`,
       }
     }
   }

@@ -4,7 +4,7 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import type { AuditQueryOptions } from '../../src/sdk/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -36,8 +36,8 @@ app.get('/api/audit', async (c) => {
   try {
     const data = await stub.queryAuditLog(queryParams)
     return c.json(data)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
 })
 

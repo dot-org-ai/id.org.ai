@@ -5,7 +5,7 @@
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import type { IdentityStub } from '../../src/server/do/Identity'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { extractWorkOSUserFromJWT } from '../middleware/tenant'
 import {
   createWorkOSOrganization,
@@ -284,7 +284,7 @@ app.post('/webhooks/workos', async (c) => {
       default:
         return c.json({ ok: true, skipped: true, event: body.event })
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error(`[webhooks/workos] Error handling ${body.event}:`, err)
     return c.json({ error: 'Internal error processing webhook' }, 500)
   }
@@ -307,8 +307,8 @@ app.get('/admin-portal', async (c) => {
   try {
     const result = await getAdminPortalUrl(orgId, c.env.WORKOS_API_KEY)
     return c.json(result)
-  } catch (err: any) {
-    return errorResponse(c, 500, ErrorCode.ServerError, err.message)
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
 })
 

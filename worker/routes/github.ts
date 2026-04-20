@@ -4,7 +4,7 @@
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
-import { errorResponse, ErrorCode } from '../../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { GitHubApp } from '../../src/sdk/github/app'
 import type { PushEvent } from '../../src/sdk/github/app'
 import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tenant'
@@ -134,8 +134,8 @@ async function handlePushWithSharding(
   let yamlContent: string | null = null
   try {
     yamlContent = await githubApp.fetchWorkflowContent(push.repository.full_name, push.ref, push.installation.id)
-  } catch (err: any) {
-    return { claimed: false, branch, error: `fetch_workflow_failed: ${err.message}` }
+  } catch (err: unknown) {
+    return { claimed: false, branch, error: `fetch_workflow_failed: ${errorMessage(err)}` }
   }
 
   if (!yamlContent) {
@@ -211,8 +211,8 @@ async function handlePushWithSharding(
       level: result.identity?.level,
       branch,
     }
-  } catch (err: any) {
-    return { claimed: false, claimToken, branch, error: `claim_request_failed: ${err.message}` }
+  } catch (err: unknown) {
+    return { claimed: false, claimToken, branch, error: `claim_request_failed: ${errorMessage(err)}` }
   }
 }
 

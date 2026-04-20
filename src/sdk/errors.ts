@@ -162,3 +162,13 @@ export function errorResponse(
   if (description) body.error_description = description
   return c.json(body, status)
 }
+
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ *
+ * Guards against `err.message` access on non-Error throws (strings, numbers,
+ * plain objects) — which otherwise silently yield `undefined` in the response.
+ */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}

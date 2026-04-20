@@ -1,6 +1,7 @@
 import { Ok, Err } from '../../../sdk/foundation/result'
 import type { Result } from '../../../sdk/foundation/result'
 import { ValidationError, NotFoundError, ConflictError, KeyError } from '../../../sdk/foundation/errors'
+import { errorMessage } from '../../../sdk/errors'
 import type { StorageAdapter } from '../../../sdk/storage'
 import {
   publicKeyToDID,
@@ -62,8 +63,8 @@ export class AgentKeyServiceImpl implements AgentKeyWriter {
       } else {
         rawPublicKey = base64Decode(input.publicKey)
       }
-    } catch (err: any) {
-      return Err(new ValidationError('publicKey', `Invalid public key format: ${err.message}`))
+    } catch (err: unknown) {
+      return Err(new ValidationError('publicKey', `Invalid public key format: ${errorMessage(err)}`))
     }
 
     if (rawPublicKey.length !== 32) {

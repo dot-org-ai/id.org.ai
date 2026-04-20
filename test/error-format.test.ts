@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { ErrorCode, errorJson, errorResponse } from '../src/sdk/errors'
+import { ErrorCode, errorJson, errorResponse, errorMessage } from '../src/sdk/errors'
 import type { ErrorResponse, ErrorCodeValue } from '../src/sdk/errors'
 
 // ── ErrorCode Constants ─────────────────────────────────────────────────
@@ -336,5 +336,27 @@ describe('ErrorCodeValue type', () => {
       expect(typeof v).toBe('string')
       expect(Object.values(ErrorCode)).toContain(v)
     }
+  })
+})
+
+describe('errorMessage', () => {
+  it('returns the message of an Error instance', () => {
+    expect(errorMessage(new Error('boom'))).toBe('boom')
+  })
+
+  it('stringifies a non-Error value (the bug fix)', () => {
+    expect(errorMessage('just a string')).toBe('just a string')
+    expect(errorMessage(42)).toBe('42')
+    expect(errorMessage({ code: 'x' })).toBe('[object Object]')
+  })
+
+  it('handles null/undefined without throwing', () => {
+    expect(errorMessage(null)).toBe('null')
+    expect(errorMessage(undefined)).toBe('undefined')
+  })
+
+  it('unwraps subclasses of Error', () => {
+    class CustomError extends Error {}
+    expect(errorMessage(new CustomError('custom'))).toBe('custom')
   })
 })

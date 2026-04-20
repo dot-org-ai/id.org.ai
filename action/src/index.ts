@@ -24,7 +24,8 @@ import {
   setError,
   setNotice,
   writeTenantConfig,
-} from '../../src/github/action'
+} from '../../src/sdk/github/action'
+import { errorMessage } from '../../src/sdk/errors'
 
 async function run() {
   // ── Validate inputs ──────────────────────────────────────────────────
@@ -44,9 +45,9 @@ async function run() {
 
   try {
     oidcToken = await requestOIDCToken()
-  } catch (err: any) {
+  } catch (err: unknown) {
     setError(
-      `Failed to request OIDC token: ${err.message}\n` +
+      `Failed to request OIDC token: ${errorMessage(err)}\n` +
       'Ensure your workflow includes:\n' +
       '  permissions:\n' +
       '    id-token: write',
@@ -85,9 +86,9 @@ async function run() {
   try {
     await writeTenantConfig(result)
     setNotice(`Tenant config written to .headless.ly/tenant.json`)
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Non-fatal: config file write failure should not fail the action
-    console.log(`::warning::Failed to write tenant config: ${err.message}`)
+    console.log(`::warning::Failed to write tenant config: ${errorMessage(err)}`)
   }
 
   // ── Sync agent keys (optional) ──────────────────────────────────────
@@ -97,8 +98,8 @@ async function run() {
     try {
       await syncAgentKeys(result.tenantId!, oidcToken)
       setNotice('Agent public keys synced to .headless.ly/agents/')
-    } catch (err: any) {
-      console.log(`::warning::Failed to sync agent keys: ${err.message}`)
+    } catch (err: unknown) {
+      console.log(`::warning::Failed to sync agent keys: ${errorMessage(err)}`)
     }
   }
 
@@ -183,6 +184,6 @@ async function syncAgentKeys(tenantId: string, oidcToken: string): Promise<void>
 }
 
 run().catch((err) => {
-  setError(`Unexpected error: ${err.message}`)
+  setError(`Unexpected error: ${errorMessage(err)}`)
   process.exit(1)
 })
