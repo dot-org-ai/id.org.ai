@@ -63,6 +63,12 @@
 
   "tail_consumers": [{ "service": "tail" }],
 
+  // Daily cron fires the scheduled() handler, which rotates the signing key
+  // if it's older than 90 days. See worker/index.ts SIGNING_KEY_ROTATION_MS.
+  "triggers": {
+    "crons": ["0 3 * * *"],
+  },
+
   // Secrets (set via wrangler secret):
   // WORKOS_API_KEY              — WorkOS API key (client secret for code exchange + sk_* validation)
   // WORKOS_CLIENT_ID            — WorkOS client ID (for OAuth flow + JWT audience)

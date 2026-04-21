@@ -404,4 +404,16 @@ export class SigningKeyManager {
     await this.persistKeys()
     return newKey
   }
+
+  /**
+   * Rotate only if the current key is older than maxAgeMs.
+   * Returns true if rotation happened, false if the current key is still fresh.
+   * Called from a scheduled handler (cron trigger) to enforce a rotation cadence.
+   */
+  async rotateIfOlderThan(maxAgeMs: number): Promise<boolean> {
+    const current = await this.getCurrentKey()
+    if (Date.now() - current.createdAt < maxAgeMs) return false
+    await this.rotateKey()
+    return true
+  }
 }

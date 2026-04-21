@@ -39,7 +39,7 @@ import { oauthRoutes, getOAuthProvider } from './routes/oauth'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
-import { errorResponse, ErrorCode } from '../src/sdk/errors'
+import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
@@ -764,4 +764,26 @@ app.all('*', async (c) => {
   return errorResponse(c, 404, ErrorCode.NotFound, 'The requested endpoint does not exist')
 })
 
-export default app
+// Signing key rotation cadence. Daily cron triggers a check; actual rotation
+// only fires when the current key exceeds this age. With at-most-2-keys
+// retention, the retired key stays in JWKS until the next rotation — ~90 days
+// of overlap, which exceeds the 30-day auth-cookie TTL so no live sessions
+// are invalidated mid-flight.
+const SIGNING_KEY_ROTATION_MS = 90 * 24 * 3600 * 1000
+
+export default {
+  fetch: app.fetch.bind(app),
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const manager = getSigningKeyManager(env)
+          const rotated = await manager.rotateIfOlderThan(SIGNING_KEY_ROTATION_MS)
+          if (rotated) console.log('[scheduled] Signing key rotated (90-day cadence)')
+        } catch (err) {
+          console.error('[scheduled] Rotation check failed:', errorMessage(err))
+        }
+      })(),
+    )
+  },
+}

@@ -765,6 +765,30 @@ describe('SigningKeyManager', () => {
     })
   })
 
+  describe('rotateIfOlderThan', () => {
+    it('rotates when current key is older than threshold', async () => {
+      const oldKey = await manager.getCurrentKey()
+      // Manually age the loaded key: push createdAt into the past
+      ;(oldKey as { createdAt: number }).createdAt = Date.now() - 100 * 24 * 3600 * 1000
+
+      const rotated = await manager.rotateIfOlderThan(90 * 24 * 3600 * 1000)
+      expect(rotated).toBe(true)
+
+      const newCurrent = await manager.getCurrentKey()
+      expect(newCurrent.kid).not.toBe(oldKey.kid)
+    })
+
+    it('does NOT rotate when current key is younger than threshold', async () => {
+      const originalKey = await manager.getCurrentKey()
+
+      const rotated = await manager.rotateIfOlderThan(90 * 24 * 3600 * 1000)
+      expect(rotated).toBe(false)
+
+      const currentAfter = await manager.getCurrentKey()
+      expect(currentAfter.kid).toBe(originalKey.kid)
+    })
+  })
+
   // ── Storage Interaction ───────────────────────────────────────────────
 
   describe('storage persistence', () => {
