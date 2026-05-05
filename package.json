@@ -1,6 +1,6 @@
 {
   "name": "id.org.ai",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Agent-first identity — Humans. Agents. Identity.",
   "type": "module",
   "main": "dist/index.js",
