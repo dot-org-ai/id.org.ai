@@ -107,6 +107,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         name: identity?.name,
         email: identity?.email,
         organizationId: identity?.name,
+        org: identity?.name,
         permissions: ['read', 'write', 'delete', 'search', 'fetch', 'do', 'try', 'claim'],
       }
       await cacheUser(token, user)
@@ -129,6 +130,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         name: identity?.name,
         email: identity?.email,
         organizationId: identity?.name,
+        org: identity?.name,
         permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
       }
       await cacheUser(token, user)
@@ -143,6 +145,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
           id: result.id || 'workos-key',
           name: result.name,
           organizationId: result.organization_id,
+          org: result.organization_id,
           permissions: result.permissions || ['read', 'write'],
         }
         await cacheUser(token, user)
@@ -300,6 +303,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         name: payload.name as string | undefined,
         image: payload.image as string | undefined,
         organizationId: org?.id || (payload.org_id as string | undefined),
+        org: org?.id || (payload.org_id as string | undefined),
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         platformRole: payload.platformRole === 'superadmin' ? 'superadmin' : undefined,
@@ -351,6 +355,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
           name: payload.name as string | undefined,
           image: payload.picture as string | undefined,
           organizationId: payload.org_id as string | undefined,
+          org: payload.org_id as string | undefined,
           roles,
           permissions,
           metadata: payload.metadata as Record<string, unknown> | undefined,
@@ -364,6 +369,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         name: payload.name as string | undefined,
         image: payload.picture as string | undefined,
         organizationId: payload.org_id as string | undefined,
+        org: payload.org_id as string | undefined,
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         metadata: payload.metadata as Record<string, unknown> | undefined,
@@ -389,6 +395,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
         name: payload.name as string | undefined,
         image: payload.picture as string | undefined,
         organizationId: payload.org_id as string | undefined,
+        org: payload.org_id as string | undefined,
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         metadata: payload.metadata as Record<string, unknown> | undefined,
@@ -543,6 +550,7 @@ app.get('/me', async (c) => {
       name: identity?.name,
       email: identity?.email,
       organizationId: identity?.name,
+      org: identity?.name,
     })
   }
 
@@ -559,6 +567,7 @@ app.get('/me', async (c) => {
       name: identity?.name,
       email: identity?.email,
       organizationId: identity?.name,
+      org: identity?.name,
       permissions: result.scopes || ['read', 'write', 'export', 'webhook'],
     })
   }
@@ -576,6 +585,7 @@ app.get('/me', async (c) => {
       name: payload.name as string | undefined,
       image: payload.image as string | undefined,
       organizationId: org?.id || (payload.org_id as string | undefined),
+      org: org?.id || (payload.org_id as string | undefined),
       roles: payload.roles as string[] | undefined,
       permissions: payload.permissions as string[] | undefined,
     })
@@ -595,6 +605,7 @@ app.get('/me', async (c) => {
         name: (payload.name || payload.first_name) as string | undefined,
         image: payload.picture as string | undefined,
         organizationId: payload.org_id as string | undefined,
+        org: payload.org_id as string | undefined,
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
       })
