@@ -19,3 +19,13 @@ export type {
 } from './types'
 
 export type { PaymentBroker } from './broker'
+export { PaymentBrokerImpl } from './broker-impl'
+export type { PaymentBrokerConfig } from './broker-impl'
+export { HttpFacilitatorClient } from './facilitator'
+export type {
+  FacilitatorClient,
+  FacilitatorVerifyRequest,
+  FacilitatorVerifyResponse,
+  FacilitatorSettleRequest,
+  FacilitatorSettleResponse,
+} from './facilitator'

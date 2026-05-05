@@ -15,6 +15,12 @@ export type {
 } from './broker'
 export { AuthBrokerImpl } from './broker-impl'
 
+// `wrap()` — canonical broker usage helper for digital-tools and any
+// route that already holds an Identity. Co-locates the auth requirement
+// with the handler.
+export { wrap, denialResponse, statusForDenial } from './wrap'
+export type { WrapDenialBody } from './wrap'
+
 export const CANONICAL_AUTH_ORIGIN = 'https://id.org.ai'
 export const CANONICAL_API_ORIGIN = CANONICAL_AUTH_ORIGIN
 export const CANONICAL_AUTH_HOSTNAME = 'id.org.ai'

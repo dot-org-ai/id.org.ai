@@ -24,10 +24,15 @@ import type {
 export interface PaymentBroker {
   /**
    * One-shot charge. Maps to x402 `exact` scheme or MPP `charge` intent.
-   * Returns a receipt on success; a `PaymentRejection` (with a pre-baked
-   * 402 Response) on failure that the caller can return directly.
+   *
+   * The broker reads payment proof from `req` headers — both x402
+   * (`PAYMENT-SIGNATURE`) and MPP (`Authorization: Payment …`) forms are
+   * accepted. When no proof is presented the returned `PaymentRejection`
+   * carries a pre-baked 402 with both `WWW-Authenticate: Payment` (MPP)
+   * and `PAYMENT-REQUIRED` (x402) challenge headers so x402-only and
+   * MPP-aware clients both know what to send back.
    */
-  settle(identity: Identity, required: PaymentRequired): Promise<PaymentOutcome>
+  settle(req: Request, identity: Identity, required: PaymentRequired): Promise<PaymentOutcome>
 
   /**
    * Open an MPP session — escrow + cumulative EIP-712 vouchers. Returns a
