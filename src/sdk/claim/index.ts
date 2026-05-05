@@ -17,3 +17,13 @@ export { buildClaimWorkflow } from './workflow'
 export { provision, getClaimStatus } from './client'
 export type { ClaimStatusResult } from './client'
 export { writeClaimWorkflow } from './workflow-fs'
+
+// Pure state machine — single source of truth for the upgrade-path table
+// and GitHub OIDC field extraction.
+export {
+  upgradePathFor,
+  upgradeUrl,
+  isClaimedBranch,
+  parseGitHubOIDC,
+} from './policy'
+export type { UpgradePath, GitHubClaim } from './policy'

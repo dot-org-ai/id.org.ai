@@ -48,6 +48,10 @@ export type { OAuthStorage, ListOptions } from './storage'
 export { OAuthProvider } from './provider'
 export type { OAuthConfig, OAuthProviderClient } from './provider'
 
+// Default client seeding (CLI, dashboard, headless.ly, etc.)
+export { seedDefaultClients, DEFAULT_OAUTH_CLIENTS } from './clients'
+export type { ClientSeedStorage, DefaultClient } from './clients'
+
 // OAuth 2.1 Server factory + routes
 export { createOAuth21Server } from './server'
 export type { OAuth21ServerConfig, OAuth21Server } from './server'

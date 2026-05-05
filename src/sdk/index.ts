@@ -12,6 +12,7 @@ export * from './workos'
 export * from './csrf'
 export * from './audit'
 export * from './errors'
+export * from './payment'
 
 // Identity types (portable RPC contract)
 // Note: ClaimStatus excluded — already exported from ./claim with a different shape

@@ -377,7 +377,7 @@ describe('IdentityDO', () => {
       expect(result.error).toContain('Invalid claim token')
     })
 
-    it('stores GitHub user info on identity record', async () => {
+    it('stores GitHub user info on identity record + repo in the linked account', async () => {
       const { claimToken, identity: anon } = await identity.provisionAnonymous()
       await identity.claim({
         claimToken,
@@ -391,7 +391,9 @@ describe('IdentityDO', () => {
       const stored = await storage.get<any>(`identity:${anon.id}`)
       expect(stored.githubUserId).toBe('gh-100')
       expect(stored.githubUsername).toBe('dev')
-      expect(stored.repo).toBe('org/repo')
+
+      const linked = await storage.get<any>(`linked:${anon.id}:github`)
+      expect(linked.metadata?.repo).toBe('org/repo')
     })
 
     it('updates email from GitHub when provided', async () => {

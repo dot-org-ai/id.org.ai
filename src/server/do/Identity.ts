@@ -33,9 +33,10 @@ import type { EntityStoreService } from '../services/entity-store'
 import { IdentityServiceImpl } from '../services/identity/service'
 import { KeyServiceImpl } from '../services/keys'
 import { SessionServiceImpl } from '../services/auth/service'
-import { OAuthServiceImpl } from '../services/oauth/service'
+import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
+import { isClaimedBranch } from '../../sdk/claim/policy'
 
 // ============================================================================
 // Types — re-exported from sdk/types
@@ -167,28 +168,6 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     return this._sessionService
   }
 
-  private _oauthService?: OAuthServiceImpl
-
-  private get oauthService(): OAuthServiceImpl {
-    if (!this._oauthService) {
-      this._oauthService = new OAuthServiceImpl({
-        storage: this.storageAdapter,
-        config: {
-          issuer: 'https://id.org.ai',
-          authorizationEndpoint: 'https://id.org.ai/oauth/authorize',
-          tokenEndpoint: 'https://id.org.ai/oauth/token',
-          userinfoEndpoint: 'https://id.org.ai/oauth/userinfo',
-          registrationEndpoint: 'https://id.org.ai/oauth/register',
-          deviceAuthorizationEndpoint: 'https://id.org.ai/oauth/device',
-          revocationEndpoint: 'https://id.org.ai/oauth/revoke',
-          introspectionEndpoint: 'https://id.org.ai/oauth/introspect',
-          jwksUri: 'https://id.org.ai/.well-known/jwks.json',
-        },
-      })
-    }
-    return this._oauthService
-  }
-
   // ─── Identity Management ──────────────────────────────────────────────
 
   async createIdentity(data: {
@@ -246,51 +225,45 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     githubEmail?: string
     repo?: string
     branch?: string
+    defaultBranch?: string
   }): Promise<{ success: boolean; identity?: Identity; error?: string }> {
-    // Find identity by claim token via index
     const lookupResult = await this.identityService.getByClaimToken(data.claimToken)
     if (!lookupResult.success) {
       return { success: false, error: 'Invalid claim token' }
     }
 
-    const targetIdentity = lookupResult.data
-    const targetId = targetIdentity.id
-    const targetData = await this.ctx.storage.get<any>(`identity:${targetId}`)
-
-    if (targetIdentity.claimStatus === 'claimed') {
+    const target = lookupResult.data
+    if (target.claimStatus === 'claimed') {
       return { success: false, error: 'Tenant already claimed' }
     }
 
-    // Determine claim status based on branch
-    const claimStatus: ClaimStatus = data.branch === 'main' || data.branch === 'master'
-      ? 'claimed'
-      : 'pending'
+    const claimed = isClaimedBranch(data.branch, data.defaultBranch)
+    const claimStatus: ClaimStatus = claimed ? 'claimed' : 'pending'
 
-    // Upgrade identity
-    await this.ctx.storage.put(`identity:${targetId}`, {
-      ...targetData,
+    const updateResult = await this.identityService.update(target.id, {
       claimStatus,
-      level: claimStatus === 'claimed' ? 2 : targetData.level,
+      level: claimed ? 2 : target.level,
       githubUserId: data.githubUserId,
       githubUsername: data.githubUsername,
-      email: data.githubEmail ?? targetData.email,
-      repo: data.repo,
-      claimedAt: Date.now(),
+      email: data.githubEmail ?? target.email,
     })
+    if (!updateResult.success) {
+      return { success: false, error: updateResult.error.message }
+    }
 
-    // Link GitHub account
-    await this.ctx.storage.put(`linked:${targetId}:github`, {
+    // linkAccount enforces a single account per provider. If the agent claims
+    // again from a different repo before the first claim is finalised, the
+    // second link is a soft no-op — we keep the original record.
+    await this.identityService.linkAccount(target.id, {
       provider: 'github',
       providerAccountId: data.githubUserId,
       type: 'auth',
       displayName: data.githubUsername,
       email: data.githubEmail,
-      status: 'active',
-      createdAt: Date.now(),
+      metadata: data.repo ? { repo: data.repo } : undefined,
     })
 
-    const identity = await this.getIdentity(targetId)
-    return { success: true, identity: identity! }
+    return { success: true, identity: updateResult.data }
   }
 
   // ─── Claim Token Verification ────────────────────────────────────────
@@ -474,16 +447,20 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── OAuth Client Seeding ──────────────────────────────────────────
 
+  // All three RPC names seed the same default-client list. The names exist for
+  // historical reasons (separate seeding paths used to live in the IdentityDO);
+  // the canonical owner is now src/sdk/oauth/clients.ts.
+
   async ensureCliClient(): Promise<void> {
-    await this.oauthService.ensureDefaultClients()
+    await seedDefaultClients(this.ctx.storage)
   }
 
   async ensureOAuthDoClient(): Promise<void> {
-    await this.oauthService.ensureDefaultClients()
+    await seedDefaultClients(this.ctx.storage)
   }
 
   async ensureWebClients(): Promise<void> {
-    await this.oauthService.ensureDefaultClients()
+    await seedDefaultClients(this.ctx.storage)
   }
 
   // ─── OAuth Storage (RPC) ───────────────────────────────────────────

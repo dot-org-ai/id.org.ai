@@ -5,6 +5,16 @@
  * surface during the WorkOS custom-domain migration.
  */
 
+// AuthBroker — unified authorisation seam (replaces ad-hoc level/scope checks).
+export type {
+  AuthBroker,
+  AuthRequirement,
+  AuthDecision,
+  AuthDenialReason,
+  AuthObligation,
+} from './broker'
+export { AuthBrokerImpl } from './broker-impl'
+
 export const CANONICAL_AUTH_ORIGIN = 'https://id.org.ai'
 export const CANONICAL_API_ORIGIN = CANONICAL_AUTH_ORIGIN
 export const CANONICAL_AUTH_HOSTNAME = 'id.org.ai'

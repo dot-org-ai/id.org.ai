@@ -13,6 +13,9 @@
  */
 
 import type { IdentityStub } from '../types'
+import { upgradePathFor, upgradeUrl } from './policy'
+
+const DEFAULT_ORIGIN = 'https://id.org.ai'
 
 export interface ProvisionResult {
   tenantId: string
@@ -66,9 +69,11 @@ export interface TenantStatus {
 
 export class ClaimService {
   private identityStub: IdentityStub
+  private origin: string
 
-  constructor(identityStub: IdentityStub) {
+  constructor(identityStub: IdentityStub, origin: string = DEFAULT_ORIGIN) {
     this.identityStub = identityStub
+    this.origin = origin
   }
 
   /**
@@ -92,7 +97,7 @@ export class ClaimService {
         nextLevel: 2,
         action: 'claim',
         description: 'Commit a GitHub Action workflow to claim this tenant',
-        url: `https://id.org.ai/claim/${data.claimToken}`,
+        url: `${this.origin}/claim/${data.claimToken}`,
       },
     }
   }
@@ -107,7 +112,7 @@ export class ClaimService {
       frozen: data.frozen,
       identityId,
       stats: data.stats,
-      claimUrl: `https://id.org.ai/claim/${identityId}`,
+      claimUrl: `${this.origin}/claim/${identityId}`,
       expiresAt: new Date(data.expiresAt).toISOString(),
       message: data.stats.entities > 0
         ? `Your tenant has been frozen with ${data.stats.entities} entities and ${data.stats.events} events preserved. Claim within 30 days to keep your data.`
@@ -144,14 +149,12 @@ export class ClaimService {
       }
     }
 
-    // Suggest upgrade path based on current level
-    if (level < 2) {
+    const path = upgradePathFor(level as 0 | 1 | 2 | 3, data.status, claimToken)
+    if (path) {
       status.upgrade = {
-        nextLevel: level + 1,
-        action: level === 0 ? 'provision' : 'claim',
-        url: level === 0
-          ? 'https://id.org.ai/api/provision'
-          : `https://id.org.ai/claim/${claimToken}`,
+        nextLevel: path.nextLevel,
+        action: path.action,
+        url: upgradeUrl(path, this.origin),
       }
     }
 

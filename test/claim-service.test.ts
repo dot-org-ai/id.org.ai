@@ -309,7 +309,7 @@ describe('verifyClaim', () => {
     expect(result.upgrade!.action).toBe('claim')
   })
 
-  it('includes L3 upgrade for L2 token', async () => {
+  it('emits no library upgrade hint for L2 — L2→L3 is downstream product surface', async () => {
     const stub = createMockIdentityStub({
       verifyClaimToken: vi.fn(async () => ({
         valid: true,
@@ -322,9 +322,8 @@ describe('verifyClaim', () => {
 
     const result = await verifyClaim('clm_l2token123456789012', stub)
 
-    expect(result.upgrade).toBeDefined()
-    expect(result.upgrade!.nextLevel).toBe(3)
-    expect(result.upgrade!.action).toBe('subscribe')
+    expect(result.valid).toBe(true)
+    expect(result.upgrade).toBeUndefined()
   })
 
   it('does not include upgrade for claimed tokens', async () => {

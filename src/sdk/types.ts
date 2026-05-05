@@ -35,6 +35,23 @@ export interface Identity {
   frozenAt?: number
   githubUserId?: string
   githubUsername?: string
+
+  // ─── SVO co-design additive fields ─────────────────────────────────────
+  // Extend Identity for the AuthBroker / PaymentBroker contracts in
+  // src/sdk/auth and src/sdk/payment. All optional — back-compat for the
+  // wildcard re-export through primitives.org.ai/packages/org.ai.
+
+  /** W3C DID (`did:web:…`, `did:key:…`). Optional for non-DID flows. */
+  did?: string
+
+  /** Authorisation scopes — AuthBroker.check() consumes these. */
+  scopes?: string[]
+
+  /** Bound payment instruments. Consumed by PaymentBroker for rail selection. */
+  paymentInstruments?: import('./payment/types').PaymentInstrument[]
+
+  /** Reachable channels (email, slack, webhook). Used by digital-tasks. */
+  contacts?: import('./payment/types').ContactChannel[]
 }
 
 export interface LinkedAccount {
@@ -67,7 +84,7 @@ export interface IdentityStub {
   // Identity
   getIdentity(id: string): Promise<Identity | null>
   provisionAnonymous(presetIdentityId?: string): Promise<{ identity: Identity; sessionToken: string; claimToken: string }>
-  claim(data: { claimToken: string; githubUserId: string; githubUsername: string; githubEmail?: string; repo?: string; branch?: string }): Promise<{ success: boolean; identity?: Identity; error?: string }>
+  claim(data: { claimToken: string; githubUserId: string; githubUsername: string; githubEmail?: string; repo?: string; branch?: string; defaultBranch?: string }): Promise<{ success: boolean; identity?: Identity; error?: string }>
 
   // Auth
   getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>

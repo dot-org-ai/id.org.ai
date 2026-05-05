@@ -11,7 +11,6 @@ export { EntityStoreServiceImpl } from './services/entity-store/service'
 export { IdentityServiceImpl } from './services/identity/service'
 export { KeyServiceImpl } from './services/keys/service'
 export { SessionServiceImpl } from './services/auth/service'
-export { OAuthServiceImpl } from './services/oauth/service'
 
 // AuditLog
 export { AuditLog } from '../sdk/audit'

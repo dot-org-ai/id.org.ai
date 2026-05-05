@@ -9,6 +9,7 @@
  */
 
 import type { IdentityStub } from '../types'
+import { upgradePathFor, upgradeUrl } from './policy'
 
 export interface ClaimStatus {
   valid: boolean
@@ -24,7 +25,8 @@ export interface ClaimStatus {
   upgrade?: {
     nextLevel: number
     action: string
-    url: string
+    /** Optional. Worker callers attach a per-host URL; library leaves it blank. */
+    url?: string
   }
 }
 
@@ -38,6 +40,7 @@ export interface ClaimStatus {
 export async function verifyClaim(
   claimToken: string,
   identityStub: IdentityStub,
+  origin?: string,
 ): Promise<ClaimStatus> {
   // Validate token format
   if (!claimToken || !claimToken.startsWith('clm_')) {
@@ -75,27 +78,13 @@ export async function verifyClaim(
     }
   }
 
-  // Include upgrade path for non-claimed tenants
-  const level = data.level ?? 0
-  if (data.status !== 'claimed' && level < 3) {
-    if (level === 0) {
-      result.upgrade = {
-        nextLevel: 1,
-        action: 'provision',
-        url: 'https://id.org.ai/api/provision',
-      }
-    } else if (level === 1) {
-      result.upgrade = {
-        nextLevel: 2,
-        action: 'claim',
-        url: `https://id.org.ai/claim/${claimToken}`,
-      }
-    } else if (level === 2) {
-      result.upgrade = {
-        nextLevel: 3,
-        action: 'subscribe',
-        url: 'https://headless.ly/pricing',
-      }
+  // Single source of truth for upgrade-path policy.
+  const path = upgradePathFor((data.level ?? 0) as 0 | 1 | 2 | 3, data.status, claimToken)
+  if (path) {
+    result.upgrade = {
+      nextLevel: path.nextLevel,
+      action: path.action,
+      url: origin ? upgradeUrl(path, origin) : undefined,
     }
   }
 

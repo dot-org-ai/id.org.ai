@@ -41,6 +41,13 @@ export interface Identity {
   githubUsername?: string
   createdAt: number
   updatedAt: number
+
+  // SVO co-design additive fields. See src/sdk/types.ts:Identity for the
+  // canonical definition; this server-side copy stays in sync.
+  did?: string
+  scopes?: string[]
+  paymentInstruments?: import('../../../sdk/payment/types').PaymentInstrument[]
+  contacts?: import('../../../sdk/payment/types').ContactChannel[]
 }
 
 export interface LinkedAccount {

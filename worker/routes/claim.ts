@@ -10,8 +10,11 @@ import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tena
 import { ClaimService } from '../../src/sdk/claim/provision'
 import { verifyClaim } from '../../src/sdk/claim/verify'
 import { buildClaimWorkflow } from '../../src/sdk/claim/workflow'
+import { parseGitHubOIDC } from '../../src/sdk/claim/policy'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
+
+const reqOrigin = (req: Request) => new URL(req.url).origin
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -45,7 +48,7 @@ app.post('/api/provision', async (c) => {
         nextLevel: 2 as const,
         action: 'claim' as const,
         description: 'Commit a GitHub Action workflow to claim this tenant',
-        url: `https://id.org.ai/claim/${data.claimToken}`,
+        url: `${reqOrigin(c.req.raw)}/claim/${data.claimToken}`,
       },
     }
 
@@ -84,7 +87,7 @@ app.get('/api/claim/:token', async (c) => {
   const stub = getStubForIdentity(c.env, identityId)
 
   try {
-    const status = await verifyClaim(token, stub)
+    const status = await verifyClaim(token, stub, reqOrigin(c.req.raw))
     return c.json(status, status.valid ? 200 : 404)
   } catch (err: unknown) {
     return errorResponse(c, 500, ErrorCode.VerificationFailed, errorMessage(err))
@@ -111,7 +114,7 @@ app.get('/api/claim/:token/status', async (c) => {
   const stub = getStubForIdentity(c.env, identityId)
 
   try {
-    const result = await verifyClaim(token, stub)
+    const result = await verifyClaim(token, stub, reqOrigin(c.req.raw))
 
     if (!result.valid) {
       return c.json({ status: 'unclaimed' })
@@ -188,10 +191,7 @@ app.post('/api/claim', async (c) => {
   const stub = getStubForIdentity(c.env, identityId)
 
   // Extract GitHub identity from OIDC token claims or request body
-  const githubUserId = body.githubUserId || (oidcPayload.actor_id as string) || ''
-  const githubUsername = body.githubUsername || (oidcPayload.actor as string) || ''
-  const repo = body.repo || (oidcPayload.repository as string) || ''
-  const branch = body.branch || (oidcPayload.ref as string)?.replace('refs/heads/', '') || ''
+  const { githubUserId, githubUsername, repo, branch, defaultBranch } = parseGitHubOIDC(oidcPayload, body)
 
   try {
     const result = await stub.claim({
@@ -200,6 +200,7 @@ app.post('/api/claim', async (c) => {
       githubUsername,
       repo,
       branch,
+      defaultBranch,
     })
 
     if (!result.success) {
@@ -242,7 +243,7 @@ app.post('/api/freeze', async (c) => {
   if (!stub) {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Identity stub not resolved')
   }
-  const claimService = new ClaimService(stub)
+  const claimService = new ClaimService(stub, reqOrigin(c.req.raw))
 
   try {
     const result = await claimService.freeze(auth.identityId)
@@ -274,7 +275,7 @@ app.get('/claim/:token', async (c) => {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
   }
   const stub = getStubForIdentity(c.env, identityId)
-  const status = await verifyClaim(token, stub)
+  const status = await verifyClaim(token, stub, reqOrigin(c.req.raw))
 
   if (!status.valid) {
     return errorResponse(c, 404, ErrorCode.InvalidClaimToken, 'This claim token is invalid or has expired.')
