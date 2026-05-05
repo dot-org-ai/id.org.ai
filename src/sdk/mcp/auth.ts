@@ -15,7 +15,7 @@
  *   - Freeze, don't delete: expired tenants freeze with 30-day data preservation
  */
 
-import type { CapabilityLevel, IdentityStub } from '../types'
+import type { CapabilityLevel, Identity, IdentityStub } from '../types'
 
 // ============================================================================
 // Types
@@ -81,6 +81,55 @@ export class MCPAuth {
    * Return the L0 anonymous auth result.
    * Used when no identity stub is available (no credentials provided).
    */
+  /**
+   * Synthesise an `MCPAuthResult` from a broker-resolved `Identity`.
+   *
+   * Used by the worker auth middleware: `AuthBroker.identify()` is the
+   * canonical credential extractor; this helper shapes its output into the
+   * legacy `MCPAuthResult` consumed by the 17+ existing `c.get('auth')`
+   * call sites. New code reads `c.get('identity')` instead.
+   *
+   * Pass an optional `rateLimit` — usually the result of
+   * `stub.checkRateLimit(identity.id, identity.level)`.
+   */
+  static fromIdentity(
+    identity: Identity,
+    rateLimit?: { allowed: boolean; remaining: number; resetAt: number },
+  ): MCPAuthResult {
+    if (identity.id === 'anon') return MCPAuth.anonymousResult()
+
+    const level = identity.level
+    const result: MCPAuthResult = {
+      authenticated: true,
+      identityId: identity.id,
+      level,
+      scopes: identity.scopes ?? LEVEL_SCOPES[level],
+      capabilities: LEVEL_CAPABILITIES[level],
+    }
+
+    if (rateLimit) {
+      result.rateLimit = { ...rateLimit, limit: RATE_LIMITS[level] }
+    }
+
+    if (level < 3) {
+      result.upgrade = level < 2
+        ? {
+            nextLevel: 2,
+            action: 'claim',
+            description: 'Commit a GitHub Action workflow to claim this tenant',
+            url: 'https://id.org.ai/api/provision',
+          }
+        : {
+            nextLevel: 3,
+            action: 'subscribe',
+            description: 'Subscribe to a plan for unlimited access and production integrations',
+            url: 'https://headless.ly/pricing',
+          }
+    }
+
+    return result
+  }
+
   static anonymousResult(): MCPAuthResult {
     return {
       authenticated: false,
