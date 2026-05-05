@@ -15,10 +15,7 @@
  *   - `check(identity, need)`   — already-resolved identity, synchronous check
  */
 import type { CapabilityLevel, Identity } from '../types'
-
-// TODO: migrate to `import type { ThingRef } from 'schema.org.ai'` once the
-// 0.1.0 publish lands on npm. Local shape mirrors schema.org.ai/src/things/thing.ts.
-type ThingRef = string | { $id: string; $type: string; name?: string }
+import type { ThingRef } from 'schema.org.ai'
 
 /**
  * What a caller needs to be authorised. Two shapes:
