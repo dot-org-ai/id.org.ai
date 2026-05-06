@@ -45,6 +45,15 @@ export {
 } from './vault'
 export type { VaultSecret, VaultSecretWithValue, CreateSecretOptions, UpdateSecretOptions } from './vault'
 export {
+  putTenantSecret,
+  getTenantSecretValue,
+  listTenantSecrets,
+  deleteTenantSecret,
+  encodeTenantVaultName,
+  decodeTenantVaultName,
+} from './tenant-vault'
+export type { TenantSecretInfo } from './tenant-vault'
+export {
   PIPES_PROVIDERS,
   getAccessToken,
   listConnections,
