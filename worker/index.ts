@@ -47,6 +47,7 @@ import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
 import { githubRoutes } from './routes/github'
+import { aapRoutes } from './routes/aap'
 
 export { IdentityDO }
 
@@ -734,11 +735,13 @@ app.post('/validate-api-key', async (c) => {
 app.use('/api/*', authenticateRequest)
 app.use('/mcp', authenticateRequest)
 app.use('/mcp/*', authenticateRequest)
+app.use('/agent/*', authenticateRequest)
 app.route('', auditRoutes)
 app.route('', mcpRoutes)
 app.route('', apiKeyRoutes)
 app.route('', workosRoutes)
 app.route('', githubRoutes)
+app.route('', aapRoutes)
 
 // ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
 
