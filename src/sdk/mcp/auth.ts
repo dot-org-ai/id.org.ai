@@ -24,6 +24,12 @@ import type { CapabilityLevel, Identity, IdentityStub } from '../types'
 export interface MCPAuthResult {
   authenticated: boolean
   identityId?: string
+  /**
+   * Parent Tenant ID. Set when the identity is an agent — derived from
+   * Identity.tenantId by AuthBroker. Used by mcpDo for entity ownership and
+   * by audit for tenant scoping.
+   */
+  tenantId?: string
   level: 0 | 1 | 2 | 3
   scopes: string[]
   capabilities: string[]
@@ -102,6 +108,7 @@ export class MCPAuth {
     const result: MCPAuthResult = {
       authenticated: true,
       identityId: identity.id,
+      tenantId: identity.tenantId,
       level,
       scopes: identity.scopes ?? LEVEL_SCOPES[level],
       capabilities: LEVEL_CAPABILITIES[level],

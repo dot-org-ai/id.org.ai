@@ -1092,6 +1092,56 @@ describe('IdentityDO', () => {
       expect(result.result!.id).toBeDefined()
     })
 
+    it('tenantId takes precedence over identityId for entity ownership (id-ax7 D3)', async () => {
+      // Two agents under the same tenant should see each other's data.
+      const tenant = 'tenant_shared'
+      await identity.mcpDo({
+        entity: 'Contact',
+        verb: 'create',
+        data: { id: 'c-shared-1', name: 'Alice' },
+        identityId: 'agent_alpha',
+        tenantId: tenant,
+        authLevel: 1,
+        timestamp: now,
+      })
+
+      const fetched = await identity.mcpDo({
+        entity: 'Contact',
+        verb: 'get',
+        data: { id: 'c-shared-1' },
+        identityId: 'agent_beta',
+        tenantId: tenant,
+        authLevel: 1,
+        timestamp: now,
+      })
+
+      expect(fetched.success).toBe(true)
+      expect(fetched.result!.name).toBe('Alice')
+    })
+
+    it('falls back to identityId when tenantId is absent (back-compat)', async () => {
+      await identity.mcpDo({
+        entity: 'Contact',
+        verb: 'create',
+        data: { id: 'c-fallback', name: 'Carol' },
+        identityId: 'human_carol',
+        authLevel: 1,
+        timestamp: now,
+      })
+
+      const fetched = await identity.mcpDo({
+        entity: 'Contact',
+        verb: 'get',
+        data: { id: 'c-fallback' },
+        identityId: 'human_carol',
+        authLevel: 1,
+        timestamp: now,
+      })
+
+      expect(fetched.success).toBe(true)
+      expect(fetched.result!.name).toBe('Carol')
+    })
+
     it('create verb generates lifecycle events', async () => {
       const result = await identity.mcpDo({
         entity: 'Contact',

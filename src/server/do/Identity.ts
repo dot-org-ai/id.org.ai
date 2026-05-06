@@ -577,6 +577,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     verb: string
     data: Record<string, unknown>
     identityId?: string
+    tenantId?: string
     authLevel: number
     timestamp: number
   }): Promise<{ success: boolean; entity: string; verb: string; result?: Record<string, unknown>; events?: unknown[]; error?: string }> {
@@ -585,7 +586,11 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     const entityId = params.data.id as string ?? crypto.randomUUID()
-    const owner = params.identityId ?? 'global'
+    // Per id-ax7 D3: tenant owns entity data. Sibling agents share the same
+    // entity store. tenantId takes precedence; identityId is a back-compat
+    // fallback for non-agent callers (humans/services with API keys).
+    const owner = params.tenantId ?? params.identityId ?? 'global'
+    const auditTenant = params.tenantId ?? (params.identityId && !params.identityId.startsWith('agent_') ? params.identityId : undefined)
 
     if (params.verb === 'create') {
       const record = {
@@ -611,6 +616,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       await this.auditService.logFireAndForget({
         event: 'entity.create',
         actor: params.identityId,
+        tenantId: auditTenant,
         target: entityId,
         metadata: { entity: params.entity, owner },
       })
@@ -641,6 +647,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       await this.auditService.logFireAndForget({
         event: 'entity.update',
         actor: params.identityId,
+        tenantId: auditTenant,
         target: entityId,
         metadata: { entity: params.entity, owner },
       })
@@ -664,6 +671,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       await this.auditService.logFireAndForget({
         event: 'entity.delete',
         actor: params.identityId,
+        tenantId: auditTenant,
         target: entityId,
         metadata: { entity: params.entity, owner, deleted },
       })
@@ -715,6 +723,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     await this.auditService.logFireAndForget({
       event: `entity.${params.verb}`,
       actor: params.identityId,
+      tenantId: auditTenant,
       target: entityId,
       metadata: { entity: params.entity, owner },
     })

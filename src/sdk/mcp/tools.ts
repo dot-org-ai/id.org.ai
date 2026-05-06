@@ -1616,6 +1616,7 @@ export async function handleDo(
       verb: params.verb,
       data: { ...params.data, id: entityId },
       identityId: auth.identityId,
+      tenantId: auth.tenantId,
       authLevel: auth.level,
       timestamp: now,
     })
