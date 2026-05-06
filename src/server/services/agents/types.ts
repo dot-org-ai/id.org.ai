@@ -17,121 +17,13 @@
 
 import type { Result } from '../../../sdk/foundation'
 import type { NotFoundError, ValidationError, ConflictError, AuthError } from '../../../sdk/foundation'
+import type { Agent, AgentInfo, AgentMode, AgentStatus, AgentRegistrationInput } from '../../../sdk/types'
 
-// ============================================================================
-// Domain Types
-// ============================================================================
+// Re-export for service consumers — sdk/types.ts is the canonical home
+export type { Agent, AgentInfo, AgentMode, AgentStatus } from '../../../sdk/types'
 
-/**
- * Agent lifecycle states (AAP v1.0 §3.2).
- *   pending  — awaiting user approval (delegated mode); cannot authenticate
- *   active   — operational; each request extends sessionTtl
- *   expired  — sessionTtl/maxLifetime elapsed; reactivable via reactivate()
- *   revoked  — permanent; cannot reactivate
- *   rejected — user denied registration
- *   claimed  — autonomous-mode terminal state; agent's history attributed to user
- *              when the parent Tenant gets claimed (only set in AAP-strict mode)
- */
-export type AgentStatus = 'pending' | 'active' | 'expired' | 'revoked' | 'rejected' | 'claimed'
-
-/**
- * Agent operating mode (AAP v1.0 §3).
- *   delegated  — agent acts on behalf of a user; capability changes need approval
- *   autonomous — no user in loop; auto-approval by tenant policy only
- */
-export type AgentMode = 'delegated' | 'autonomous'
-
-export interface Agent {
-  /** 'agent_*' prefix; globally unique within the tenant's DO. */
-  id: string
-
-  /** Foreign key to the parent Tenant (Identity{type:'tenant'}). */
-  tenantId: string
-
-  /** Human-readable label; not unique. */
-  name: string
-
-  /**
-   * Public key in raw base64 form (32-byte Ed25519). Stored alongside the
-   * agent record for offline JWK construction. Either this or jwksUrl must
-   * be set; both may be set.
-   */
-  publicKey?: string
-
-  /**
-   * URL to a JWKS document. AAP allows agents to publish their key via JWKS
-   * for rotation without re-registration. Either this or publicKey must be set.
-   */
-  jwksUrl?: string
-
-  status: AgentStatus
-  mode: AgentMode
-
-  /**
-   * Capability grants. These are the names that will project into FGA tuples
-   * once id-lkj lands (e.g., ['transfer_money', 'read_contacts']). Today they
-   * are flat strings used for documentation; FGA will give them structure.
-   */
-  capabilities: string[]
-
-  createdAt: number
-  activatedAt?: number
-  expiresAt?: number
-  lastUsedAt?: number
-  revokedAt?: number
-
-  /**
-   * AAP lifecycle clocks (§5.4).
-   *   sessionTtlMs       — measured from lastUsedAt; → 'expired' if idle
-   *   maxLifetimeMs      — measured from activatedAt; → 'expired' if exceeded
-   *   absoluteLifetimeMs — measured from createdAt; → 'revoked' if exceeded
-   */
-  sessionTtlMs: number
-  maxLifetimeMs: number
-  absoluteLifetimeMs: number
-}
-
-/** Public-facing summary for list responses. */
-export interface AgentInfo {
-  id: string
-  tenantId: string
-  name: string
-  status: AgentStatus
-  mode: AgentMode
-  capabilities: string[]
-  createdAt: number
-  activatedAt?: number
-  expiresAt?: number
-  lastUsedAt?: number
-  revokedAt?: number
-}
-
-// ============================================================================
-// Input Types
-// ============================================================================
-
-export interface RegisterAgentInput {
-  tenantId: string
-  name: string
-  /** Base64-encoded 32-byte Ed25519 public key. Mutually exclusive with jwksUrl. */
-  publicKey?: string
-  /** JWKS document URL. Mutually exclusive with publicKey. */
-  jwksUrl?: string
-  mode: AgentMode
-  capabilities?: string[]
-  /**
-   * AAP-strict mode (D7): when true, the agent transitions to 'claimed'
-   * (terminal) when the parent tenant gets claimed. Default false →
-   * id.org.ai claim-continuity (agent stays active under the claimed tenant).
-   */
-  strict?: boolean
-  /** Override default sessionTtlMs (default 24h). */
-  sessionTtlMs?: number
-  /** Override default maxLifetimeMs (default 30d). */
-  maxLifetimeMs?: number
-  /** Override default absoluteLifetimeMs (default 365d). */
-  absoluteLifetimeMs?: number
-}
+/** Service-side input alias matching the SDK's portable AgentRegistrationInput. */
+export type RegisterAgentInput = AgentRegistrationInput
 
 export interface RegisterAgentResult {
   agent: Agent

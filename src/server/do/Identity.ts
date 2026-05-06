@@ -33,6 +33,8 @@ import type { EntityStoreService } from '../services/entity-store'
 import { IdentityServiceImpl } from '../services/identity/service'
 import { KeyServiceImpl } from '../services/keys'
 import { SessionServiceImpl } from '../services/auth/service'
+import { AgentServiceImpl } from '../services/agents'
+import type { AgentService, Agent, AgentInfo, AgentMode, AgentStatus, RegisterAgentInput } from '../services/agents'
 import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
@@ -51,6 +53,8 @@ export type {
   LinkedAccount,
   SessionData,
 } from '../../sdk/types'
+
+export type { Agent, AgentInfo, AgentStatus, AgentMode, RegisterAgentInput } from '../services/agents'
 
 import type { Identity, CapabilityLevel, ClaimStatus, IdentityType } from '../../sdk/types'
 
@@ -166,6 +170,19 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       this._sessionService = new SessionServiceImpl({ storage: this.storageAdapter, identityReader: this.identityService })
     }
     return this._sessionService
+  }
+
+  private _agentService?: AgentService
+
+  private get agentService(): AgentService {
+    if (!this._agentService) {
+      this._agentService = new AgentServiceImpl({
+        storage: this.storageAdapter,
+        audit: this.auditService,
+        tenantExists: (id: string) => this.identityService.exists(id),
+      })
+    }
+    return this._agentService
   }
 
   // ─── Identity Management ──────────────────────────────────────────────
@@ -495,6 +512,52 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     throw new Error(`Unknown storage operation: ${op.op}`)
+  }
+
+  // ─── Agents (RPC) ────────────────────────────────────────────────────
+
+  async registerAgent(input: RegisterAgentInput): Promise<{ success: boolean; agent?: Agent; error?: string }> {
+    const result = await this.agentService.register(input)
+    if (!result.success) return { success: false, error: result.error.message }
+    return { success: true, agent: result.data.agent }
+  }
+
+  async getAgent(id: string): Promise<Agent | null> {
+    const result = await this.agentService.get(id)
+    if (!result.success) return null
+    return result.data
+  }
+
+  async listAgents(tenantId: string): Promise<AgentInfo[]> {
+    return this.agentService.list(tenantId)
+  }
+
+  async getAgentByPublicKey(publicKey: string): Promise<Agent | null> {
+    const result = await this.agentService.getByPublicKey(publicKey)
+    if (!result.success) return null
+    return result.data
+  }
+
+  async updateAgentStatus(id: string, status: AgentStatus, reason?: string): Promise<{ success: boolean; agent?: Agent; error?: string }> {
+    const result = await this.agentService.updateStatus(id, { status, reason })
+    if (!result.success) return { success: false, error: result.error.message }
+    return { success: true, agent: result.data }
+  }
+
+  async revokeAgent(id: string, reason?: string): Promise<{ success: boolean; agent?: Agent; error?: string }> {
+    const result = await this.agentService.revoke(id, reason)
+    if (!result.success) return { success: false, error: result.error.message }
+    return { success: true, agent: result.data }
+  }
+
+  async reactivateAgent(id: string): Promise<{ success: boolean; agent?: Agent; error?: string }> {
+    const result = await this.agentService.reactivate(id)
+    if (!result.success) return { success: false, error: result.error.message }
+    return { success: true, agent: result.data }
+  }
+
+  async touchAgent(id: string): Promise<void> {
+    await this.agentService.touch(id)
   }
 
   // ─── Audit Log (RPC) ────────────────────────────────────────────────

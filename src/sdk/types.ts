@@ -81,6 +81,75 @@ export interface SessionData {
 }
 
 // ============================================================================
+// Agent — first-class runtime actor under a Tenant (AAP-aligned)
+// ============================================================================
+
+/**
+ * Agent lifecycle states (AAP v1.0 §3.2).
+ *   pending  — awaiting user approval (delegated mode); cannot authenticate
+ *   active   — operational; each request extends sessionTtl
+ *   expired  — sessionTtl/maxLifetime elapsed; reactivable via reactivateAgent()
+ *   revoked  — permanent; cannot reactivate
+ *   rejected — user denied registration
+ *   claimed  — autonomous-mode terminal state when parent Tenant gets claimed
+ *              (only set in AAP-strict mode per D7)
+ */
+export type AgentStatus = 'pending' | 'active' | 'expired' | 'revoked' | 'rejected' | 'claimed'
+
+/**
+ * Agent operating mode (AAP v1.0 §3).
+ *   delegated  — agent acts on behalf of a user; capability changes need approval
+ *   autonomous — no user in loop; auto-approval by tenant policy only
+ */
+export type AgentMode = 'delegated' | 'autonomous'
+
+export interface Agent {
+  id: string
+  tenantId: string
+  name: string
+  publicKey?: string
+  jwksUrl?: string
+  status: AgentStatus
+  mode: AgentMode
+  capabilities: string[]
+  createdAt: number
+  activatedAt?: number
+  expiresAt?: number
+  lastUsedAt?: number
+  revokedAt?: number
+  sessionTtlMs: number
+  maxLifetimeMs: number
+  absoluteLifetimeMs: number
+}
+
+export interface AgentInfo {
+  id: string
+  tenantId: string
+  name: string
+  status: AgentStatus
+  mode: AgentMode
+  capabilities: string[]
+  createdAt: number
+  activatedAt?: number
+  expiresAt?: number
+  lastUsedAt?: number
+  revokedAt?: number
+}
+
+export interface AgentRegistrationInput {
+  tenantId: string
+  name: string
+  publicKey?: string
+  jwksUrl?: string
+  mode: AgentMode
+  capabilities?: string[]
+  strict?: boolean
+  sessionTtlMs?: number
+  maxLifetimeMs?: number
+  absoluteLifetimeMs?: number
+}
+
+// ============================================================================
 // IdentityStub — RPC interface for IdentityDO
 // ============================================================================
 
@@ -117,6 +186,16 @@ export interface IdentityStub {
   ensureOAuthDoClient(): Promise<void>
   ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
+
+  // Agents (AAP-aligned, runtime actors under a Tenant)
+  registerAgent(input: AgentRegistrationInput): Promise<{ success: boolean; agent?: Agent; error?: string }>
+  getAgent(id: string): Promise<Agent | null>
+  listAgents(tenantId: string): Promise<AgentInfo[]>
+  getAgentByPublicKey(publicKey: string): Promise<Agent | null>
+  updateAgentStatus(id: string, status: AgentStatus, reason?: string): Promise<{ success: boolean; agent?: Agent; error?: string }>
+  revokeAgent(id: string, reason?: string): Promise<{ success: boolean; agent?: Agent; error?: string }>
+  reactivateAgent(id: string): Promise<{ success: boolean; agent?: Agent; error?: string }>
+  touchAgent(id: string): Promise<void>
 
   // Audit
   auditEvent(event: Omit<AuditEvent, 'timestamp'> & { timestamp?: string }): Promise<void>
