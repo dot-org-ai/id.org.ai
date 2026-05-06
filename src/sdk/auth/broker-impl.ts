@@ -264,6 +264,15 @@ export class AuthBrokerImpl implements AuthBroker {
       const stub = this.deps.stubFor()
       const data = await stub.validateApiKey(apiKey)
       if (data.valid && data.identityId) {
+        // Greenfield: API keys may carry an agent_* principal — synthesise
+        // an Identity{type:'agent'} from the Agent row instead of loading
+        // an agent identity row from storage (agents have no identity:* row).
+        if (data.identityId.startsWith('agent_')) {
+          return this.hydrateAgent(data.identityId, {
+            level: (data.level ?? 2) as CapabilityLevel,
+            scopes: data.scopes,
+          })
+        }
         return this.hydrateIdentity(data.identityId, {
           level: (data.level ?? 2) as CapabilityLevel,
           scopes: data.scopes,
@@ -385,6 +394,61 @@ export class AuthBrokerImpl implements AuthBroker {
       level: overlay.level,
       claimStatus: 'unclaimed',
       scopes: overlay.scopes,
+    }
+  }
+
+  /**
+   * Synthesise an Identity{type:'agent'} from an Agent row. Agents do not
+   * have identity:* storage rows of their own — their canonical home is the
+   * agent:* table. AuthBroker materialises an Identity shape on demand so
+   * downstream consumers (route handlers, MCP, FGA) see a uniform principal.
+   *
+   * Touches the agent's lastUsedAt for sessionTtl tracking. Touch is
+   * fire-and-forget — we don't await it on the hot path.
+   */
+  private async hydrateAgent(
+    agentId: string,
+    overlay: {
+      level: CapabilityLevel
+      scopes?: string[]
+    },
+  ): Promise<Identity> {
+    if (!this.deps) {
+      return {
+        id: agentId,
+        type: 'agent',
+        name: 'agent',
+        verified: false,
+        level: overlay.level,
+        claimStatus: 'claimed',
+        scopes: overlay.scopes,
+      }
+    }
+
+    const stub = this.deps.stubFor(agentId)
+    const agent = await stub.getAgent(agentId).catch(() => null)
+
+    if (!agent || agent.status !== 'active') {
+      // Agent missing, pending, expired, revoked, rejected, or claimed →
+      // treat as anonymous so gate() can deny with unauthenticated.
+      return ANONYMOUS_IDENTITY
+    }
+
+    // Touch lastUsedAt fire-and-forget — keeps sessionTtl rolling.
+    stub.touchAgent(agentId).catch(() => {})
+
+    return {
+      id: agent.id,
+      type: 'agent',
+      name: agent.name,
+      tenantId: agent.tenantId,
+      verified: true,
+      level: overlay.level,
+      claimStatus: 'claimed',
+      // Agent capabilities are the new scope vocabulary; broker prefers
+      // overlay scopes (from the API key) when set, else falls back to the
+      // agent's full capability set.
+      scopes: overlay.scopes ?? agent.capabilities,
     }
   }
 

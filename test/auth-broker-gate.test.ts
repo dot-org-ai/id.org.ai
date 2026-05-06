@@ -45,6 +45,14 @@ function createStub(overrides: Partial<IdentityStub> = {}): IdentityStub {
     ensureOAuthDoClient: vi.fn(async () => {}),
     ensureWebClients: vi.fn(async () => {}),
     oauthStorageOp: vi.fn(async () => ({})),
+    registerAgent: vi.fn(async () => ({ success: false })),
+    getAgent: vi.fn(async () => null),
+    listAgents: vi.fn(async () => []),
+    getAgentByPublicKey: vi.fn(async () => null),
+    updateAgentStatus: vi.fn(async () => ({ success: false })),
+    revokeAgent: vi.fn(async () => ({ success: false })),
+    reactivateAgent: vi.fn(async () => ({ success: false })),
+    touchAgent: vi.fn(async () => {}),
     auditEvent: vi.fn(async () => {}),
     queryAuditLog: vi.fn(async () => ({ events: [], hasMore: false })),
     storeWorkOSRefreshToken: vi.fn(async () => {}),
@@ -188,6 +196,130 @@ describe('AuthBroker.identify — API key', () => {
     expect(identity.id).toBe('id-orphan')
     expect(identity.level).toBe(2)
     expect(identity.scopes).toEqual(['read'])
+  })
+})
+
+describe('AuthBroker.identify — agent_* principal (id-ax7)', () => {
+  // When validateApiKey returns an identityId starting with 'agent_', the
+  // broker dispatches to getAgent() instead of getIdentity() and synthesises
+  // an Identity{type:'agent'} with tenantId from the Agent row.
+
+  function makeAgent(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'agent_abc',
+      tenantId: 'tenant_xyz',
+      name: 'crm-agent',
+      publicKey: 'pubkey-aaa',
+      status: 'active',
+      mode: 'autonomous',
+      capabilities: ['read', 'write'],
+      createdAt: Date.now(),
+      activatedAt: Date.now(),
+      sessionTtlMs: 86400000,
+      maxLifetimeMs: 2592000000,
+      absoluteLifetimeMs: 31536000000,
+      ...overrides,
+    }
+  }
+
+  it('synthesises Identity{type:agent, tenantId} from the Agent row', async () => {
+    const agent = makeAgent()
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_abc',
+        scopes: ['read', 'write'],
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => agent as never),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    const identity = await broker.identify(makeRequest({ apiKey: 'oai_agent' }))
+
+    expect(identity.id).toBe('agent_abc')
+    expect(identity.type).toBe('agent')
+    expect(identity.tenantId).toBe('tenant_xyz')
+    expect(identity.scopes).toEqual(['read', 'write'])
+    expect(identity.claimStatus).toBe('claimed')
+    expect(stub.getAgent).toHaveBeenCalledWith('agent_abc')
+    expect(stub.getIdentity).not.toHaveBeenCalled()
+  })
+
+  it('touches the Agent (fire-and-forget) for sessionTtl tracking', async () => {
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_abc',
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => makeAgent() as never),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    await broker.identify(makeRequest({ apiKey: 'oai_agent' }))
+
+    expect(stub.touchAgent).toHaveBeenCalledWith('agent_abc')
+  })
+
+  it('falls back to anonymous when the Agent is missing', async () => {
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_missing',
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => null),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    const identity = await broker.identify(makeRequest({ apiKey: 'oai_orphan' }))
+    expect(identity.id).toBe('anon')
+  })
+
+  it('falls back to anonymous when the Agent is not active', async () => {
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_pending',
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => makeAgent({ status: 'pending' }) as never),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    const identity = await broker.identify(makeRequest({ apiKey: 'oai_pending' }))
+    expect(identity.id).toBe('anon')
+  })
+
+  it('uses agent.capabilities as scopes when the API key carries no scopes override', async () => {
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_abc',
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => makeAgent({ capabilities: ['transfer_money', 'read_contacts'] }) as never),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    const identity = await broker.identify(makeRequest({ apiKey: 'oai_agent' }))
+    expect(identity.scopes).toEqual(['transfer_money', 'read_contacts'])
+  })
+
+  it('does not call getIdentity when principal is agent_*', async () => {
+    const stub = createStub({
+      validateApiKey: vi.fn(async () => ({
+        valid: true,
+        identityId: 'agent_abc',
+        level: 2 as CapabilityLevel,
+      })),
+      getAgent: vi.fn(async () => makeAgent() as never),
+    })
+    const broker = new AuthBrokerImpl({ stubFor: () => stub })
+
+    await broker.identify(makeRequest({ apiKey: 'oai_agent' }))
+    expect(stub.getIdentity).not.toHaveBeenCalled()
   })
 })
 
