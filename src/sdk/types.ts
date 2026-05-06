@@ -8,7 +8,7 @@
  * these types for backward compatibility.
  */
 
-import type { StoredAuditEvent, AuditQueryOptions } from './audit'
+import type { AuditEvent, StoredAuditEvent, AuditQueryOptions } from './audit'
 
 // ============================================================================
 // Core types
@@ -108,7 +108,7 @@ export interface IdentityStub {
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
   // Audit
-  writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void>
+  auditEvent(event: Omit<AuditEvent, 'timestamp'> & { timestamp?: string }): Promise<void>
   queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }>
 
   // WorkOS widget token support

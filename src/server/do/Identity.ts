@@ -25,7 +25,7 @@ import { DurableObject } from 'cloudflare:workers'
 // crypto/keys imports removed — now handled by KeyService (Phase 5)
 import { DurableObjectStorageAdapter } from './storage-adapter'
 import type { StorageAdapter } from '../../sdk/storage'
-import type { AuditQueryOptions, StoredAuditEvent } from '../../sdk/audit'
+import type { AuditEvent, AuditQueryOptions, StoredAuditEvent } from '../../sdk/audit'
 import { AuditServiceImpl } from '../services/audit'
 import type { AuditService } from '../services/audit'
 import { EntityStoreServiceImpl } from '../services/entity-store'
@@ -91,7 +91,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // createIdentity()       → this.identityService              (Phase 4)
   // provisionAnonymous()   → this.identityService + DO session (Phase 4)
   // freezeIdentity()       → this.identityService + DO cleanup (Phase 4)
-  // writeAuditEvent()      → this.auditService                (Phase 2)
+  // auditEvent()           → this.auditService.logFireAndForget
   // queryAuditLog()        → this.auditService                (Phase 2)
   // mcpDo/Search/Fetch     → this.entityStore                 (Phase 3)
   // createApiKey()         → this.keyService.apiKeys           (Phase 5)
@@ -499,15 +499,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   // ─── Audit Log (RPC) ────────────────────────────────────────────────
 
-  // ── RPC Method Routing ──────────────────────────────────────────────────
-  // queryAuditLog()   → this.auditService  (Phase 2)
-  // writeAuditEvent() → raw storage.put    (legacy, to be migrated)
-  // mcpDo()          → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
-  // mcpSearch()      → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
-  // mcpFetch()       → this.entityStore   (Phase 3, MCP layer moves in Phase 11)
-
-  async writeAuditEvent(key: string, event: StoredAuditEvent): Promise<void> {
-    await this.ctx.storage.put(key, event)
+  async auditEvent(event: Omit<AuditEvent, 'timestamp'> & { timestamp?: string }): Promise<void> {
+    await this.auditService.logFireAndForget(event)
   }
 
   async queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; total: number; cursor?: string; hasMore: boolean }> {
@@ -552,6 +545,13 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         timestamp: params.timestamp,
       })
 
+      await this.auditService.logFireAndForget({
+        event: 'entity.create',
+        actor: params.identityId,
+        target: entityId,
+        metadata: { entity: params.entity, owner },
+      })
+
       return {
         success: true,
         entity: params.entity,
@@ -575,6 +575,13 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       const putResult = await this.entityStore.put(owner, params.entity, entityId, record)
       if (!putResult.success) return { success: false, entity: params.entity, verb: params.verb, error: putResult.error.message }
 
+      await this.auditService.logFireAndForget({
+        event: 'entity.update',
+        actor: params.identityId,
+        target: entityId,
+        metadata: { entity: params.entity, owner },
+      })
+
       return {
         success: true,
         entity: params.entity,
@@ -589,11 +596,20 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     if (params.verb === 'delete') {
       const deleteResult = await this.entityStore.delete(owner, params.entity, entityId)
+      const deleted = deleteResult.success ? deleteResult.data.deleted : false
+
+      await this.auditService.logFireAndForget({
+        event: 'entity.delete',
+        actor: params.identityId,
+        target: entityId,
+        metadata: { entity: params.entity, owner, deleted },
+      })
+
       return {
         success: true,
         entity: params.entity,
         verb: params.verb,
-        result: { id: entityId, deleted: deleteResult.success ? deleteResult.data.deleted : false },
+        result: { id: entityId, deleted },
         events: [
           { type: 'deleting', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
           { type: 'deleted', entity: params.entity, verb: params.verb, timestamp: new Date(params.timestamp).toISOString() },
@@ -631,6 +647,13 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       verb: params.verb,
       data: record,
       timestamp: params.timestamp,
+    })
+
+    await this.auditService.logFireAndForget({
+      event: `entity.${params.verb}`,
+      actor: params.identityId,
+      target: entityId,
+      metadata: { entity: params.entity, owner },
     })
 
     return {

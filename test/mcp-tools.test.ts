@@ -54,7 +54,7 @@ function createEntityStub() {
     verifyClaimToken: vi.fn(async () => ({ valid: false })),
     freezeIdentity: vi.fn(async () => ({ frozen: true, stats: { entities: 0, events: 0, sessions: 0 }, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 })),
     oauthStorageOp: vi.fn(async () => ({})),
-    writeAuditEvent: vi.fn(async () => {}),
+    auditEvent: vi.fn(async () => {}),
     queryAuditLog: vi.fn(async () => ({ events: [], hasMore: false })),
 
     // ── mcpDo: create/update/delete entities ──

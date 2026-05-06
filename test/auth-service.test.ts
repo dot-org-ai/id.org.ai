@@ -170,7 +170,7 @@ function createMockIdentityDO(options: {
     mcpFetch: vi.fn(),
     mcpDo: vi.fn(),
     oauthStorageOp: vi.fn(),
-    writeAuditEvent: vi.fn(),
+    auditEvent: vi.fn(),
     queryAuditLog: vi.fn(),
   }
 }

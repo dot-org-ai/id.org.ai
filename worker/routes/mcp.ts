@@ -66,7 +66,7 @@ export const nullStub: IdentityStub = {
   async oauthStorageOp() {
     return {}
   },
-  async writeAuditEvent() {},
+  async auditEvent() {},
   async queryAuditLog() {
     return { events: [], hasMore: false }
   },

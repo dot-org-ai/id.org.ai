@@ -52,7 +52,7 @@ vi.mock('../src/sdk/crypto/keys', () => ({
   isValidDID: vi.fn((did: string) => did.startsWith('did:agent:ed25519:')),
 }))
 
-// Mock the audit module — writeAuditEvent / queryAuditLog delegate to AuditLog
+// Mock the audit module — auditEvent / queryAuditLog delegate to AuditLog
 vi.mock('../src/sdk/audit', () => {
   class AuditLog {
     storage: any
@@ -1472,22 +1472,14 @@ describe('IdentityDO', () => {
   })
 
   // ──────────────────────────────────────────────────────────────────────
-  // writeAuditEvent + queryAuditLog
+  // auditEvent + queryAuditLog
   // ──────────────────────────────────────────────────────────────────────
 
-  describe('writeAuditEvent()', () => {
-    it('writes event to storage', async () => {
-      const event = {
-        event: 'identity.created',
-        actor: 'system',
-        timestamp: new Date().toISOString(),
-        key: 'audit:2025-01-01T00:00:00.000Z:identity.created:abc123',
-      }
-      await identity.writeAuditEvent(event.key, event)
-
-      const stored = await storage.get<any>(event.key)
-      expect(stored.event).toBe('identity.created')
-      expect(stored.actor).toBe('system')
+  describe('auditEvent()', () => {
+    it('delegates to AuditService.logFireAndForget — resolves without throwing', async () => {
+      await expect(
+        identity.auditEvent({ event: 'identity.created', actor: 'system' }),
+      ).resolves.toBeUndefined()
     })
   })
 

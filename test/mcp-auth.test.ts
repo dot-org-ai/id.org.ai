@@ -34,7 +34,7 @@ function createMockIdentityStub(overrides: Partial<IdentityStub> = {}): Identity
     mcpFetch: vi.fn(async () => ({})),
     mcpDo: vi.fn(async () => ({ success: true, entity: '', verb: '' })),
     oauthStorageOp: vi.fn(async () => ({})),
-    writeAuditEvent: vi.fn(async () => {}),
+    auditEvent: vi.fn(async () => {}),
     queryAuditLog: vi.fn(async () => ({ events: [], hasMore: false })),
     ...overrides,
   }
