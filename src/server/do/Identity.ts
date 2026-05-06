@@ -102,11 +102,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // listApiKeys()          → this.keyService.apiKeys           (Phase 5)
   // revokeApiKey()         → this.keyService.apiKeys           (Phase 5)
   // validateApiKey()       → this.keyService.apiKeys           (Phase 5)
-  // registerAgentKey()     → this.keyService.agentKeys         (Phase 5)
-  // verifyAgentSignature() → this.keyService.agentKeys         (Phase 5)
-  // listAgentKeys()        → this.keyService.agentKeys         (Phase 5)
-  // revokeAgentKey()       → this.keyService.agentKeys         (Phase 5)
   // checkRateLimit()       → this.keyService.rateLimit         (Phase 5)
+  // registerAgent / getAgent / listAgents / updateAgentStatus / revokeAgent
+  //   reactivateAgent / touchAgent → this.agentService              (id-ax7)
   // claim()                → direct (Phase 8)
   // getSession()           → this.sessionService              (Phase 6)
   // listSessions()         → this.sessionService              (Phase 6)
@@ -421,44 +419,6 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   }> {
     const result = await this.keyService.apiKeys.validate(key)
     if (!result.success) return { valid: false }
-    return result.data
-  }
-
-  // ─── Agent Key Management (delegated to KeyService — Phase 5) ─────────
-
-  async registerAgentKey(data: {
-    identityId: string
-    publicKey: string
-    label?: string
-  }): Promise<{ id: string; did: string }> {
-    const result = await this.keyService.agentKeys.register(data)
-    if (!result.success) throw new Error(result.error.message)
-    return result.data
-  }
-
-  async verifyAgentSignature(data: {
-    did: string
-    message: string
-    signature: string
-  }): Promise<{ valid: boolean; identityId?: string }> {
-    const result = await this.keyService.agentKeys.verify(data)
-    if (!result.success) return { valid: false }
-    return result.data
-  }
-
-  async listAgentKeys(identityId: string): Promise<Array<{
-    id: string
-    did: string
-    label?: string
-    createdAt: number
-    revokedAt?: number
-  }>> {
-    return this.keyService.agentKeys.list(identityId)
-  }
-
-  async revokeAgentKey(keyId: string): Promise<boolean> {
-    const result = await this.keyService.agentKeys.revoke(keyId)
-    if (!result.success) return false
     return result.data
   }
 

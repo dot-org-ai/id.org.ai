@@ -15,7 +15,7 @@
  */
 
 import type { Result } from '../../../sdk/foundation'
-import type { NotFoundError, ValidationError, ConflictError, KeyError, RateLimitError } from '../../../sdk/foundation'
+import type { NotFoundError, ValidationError, KeyError } from '../../../sdk/foundation'
 import type { CapabilityLevel } from '../identity/types'
 
 export type { CapabilityLevel } from '../identity/types'
@@ -76,47 +76,6 @@ export interface ValidateApiKeyResult {
   level?: CapabilityLevel
 }
 
-export interface AgentKeyRecord {
-  id: string
-  identityId: string
-  publicKey: string // base64
-  algorithm: 'Ed25519'
-  did: string
-  label?: string
-  createdAt: number
-  revokedAt: number | null
-}
-
-export interface AgentKeyInfo {
-  id: string
-  did: string
-  label?: string
-  createdAt: number
-  revokedAt?: number
-}
-
-export interface RegisterAgentKeyInput {
-  identityId: string
-  publicKey: string // base64 or PEM
-  label?: string
-}
-
-export interface RegisterAgentKeyResult {
-  id: string
-  did: string
-}
-
-export interface VerifyAgentSignatureInput {
-  did: string
-  message: string
-  signature: string // base64
-}
-
-export interface VerifyAgentSignatureResult {
-  valid: boolean
-  identityId?: string
-}
-
 export interface RateLimitEntry {
   identityId: string
   windowStart: number
@@ -154,30 +113,13 @@ export interface ApiKeyWriter extends ApiKeyReader {
   revoke(keyId: string, identityId: string): Promise<Result<{ id: string; status: 'revoked'; revokedAt: string; key?: string }, NotFoundError | KeyError>>
 }
 
-export interface AgentKeyReader {
-  /** List agent keys for an identity (includes recently-revoked for audit). */
-  list(identityId: string): Promise<AgentKeyInfo[]>
-
-  /** Verify an Ed25519 signature against a registered DID. */
-  verify(input: VerifyAgentSignatureInput): Promise<Result<VerifyAgentSignatureResult, NotFoundError>>
-}
-
-export interface AgentKeyWriter extends AgentKeyReader {
-  /** Register an Ed25519 public key for an agent identity. */
-  register(input: RegisterAgentKeyInput): Promise<Result<RegisterAgentKeyResult, ValidationError | ConflictError | NotFoundError>>
-
-  /** Revoke an agent key. */
-  revoke(keyId: string): Promise<Result<boolean, NotFoundError | KeyError>>
-}
-
 export interface RateLimitService {
   /** Check rate limit for an identity at a given capability level. */
   check(identityId: string, level: CapabilityLevel): Promise<RateLimitResult>
 }
 
-/** Unified KeyService — composes API keys, agent keys, and rate limiting. */
+/** Unified KeyService — composes API keys and rate limiting. */
 export interface KeyService {
   apiKeys: ApiKeyWriter
-  agentKeys: AgentKeyWriter
   rateLimit: RateLimitService
 }
