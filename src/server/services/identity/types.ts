@@ -18,7 +18,11 @@ import type { NotFoundError, ValidationError, AuthError, ConflictError } from '.
 // Domain Types
 // ============================================================================
 
-export type IdentityType = 'human' | 'agent' | 'service'
+export type IdentityType = 'human' | 'tenant' | 'service' | 'agent'
+// 'agent' is reserved for the runtime-synthesised Identity that AuthBroker
+// emits when the underlying actor is an Agent row. The IdentityService
+// itself never writes 'agent' rows to identity:* storage — those live in
+// the Agent table (see future agent service).
 export type CapabilityLevel = 0 | 1 | 2 | 3
 export type ClaimStatus = 'unclaimed' | 'pending' | 'claimed' | 'frozen' | 'expired'
 export type LinkedAccountProvider = 'github' | 'stripe' | 'anthropic'
@@ -95,13 +99,13 @@ export interface CreateServiceInput {
   handle: string
 }
 
-export interface ProvisionAgentInput {
+export interface ProvisionTenantInput {
   name?: string
   model?: string
   capabilities?: string[]
 }
 
-export interface ProvisionAgentResult {
+export interface ProvisionTenantResult {
   identity: Identity
   claimToken: string
 }
@@ -168,14 +172,14 @@ export interface IdentityReader {
 // ============================================================================
 //
 // Consumed by services that create or modify identities:
-//   - Worker provisioning routes (provisionAgent, createHuman)
+//   - Worker provisioning routes (provisionTenant, createHuman)
 //   - ClaimService (update claimStatus, link GitHub account)
 //   - Admin routes (freeze/unfreeze)
 //
 // Extends IdentityReader so writers don't need two injections.
 //
 // Design notes:
-//   - Typed creation methods (createHuman, provisionAgent, createService)
+//   - Typed creation methods (createHuman, provisionTenant, createService)
 //     instead of generic create() — different preconditions and guarantees
 //   - update() for mutable field patches — state transition validation at runtime
 //   - freeze/unfreeze as explicit methods — cascading side effects
@@ -199,11 +203,11 @@ export interface IdentityWriter extends IdentityReader {
   createHuman(input: CreateHumanInput): Promise<Result<Identity, ValidationError | ConflictError>>
 
   /**
-   * Provision an anonymous agent identity with a claim token.
+   * Provision an anonymous Tenant with a claim token.
    * Starts at claimStatus='unclaimed', level=0.
    * Atomic: identity + claim token generated together.
    */
-  provisionAgent(input: ProvisionAgentInput): Promise<Result<ProvisionAgentResult, ValidationError>>
+  provisionTenant(input: ProvisionTenantInput): Promise<Result<ProvisionTenantResult, ValidationError>>
 
   /**
    * Create a service identity (platform-internal).

@@ -199,7 +199,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     claimToken: string
   }> {
     const result = await this.identityService.create({
-      type: 'agent',
+      type: 'tenant',
       name: `anon_${crypto.randomUUID().slice(0, 8)}`,
       level: 1,
       id: presetIdentityId,

@@ -19,8 +19,10 @@
 export interface AuditEvent {
   /** Event name, e.g. 'identity.created', 'claim.completed', 'auth.failed' */
   event: string
-  /** Who performed the action (identity ID, 'anonymous', or 'system') */
+  /** Who performed the action — agent_*, tenant_*, user_*, 'system', 'anonymous', etc. */
   actor?: string
+  /** Tenant the event happened under, when tenant-scoped. */
+  tenantId?: string
   /** What was acted upon (identity ID, key ID, session token prefix, etc.) */
   target?: string
   /** Request IP address */

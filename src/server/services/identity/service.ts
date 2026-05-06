@@ -15,8 +15,8 @@ import type {
   CreateIdentityResult,
   CreateHumanInput,
   CreateServiceInput,
-  ProvisionAgentInput,
-  ProvisionAgentResult,
+  ProvisionTenantInput,
+  ProvisionTenantResult,
   UpdateIdentityInput,
   LinkAccountInput,
 } from './types'
@@ -195,7 +195,7 @@ export class IdentityServiceImpl implements IdentityWriter {
     return Ok(this.toIdentity(record))
   }
 
-  async provisionAgent(input: ProvisionAgentInput): Promise<Result<ProvisionAgentResult, ValidationError>> {
+  async provisionTenant(input: ProvisionTenantInput): Promise<Result<ProvisionTenantResult, ValidationError>> {
     const id = this.generateId()
     const claimToken = this.generateClaimToken()
     const name = input.name ?? `anon_${id.slice(0, 8)}`
@@ -203,7 +203,7 @@ export class IdentityServiceImpl implements IdentityWriter {
 
     const record: Record<string, unknown> = {
       id,
-      type: 'agent',
+      type: 'tenant',
       name,
       verified: false,
       level: 0,

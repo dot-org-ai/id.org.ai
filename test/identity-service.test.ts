@@ -100,7 +100,7 @@ describe('IdentityServiceImpl', () => {
     })
 
     it('applies defaults for optional fields when absent', async () => {
-      const minimal = { id: 'usr_min', type: 'agent' as const, name: 'Bot' }
+      const minimal = { id: 'usr_min', type: 'tenant' as const, name: 'Bot' }
       backingMap.set('identity:usr_min', minimal)
 
       const result = await service.get('usr_min')
@@ -221,16 +221,16 @@ describe('IdentityServiceImpl', () => {
   })
 
   // --------------------------------------------------------------------------
-  // provisionAgent()
+  // provisionTenant()
   // --------------------------------------------------------------------------
 
-  describe('provisionAgent()', () => {
-    it('creates an agent at level 0 / unclaimed with a clm_ token', async () => {
-      const result = await service.provisionAgent({})
+  describe('provisionTenant()', () => {
+    it('creates a tenant at level 0 / unclaimed with a clm_ token', async () => {
+      const result = await service.provisionTenant({})
       expect(result.success).toBe(true)
       if (result.success) {
         const { identity, claimToken } = result.data
-        expect(identity.type).toBe('agent')
+        expect(identity.type).toBe('tenant')
         expect(identity.verified).toBe(false)
         expect(identity.level).toBe(0)
         expect(identity.claimStatus).toBe('unclaimed')
@@ -240,15 +240,15 @@ describe('IdentityServiceImpl', () => {
     })
 
     it('uses provided name when given', async () => {
-      const result = await service.provisionAgent({ name: 'my-agent' })
+      const result = await service.provisionTenant({ name: 'my-tenant' })
       expect(result.success).toBe(true)
       if (result.success) {
-        expect(result.data.identity.name).toBe('my-agent')
+        expect(result.data.identity.name).toBe('my-tenant')
       }
     })
 
     it('generates anon_ name when no name provided', async () => {
-      const result = await service.provisionAgent({})
+      const result = await service.provisionTenant({})
       expect(result.success).toBe(true)
       if (result.success) {
         expect(result.data.identity.name).toMatch(/^anon_/)
@@ -256,7 +256,7 @@ describe('IdentityServiceImpl', () => {
     })
 
     it('stores the identity in storage', async () => {
-      const result = await service.provisionAgent({})
+      const result = await service.provisionTenant({})
       expect(result.success).toBe(true)
       if (result.success) {
         const id = result.data.identity.id
@@ -264,9 +264,9 @@ describe('IdentityServiceImpl', () => {
       }
     })
 
-    it('generates unique IDs for each provisioned agent', async () => {
-      const r1 = await service.provisionAgent({})
-      const r2 = await service.provisionAgent({})
+    it('generates unique IDs for each provisioned tenant', async () => {
+      const r1 = await service.provisionTenant({})
+      const r2 = await service.provisionTenant({})
       expect(r1.success && r2.success).toBe(true)
       if (r1.success && r2.success) {
         expect(r1.data.identity.id).not.toBe(r2.data.identity.id)
@@ -376,7 +376,7 @@ describe('IdentityServiceImpl', () => {
 
   describe('getByClaimToken()', () => {
     it('returns identity by claim token after provisioning', async () => {
-      const created = await service.provisionAgent({ name: 'bot' })
+      const created = await service.provisionTenant({ name: 'bot' })
       expect(created.success).toBe(true)
       if (created.success) {
         const result = await service.getByClaimToken(created.data.claimToken)
@@ -388,7 +388,7 @@ describe('IdentityServiceImpl', () => {
     })
 
     it('returns identity by claim token after generic create', async () => {
-      const created = await service.create({ type: 'agent', name: 'bot2' })
+      const created = await service.create({ type: 'tenant', name: 'bot2' })
       expect(created.success).toBe(true)
       if (created.success) {
         const result = await service.getByClaimToken(created.data.claimToken)

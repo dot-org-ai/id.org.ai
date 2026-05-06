@@ -14,7 +14,10 @@ import type { AuditEvent, StoredAuditEvent, AuditQueryOptions } from './audit'
 // Core types
 // ============================================================================
 
-export type IdentityType = 'human' | 'agent' | 'service'
+export type IdentityType = 'human' | 'tenant' | 'service' | 'agent'
+// 'agent' is kept transitionally for the runtime-synthesised Identity that
+// AuthBroker emits when the underlying actor is an Agent row. No 'agent'
+// rows are written to identity:* storage — Agents live in agent:* storage.
 
 export type ClaimStatus = 'unclaimed' | 'pending' | 'claimed' | 'frozen' | 'expired'
 
@@ -43,6 +46,14 @@ export interface Identity {
 
   /** W3C DID (`did:web:…`, `did:key:…`). Optional for non-DID flows. */
   did?: string
+
+  /**
+   * Parent Tenant ID. Set when type='agent' — the tenant under which this
+   * agent operates. Synthesised at runtime by AuthBroker from the Agent
+   * row's tenantId foreign key. Used by mcpDo for entity ownership and
+   * by audit for tenantId scoping.
+   */
+  tenantId?: string
 
   /** Authorisation scopes — AuthBroker.check() consumes these. */
   scopes?: string[]

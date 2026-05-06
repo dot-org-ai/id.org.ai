@@ -31,8 +31,8 @@ export type {
   CreateIdentityResult,
   CreateHumanInput,
   CreateServiceInput,
-  ProvisionAgentInput,
-  ProvisionAgentResult,
+  ProvisionTenantInput,
+  ProvisionTenantResult,
   UpdateIdentityInput,
   LinkAccountInput,
 } from './types'

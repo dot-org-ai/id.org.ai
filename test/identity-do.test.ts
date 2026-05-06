@@ -162,7 +162,7 @@ describe('IdentityDO', () => {
     })
 
     it('generates a UUID id when none provided', async () => {
-      const result = await identity.createIdentity({ type: 'agent', name: 'Bot' })
+      const result = await identity.createIdentity({ type: 'tenant', name: 'Bot' })
       expect(result.id).toBeDefined()
       expect(typeof result.id).toBe('string')
       expect(result.id.length).toBeGreaterThan(0)
@@ -174,7 +174,7 @@ describe('IdentityDO', () => {
     })
 
     it('stores a claim token with clm_ prefix', async () => {
-      const result = await identity.createIdentity({ type: 'agent', name: 'Bot' })
+      const result = await identity.createIdentity({ type: 'tenant', name: 'Bot' })
       const stored = await storage.get<any>(`identity:${result.id}`)
       expect(stored.claimToken).toBeDefined()
       expect(stored.claimToken.startsWith('clm_')).toBe(true)
@@ -186,7 +186,7 @@ describe('IdentityDO', () => {
     })
 
     it('accepts a custom level', async () => {
-      const result = await identity.createIdentity({ type: 'agent', name: 'Test', level: 2 })
+      const result = await identity.createIdentity({ type: 'tenant', name: 'Test', level: 2 })
       expect(result.level).toBe(2)
     })
 
@@ -227,7 +227,7 @@ describe('IdentityDO', () => {
     })
 
     it('returns frozen status correctly', async () => {
-      const created = await identity.createIdentity({ type: 'agent', name: 'Bot' })
+      const created = await identity.createIdentity({ type: 'tenant', name: 'Bot' })
       // Manually set frozen in storage
       const stored = await storage.get<any>(`identity:${created.id}`)
       await storage.put(`identity:${created.id}`, { ...stored, frozen: true, frozenAt: Date.now() })
@@ -249,9 +249,9 @@ describe('IdentityDO', () => {
   // ──────────────────────────────────────────────────────────────────────
 
   describe('provisionAnonymous()', () => {
-    it('creates an agent identity with level 1', async () => {
+    it('creates a tenant identity with level 1', async () => {
       const result = await identity.provisionAnonymous()
-      expect(result.identity.type).toBe('agent')
+      expect(result.identity.type).toBe('tenant')
       expect(result.identity.level).toBe(1)
     })
 
@@ -412,7 +412,7 @@ describe('IdentityDO', () => {
 
     it('preserves existing email when GitHub email not provided', async () => {
       // Create with email first
-      const created = await identity.createIdentity({ type: 'agent', name: 'bot', email: 'original@test.com' })
+      const created = await identity.createIdentity({ type: 'tenant', name: 'bot', email: 'original@test.com' })
       const stored = await storage.get<any>(`identity:${created.id}`)
 
       const { claimToken } = await identity.provisionAnonymous()
