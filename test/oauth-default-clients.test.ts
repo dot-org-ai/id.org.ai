@@ -58,6 +58,19 @@ describe('seedDefaultClients', () => {
     expect(store.get('client:id_org_ai_headlessly')).toBeDefined()
   })
 
+  it('seeds SaaS.Studio dashboard web client (trusted, authorization_code + refresh)', async () => {
+    await seedDefaultClients(storage)
+    const client = store.get('client:saas_studio_dash') as Record<string, unknown> | undefined
+    expect(client).toBeDefined()
+    expect(client!.name).toBe('SaaS.Studio')
+    expect(client!.trusted).toBe(true)
+    expect(client!.grantTypes).toContain('authorization_code')
+    expect(client!.grantTypes).toContain('refresh_token')
+    expect(client!.redirectUris).toContain('https://app.saas.studio/auth/callback')
+    expect(client!.redirectUris).toContain('http://localhost:3000/auth/callback')
+    expect(client!.scopes).toContain('offline_access')
+  })
+
   it('does not overwrite existing clients (idempotent)', async () => {
     store.set('client:id_org_ai_cli', { id: 'id_org_ai_cli', name: 'Custom Name' })
     await seedDefaultClients(storage)
