@@ -96,6 +96,20 @@ export const DEFAULT_OAUTH_CLIENTS: readonly DefaultClient[] = [
     trusted: true,
     tokenEndpointAuthMethod: 'none',
   },
+  {
+    id: 'saas_studio_dash',
+    name: 'SaaS.Studio',
+    redirectUris: [
+      'https://app.saas.studio/auth/callback',
+      'https://saas.studio/auth/callback',
+      'http://localhost:3000/auth/callback',
+    ],
+    grantTypes: ['authorization_code', 'refresh_token'],
+    responseTypes: ['code'],
+    scopes: ['openid', 'profile', 'email', 'offline_access'],
+    trusted: true,
+    tokenEndpointAuthMethod: 'none',
+  },
 ] as const
 
 /**
