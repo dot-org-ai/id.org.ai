@@ -31,6 +31,11 @@
     // Branding for @mdxui/auth SPA
     "APP_NAME": "id.org.ai",
     "APP_TAGLINE": "Humans. Agents. Identity.",
+    // Trusted-account OAuth (ADR-0007). Comma-separated list of bare hostnames
+    // (no scheme, no path) whose redirect_uri is accepted under the canonical
+    // shared client_id `cid_trusted_account_v1` without per-app DCR.
+    // Trust comes from the domain being in the same Cloudflare account.
+    "TRUSTED_ACCOUNT_DOMAINS": "startup.games",
   },
 
   "routes": [
