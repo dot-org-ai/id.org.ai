@@ -62,6 +62,27 @@ export interface OAuthConfig {
   jwksUri?: string
 }
 
+/**
+ * Trusted-account OAuth configuration (ADR-0007).
+ *
+ * When a request arrives with `client_id === clientId` and the request's
+ * `redirect_uri` host is in `allowedDomains`, the OAuth flow bypasses the
+ * usual DCR `client:{cid_*}` storage lookup and treats the request as
+ * coming from a public client whose redirect_uri list is implicit-via-
+ * allowlist. PKCE remains mandatory; scope/state validation are unchanged.
+ *
+ * This implements option (b) from ADR-0007: bypass DCR lookup entirely for
+ * the canonical client rather than provisioning a real DCR record. Chosen
+ * to keep the diff small and avoid a one-time bootstrap step — the trusted-
+ * account "client" is fully synthesized from env config at request time.
+ */
+export interface TrustedAccountConfig {
+  /** Canonical shared client_id for in-Cloudflare-account consumers. */
+  clientId: string
+  /** Bare hostnames (no scheme/path) accepted as redirect_uri hosts. */
+  allowedDomains: Set<string>
+}
+
 export interface OAuthProviderClient {
   id: string                   // cid_xxx
   name: string
@@ -279,6 +300,7 @@ export class OAuthProvider {
   private config: OAuthConfig
   private getIdentity: (id: string) => Promise<IdentityInfo | null>
   private signingKeyManager?: SigningKeyManager
+  private trustedAccount?: TrustedAccountConfig
 
   get issuer(): string {
     return this.config.issuer
@@ -303,11 +325,66 @@ export class OAuthProvider {
     config: OAuthConfig
     getIdentity: (id: string) => Promise<IdentityInfo | null>
     signingKeyManager?: SigningKeyManager
+    /** ADR-0007: trusted-account OAuth mode for in-CF-account consumers. */
+    trustedAccount?: TrustedAccountConfig
   }) {
     this.storage = options.storage
     this.config = options.config
     this.getIdentity = options.getIdentity
     this.signingKeyManager = options.signingKeyManager
+    this.trustedAccount = options.trustedAccount
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRIVATE: Trusted-Account Helpers (ADR-0007)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** True iff `clientId` is the canonical trusted-account client id. */
+  private isTrustedAccountClient(clientId: string): boolean {
+    return !!this.trustedAccount && clientId === this.trustedAccount.clientId
+  }
+
+  /**
+   * Returns true if `redirectUri` parses cleanly, uses https (or localhost
+   * for dev), and its host is in the trusted-account allowlist.
+   */
+  private isTrustedAccountRedirect(redirectUri: string): boolean {
+    if (!this.trustedAccount) return false
+    let parsed: URL
+    try {
+      parsed = new URL(redirectUri)
+    } catch {
+      return false
+    }
+    if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+      return false
+    }
+    if (parsed.hash) return false
+    return this.trustedAccount.allowedDomains.has(parsed.hostname)
+  }
+
+  /**
+   * Synthesize a virtual `OAuthProviderClient` for the canonical trusted-
+   * account client. Used in place of a DCR storage lookup. `redirectUris`
+   * is intentionally empty — host validation is performed separately
+   * against the allowlist via {@link isTrustedAccountRedirect}.
+   */
+  private buildTrustedAccountClient(): OAuthProviderClient {
+    return {
+      id: this.trustedAccount!.clientId,
+      name: 'Trusted Account Consumer',
+      // No secret — this is a public client; PKCE is enforced as usual.
+      redirectUris: [], // implicit-via-allowlist; do not validate via this array
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
+      // Standard OIDC scopes; per-app scope narrowing is not needed under
+      // the trusted-account model — account membership is the trust boundary.
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      // First-party: skip consent screen. Account membership = consent.
+      trusted: true,
+      tokenEndpointAuthMethod: 'none',
+      createdAt: 0,
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -440,14 +517,26 @@ export class OAuthProvider {
     const resource = params.get('resource') || undefined
 
     // ── Validate client ─────────────────────────────────────────────────
-    const client = await this.getClient(clientId)
-    if (!client) {
-      return oauthError('invalid_client', 'Unknown client_id')
-    }
-
-    // ── Validate redirect URI ───────────────────────────────────────────
-    if (!client.redirectUris.includes(redirectUri)) {
-      return oauthError('invalid_request', 'Invalid redirect_uri')
+    // ADR-0007: trusted-account clients bypass the DCR lookup entirely.
+    // Their redirect_uri allowlist is host-based and supplied by env config.
+    let client: OAuthProviderClient | null
+    if (this.isTrustedAccountClient(clientId)) {
+      if (!this.isTrustedAccountRedirect(redirectUri)) {
+        return oauthError(
+          'invalid_request',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
+      client = this.buildTrustedAccountClient()
+    } else {
+      client = await this.getClient(clientId)
+      if (!client) {
+        return oauthError('invalid_client', 'Unknown client_id')
+      }
+      // Validate redirect URI against the DCR-registered list
+      if (!client.redirectUris.includes(redirectUri)) {
+        return oauthError('invalid_request', 'Invalid redirect_uri')
+      }
     }
 
     // ── Validate response_type ──────────────────────────────────────────
@@ -931,6 +1020,22 @@ export class OAuthProvider {
       return oauthError('invalid_grant', 'redirect_uri mismatch')
     }
 
+    // ── ADR-0007: re-verify host against trusted-account allowlist ──────
+    // Defense in depth: even though the redirect_uri matches the one stored
+    // on the code (which was validated at /authorize time), re-check that
+    // its host is still in the allowlist. This catches an allowlist that
+    // shrank between authorize and token exchange.
+    if (this.isTrustedAccountClient(clientId)) {
+      if (!this.isTrustedAccountRedirect(redirectUri)) {
+        return oauthError(
+          'invalid_grant',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
+      // Trusted-account is a public client — no client_secret required.
+      // Fall through to PKCE verification below.
+    }
+
     // ── Verify PKCE (mandatory per OAuth 2.1) ───────────────────────────
     if (codeData.codeChallenge) {
       if (!codeVerifier) {
@@ -941,8 +1046,9 @@ export class OAuthProvider {
       if (computedChallenge !== codeData.codeChallenge) {
         return oauthError('invalid_grant', 'Invalid code_verifier')
       }
-    } else {
-      // No PKCE — confidential client must present valid secret
+    } else if (!this.isTrustedAccountClient(clientId)) {
+      // No PKCE — confidential client must present valid secret.
+      // (Trusted-account clients always have PKCE per /authorize enforcement.)
       const client = await this.getClient(clientId)
       if (client?.secret && client.secret !== clientSecret) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
