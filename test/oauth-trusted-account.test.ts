@@ -10,9 +10,9 @@
  * See: docs/adr/0007-trusted-account-oauth-via-better-auth.md
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { OAuthProvider } from '../src/sdk/oauth/provider'
-import type { OAuthConfig } from '../src/sdk/oauth/provider'
+import type { OAuthConfig, OAuthAuditEmit } from '../src/sdk/oauth/provider'
 import {
   parseTrustedAccountDomains,
   TRUSTED_ACCOUNT_CLIENT_ID,
@@ -76,7 +76,11 @@ const TEST_IDENTITIES: Record<string, { id: string; name?: string; email?: strin
   },
 }
 
-function createTrustedProvider(allowedDomains: string[], storage?: StorageLike): OAuthProvider {
+function createTrustedProvider(
+  allowedDomains: string[],
+  storage?: StorageLike,
+  auditEmit?: OAuthAuditEmit,
+): OAuthProvider {
   return new OAuthProvider({
     storage: storage ?? createMockStorage(),
     config: TEST_CONFIG,
@@ -85,6 +89,7 @@ function createTrustedProvider(allowedDomains: string[], storage?: StorageLike):
       clientId: TRUSTED_CLIENT_ID,
       allowedDomains: new Set(allowedDomains),
     },
+    ...(auditEmit !== undefined && { auditEmit }),
   })
 }
 
@@ -421,6 +426,119 @@ describe('OAuthProvider - trusted-account mode (ADR-0007)', () => {
       expect(res.status).toBe(400)
       const body = (await res.json()) as { error: string }
       expect(body.error).toBe('invalid_grant')
+    })
+  })
+
+  // ── Audit emission — ADR-0007 BLOCKER 2 ───────────────────────────────────
+
+  describe('audit emission (ADR-0007 BLOCKER 2)', () => {
+    it('emits oauth.code.issued and oauth.token.issued for a successful trusted-account flow', async () => {
+      const emit = vi.fn<Parameters<OAuthAuditEmit>, ReturnType<OAuthAuditEmit>>()
+      const provider = createTrustedProvider(['startup.games'], storage, emit)
+
+      const redirectUri = 'https://startup.games/api/auth/callback/id-org-ai'
+      const verifier = 'verifier-1234567890abcdef'
+      const codeChallenge = await computeS256Challenge(verifier)
+
+      const authUrl = buildAuthorizeUrl({
+        client_id: TRUSTED_CLIENT_ID,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid profile email',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+      })
+      const authRes = await provider.handleAuthorize(
+        new Request(authUrl, { method: 'GET', redirect: 'manual' }),
+        'user-1',
+      )
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+
+      // After /authorize, exactly one oauth.code.issued event must be present.
+      const codeEvents = emit.mock.calls.map((c) => c[0]).filter((e) => e.event === 'oauth.code.issued')
+      expect(codeEvents).toHaveLength(1)
+      expect(codeEvents[0].metadata?.clientId).toBe(TRUSTED_CLIENT_ID)
+      expect(codeEvents[0].metadata?.identityId).toBe('user-1')
+      expect(codeEvents[0].metadata?.redirectUriHost).toBe('startup.games')
+
+      // Exchange the code for tokens.
+      await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id: TRUSTED_CLIENT_ID,
+            code_verifier: verifier,
+          }),
+        }),
+      )
+
+      const tokenEvents = emit.mock.calls.map((c) => c[0]).filter((e) => e.event === 'oauth.token.issued')
+      expect(tokenEvents).toHaveLength(1)
+      expect(tokenEvents[0].metadata?.clientId).toBe(TRUSTED_CLIENT_ID)
+      expect(tokenEvents[0].metadata?.identityId).toBe('user-1')
+      expect(tokenEvents[0].metadata?.redirectUriHost).toBe('startup.games')
+    })
+
+    it('does NOT emit audit events for non-trusted clients (DCR path unchanged)', async () => {
+      const emit = vi.fn<Parameters<OAuthAuditEmit>, ReturnType<OAuthAuditEmit>>()
+      // Provider WITH a trusted-account config and an audit sink. We register
+      // a DCR'd public client whose redirect_uri matches one of the
+      // allowlisted hosts; this proves the audit emission is gated on
+      // `client_id === trustedAccount.clientId`, not on the redirect host.
+      const provider = createTrustedProvider(['app.example.com'], storage, emit)
+
+      const dcrClientId = 'cid_dcr_example_app'
+      await storage.put(`client:${dcrClientId}`, {
+        id: dcrClientId,
+        name: 'DCR Example App',
+        redirectUris: ['https://app.example.com/cb'],
+        grantTypes: ['authorization_code', 'refresh_token'],
+        responseTypes: ['code'],
+        scopes: ['openid', 'profile', 'email'],
+        trusted: true, // skip consent so the test can use handleAuthorize directly
+        tokenEndpointAuthMethod: 'none',
+        createdAt: 0,
+      })
+
+      const verifier = 'verifier-1234567890abcdef'
+      const codeChallenge = await computeS256Challenge(verifier)
+      const redirectUri = 'https://app.example.com/cb'
+
+      const authUrl = buildAuthorizeUrl({
+        client_id: dcrClientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+      })
+      const authRes = await provider.handleAuthorize(
+        new Request(authUrl, { method: 'GET', redirect: 'manual' }),
+        'user-1',
+      )
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+
+      await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id: dcrClientId,
+            code_verifier: verifier,
+          }),
+        }),
+      )
+
+      // No audit emissions for the DCR path — the BLOCKER 2 fix is gated
+      // strictly on `isTrustedAccountClient(clientId)`.
+      expect(emit).not.toHaveBeenCalled()
     })
   })
 })

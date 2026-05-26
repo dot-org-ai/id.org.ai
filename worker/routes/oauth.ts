@@ -56,6 +56,13 @@ export function getOAuthProvider(c: any): OAuthProvider {
   const signingKeyManager = getSigningKeyManager(c.env)
   const base = 'https://id.org.ai'
   const allowedDomains = parseTrustedAccountDomains(c.env.TRUSTED_ACCOUNT_DOMAINS)
+  // ADR-0007 (BLOCKER 2): wire audit emission through the existing
+  // IdentityDO RPC. The DO routes to AuditService which writes immutable
+  // `audit:*` rows. Fire-and-forget on the provider side — the request
+  // flow never blocks on audit success. We layer the request's IP and UA
+  // onto the metadata-only event the provider constructs.
+  const reqIp = c.req.raw.headers.get('cf-connecting-ip') ?? undefined
+  const reqUa = c.req.raw.headers.get('user-agent') ?? undefined
   return new OAuthProvider({
     storage: {
       async get<T = unknown>(key: string): Promise<T | undefined> {
@@ -100,6 +107,22 @@ export function getOAuthProvider(c: any): OAuthProvider {
         allowedDomains,
       },
     }),
+    // ADR-0007 (BLOCKER 2): trusted-account audit emission. The provider
+    // only invokes this for trusted-account flows; DCR'd clients are
+    // intentionally untouched.
+    auditEmit: async (event) => {
+      // logFireAndForget on the DO swallows errors; we add one more layer
+      // here so even an RPC-level failure can't break /oauth/token.
+      try {
+        await stub.auditEvent({
+          ...event,
+          ip: event.ip ?? reqIp,
+          userAgent: event.userAgent ?? reqUa,
+        })
+      } catch {
+        // fire-and-forget
+      }
+    },
   })
 }
 

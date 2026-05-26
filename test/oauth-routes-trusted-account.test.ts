@@ -182,6 +182,33 @@ describe('worker/routes/oauth — trusted-account /oauth/authorize (ADR-0007 / B
     expect(locUrl.searchParams.get('code')).toMatch(/^ac_/)
   })
 
+  it('emits oauth.code.issued via the IdentityDO stub when the trusted-account client receives a code (BLOCKER 2)', async () => {
+    const { env: env2, auditEvents } = createMockEnv({ trustedDomains: 'startup.games' })
+    const app = mountApp(env2)
+    const codeChallenge = await computeS256Challenge('verifier-1234567890abcdef')
+
+    const url = new URL('https://id.org.ai/oauth/authorize')
+    url.searchParams.set('client_id', TRUSTED_ACCOUNT_CLIENT_ID)
+    url.searchParams.set('redirect_uri', 'https://startup.games/api/auth/callback/id-org-ai')
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', 'openid profile email')
+    url.searchParams.set('code_challenge', codeChallenge)
+    url.searchParams.set('code_challenge_method', 'S256')
+    url.searchParams.set('state', 'ORIGINAL_STATE')
+
+    const res = await app.fetch(
+      new Request(url.toString(), { method: 'GET', redirect: 'manual', headers: TEST_SESSION_HEADERS }),
+      env2,
+    )
+    expect(res.status).toBe(302)
+
+    const codeEvents = auditEvents.filter((e) => e.event === 'oauth.code.issued')
+    expect(codeEvents).toHaveLength(1)
+    expect(codeEvents[0].metadata?.clientId).toBe(TRUSTED_ACCOUNT_CLIENT_ID)
+    expect(codeEvents[0].metadata?.identityId).toBe('user-1')
+    expect(codeEvents[0].metadata?.redirectUriHost).toBe('startup.games')
+  })
+
   it('still wraps state for ordinary (non-trusted, non-service-binding) clients', async () => {
     // Seed a DCR-style client so the request gets past the client lookup.
     const { env: envWithClient, oauthStore } = createMockEnv({ trustedDomains: 'startup.games' })

@@ -295,12 +295,33 @@ const DEVICE_POLL_INTERVAL = 5             // 5 seconds
 // OAuthProvider
 // ============================================================================
 
+/**
+ * Audit event emitter callback used by the OAuthProvider to record
+ * trusted-account flow events (ADR-0007 BLOCKER 2). Fire-and-forget —
+ * implementations must not throw, and the provider treats failures as
+ * non-fatal. When unset, the provider emits nothing.
+ *
+ * In production, the worker passes `oauthStub.auditEvent` here; the stub
+ * forwards to AuditService which writes immutable `audit:*` rows in the
+ * shared OAuth DO shard. In tests, callers may pass a vi.fn() to capture
+ * emissions.
+ */
+export type OAuthAuditEmit = (event: {
+  event: string
+  actor?: string
+  target?: string
+  metadata?: Record<string, unknown>
+  ip?: string
+  userAgent?: string
+}) => Promise<void> | void
+
 export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
   private getIdentity: (id: string) => Promise<IdentityInfo | null>
   private signingKeyManager?: SigningKeyManager
   private trustedAccount?: TrustedAccountConfig
+  private auditEmit?: OAuthAuditEmit
 
   get issuer(): string {
     return this.config.issuer
@@ -327,12 +348,21 @@ export class OAuthProvider {
     signingKeyManager?: SigningKeyManager
     /** ADR-0007: trusted-account OAuth mode for in-CF-account consumers. */
     trustedAccount?: TrustedAccountConfig
+    /**
+     * ADR-0007 (BLOCKER 2): callback to record audit events for trusted-
+     * account flow. Currently the provider emits `oauth.code.issued` and
+     * `oauth.token.issued` only on the trusted-account code paths, since
+     * those use one shared canonical client_id and would otherwise have
+     * no per-request traceability. DCR'd clients are intentionally untouched.
+     */
+    auditEmit?: OAuthAuditEmit
   }) {
     this.storage = options.storage
     this.config = options.config
     this.getIdentity = options.getIdentity
     this.signingKeyManager = options.signingKeyManager
     this.trustedAccount = options.trustedAccount
+    this.auditEmit = options.auditEmit
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1059,6 +1089,13 @@ export class OAuthProvider {
     await this.storage.delete(`code:${code}`)
 
     // ── Issue tokens ────────────────────────────────────────────────────
+    // ADR-0007 (BLOCKER 2): forward the consumer host to issueTokenPair so
+    // its `oauth.token.issued` audit event can record it. Computed from the
+    // redirect_uri the code was bound to (already verified above).
+    const redirectUriHost = this.isTrustedAccountClient(clientId)
+      ? this.extractRedirectUriHost(codeData.redirectUri)
+      : undefined
+
     return this.issueTokenPair({
       clientId,
       identityId: codeData.identityId,
@@ -1066,6 +1103,7 @@ export class OAuthProvider {
       nonce: codeData.nonce,
       resource: codeData.resource,
       effectiveIssuer: codeData.effectiveIssuer,
+      redirectUriHost,
     })
   }
 
@@ -1276,6 +1314,24 @@ export class OAuthProvider {
       expirationTtl: AUTH_CODE_TTL + 60,
     })
 
+    // ADR-0007 (BLOCKER 2): trace which consumer host produced this code.
+    // DCR'd clients are intentionally untouched — traceability for them is
+    // still via the `client:{cid_*}` row. Trusted-account is the only case
+    // where one canonical client_id is reused across an unbounded host set.
+    if (this.isTrustedAccountClient(client.id)) {
+      await this.safeEmitAudit({
+        event: 'oauth.code.issued',
+        actor: identityId,
+        target: codeId,
+        metadata: {
+          clientId: client.id,
+          identityId,
+          redirectUriHost: this.extractRedirectUriHost(params.redirectUri),
+          scopes: params.scopes,
+        },
+      })
+    }
+
     const redirectUrl = new URL(params.redirectUri)
     redirectUrl.searchParams.set('code', codeId)
     if (params.state) {
@@ -1283,6 +1339,39 @@ export class OAuthProvider {
     }
 
     return Response.redirect(redirectUrl.toString(), 302)
+  }
+
+  /**
+   * Extract the bare hostname from a redirect_uri, or undefined if the URI
+   * doesn't parse. Used for audit-event `redirectUriHost` (ADR-0007 BLOCKER 2).
+   */
+  private extractRedirectUriHost(redirectUri: string): string | undefined {
+    try {
+      return new URL(redirectUri).hostname
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Fire-and-forget audit emission. Wraps the optional auditEmit callback
+   * in a try/catch so a downstream sink failure can never break the OAuth
+   * flow. Mirrors `worker/utils/audit.ts#logAuditEvent` semantics.
+   */
+  private async safeEmitAudit(event: {
+    event: string
+    actor?: string
+    target?: string
+    metadata?: Record<string, unknown>
+    ip?: string
+    userAgent?: string
+  }): Promise<void> {
+    if (!this.auditEmit) return
+    try {
+      await this.auditEmit(event)
+    } catch {
+      // never break the request flow for an audit failure
+    }
   }
 
   private async issueTokenPair(options: {
@@ -1293,8 +1382,14 @@ export class OAuthProvider {
     nonce?: string
     resource?: string
     effectiveIssuer?: string
+    /**
+     * ADR-0007 (BLOCKER 2): consumer's redirect_uri host, captured for the
+     * `oauth.token.issued` audit event metadata. Trusted-account flows only;
+     * ignored for everything else.
+     */
+    redirectUriHost?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer } = options
+    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, redirectUriHost } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1329,6 +1424,23 @@ export class OAuthProvider {
     await this.storage.put(`refresh:${refreshTokenId}`, refreshToken, {
       expirationTtl: REFRESH_TOKEN_TTL + 60,
     })
+
+    // ADR-0007 (BLOCKER 2): emit token-issuance audit for trusted-account
+    // flows. Trace points: access token id, refresh token id, consumer host.
+    if (this.isTrustedAccountClient(clientId)) {
+      await this.safeEmitAudit({
+        event: 'oauth.token.issued',
+        actor: identityId,
+        target: accessTokenId,
+        metadata: {
+          clientId,
+          identityId,
+          redirectUriHost,
+          refreshTokenId,
+          scopes,
+        },
+      })
+    }
 
     // Mint OIDC id_token when openid scope is granted and signing is available
     let idToken: string | undefined
