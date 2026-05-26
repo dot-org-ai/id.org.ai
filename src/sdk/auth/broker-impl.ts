@@ -124,6 +124,29 @@ export interface AuthBrokerDeps {
    * cookie-based auth is skipped and the request resolves to anonymous.
    */
   verifyJwt?: (jwt: string) => Promise<{ identityId: string } | null>
+
+  /**
+   * Optional WorkOS API-key validation for `sk_*` tokens. The broker first
+   * consults the DO's `validateApiKey` (which is the home of id.org.ai-issued
+   * keys); when the DO reports `valid:false` for an `sk_*` key, the broker
+   * falls back here so WorkOS-issued service tokens (e.g. the dashboard's
+   * `IDORGAI_ORG_TOKEN`) authenticate through the same middleware. Returns
+   * a synthetic service identity on success — least-privilege: type='service',
+   * level=2, scopes confined to what the WorkOS key declares.
+   *
+   * The broker stays portable (no WorkOS import). When omitted, `sk_*` keys
+   * that miss the DO lookup fall through to anonymous as before.
+   */
+  validateWorkOSKey?: (key: string) => Promise<{
+    valid: boolean
+    /** WorkOS api_key id (`apik_*`) — used as the synthetic identity id. */
+    id?: string
+    name?: string
+    /** WorkOS org the key is scoped to, when scoped. Propagated as `tenantId`. */
+    organizationId?: string
+    /** Optional permission strings from the WorkOS key. */
+    permissions?: string[]
+  } | null>
 }
 
 // ── Failure-response shaping ──────────────────────────────────────────────
@@ -279,6 +302,33 @@ export class AuthBrokerImpl implements AuthBroker {
           fallback: { type: 'agent', name: 'api-key' },
         })
       }
+
+      // DO miss on a WorkOS-prefixed key (`sk_*`) → fall through to the
+      // WorkOS-key validator. id.org.ai-issued keys live in DO storage
+      // (`apikey-lookup:*`); WorkOS-issued service tokens (sk_*) don't, so
+      // without this fallback they'd 401 at the middleware. See PR #7 review.
+      if (apiKey.startsWith('sk_') && this.deps.validateWorkOSKey) {
+        const wos = await this.deps.validateWorkOSKey(apiKey).catch(() => null)
+        if (wos?.valid) {
+          // Service identity — least privilege. The token authenticates a
+          // server-to-server caller (e.g. SaaS.Studio dashboard's
+          // IDORGAI_ORG_TOKEN), not a human. We synthesise an Identity that
+          // downstream handlers can authorise against (`type:'service'`,
+          // `tenantId` set when WorkOS scoped the key to an org), but we
+          // don't load any identity:* row — no humanish identity exists.
+          return {
+            id: wos.id ?? `workos-key:${apiKey.slice(0, 12)}`,
+            type: 'service',
+            name: wos.name ?? 'workos-service-key',
+            tenantId: wos.organizationId,
+            verified: true,
+            level: 2,
+            claimStatus: 'claimed',
+            scopes: wos.permissions ?? ['read', 'write'],
+          }
+        }
+      }
+
       // Invalid API key → anonymous (gate() turns this into a 401).
       return ANONYMOUS_IDENTITY
     }

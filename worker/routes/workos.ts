@@ -28,7 +28,6 @@ import {
 } from '../../src/sdk/workos/upstream'
 import type { WorkOSOrganizationMembership, WorkOSInvitation } from '../../src/sdk/workos/upstream'
 import { workosSlugToAccountRole, accountRoleToWorkosSlug } from '../../src/sdk/workos/roles'
-import { validateWorkOSApiKey } from '../../src/sdk/workos/apikey'
 import {
   ensureSCIMTables,
   handleDSyncUserCreated,
@@ -72,28 +71,22 @@ async function resolveWorkOSUserId(stub: IdentityStub, identityId: string): Prom
   return record?.workosUserId ?? null
 }
 
-// ── Server-to-server org-token auth (option b) ────────────────────────────
-// The SaaS.Studio dashboard calls `/api/orgs/*` server-side with a static
-// server-held token rather than a per-user JWT. Per the prior analysis we take
-// option (b): accept a WorkOS `sk_*` API key on these routes specifically,
-// validated against WorkOS (id.org.ai already does this in
-// AuthService.verifyToken; here we validate inline because the broker path
-// `authenticateRequest` uses only resolves ses_*/oai_*/hly_sk_* + JWT cookies,
-// not `sk_*`). The WorkOS secret stays server-side (ADR 0015) — it never
-// leaves the dashboard's server runtime, and id.org.ai never returns it.
+// ── Server-to-server org-token auth ───────────────────────────────────────
+// Credential validation for `/api/orgs/*` is owned by the upstream
+// `authenticateRequest` middleware (worker/middleware/auth.ts) which delegates
+// to AuthBroker. The broker resolves three credential shapes for these routes:
+//   1. WorkOS `sk_*` service token (SaaS.Studio dashboard's IDORGAI_ORG_TOKEN)
+//      → AuthBroker.identify → DO `validateApiKey` miss → falls back to
+//      `validateWorkOSKey` (wired in middleware) → service Identity.
+//   2. id.org.ai-issued `oai_*` / `hly_sk_*` / `ses_*` → standard DO path.
+//   3. Forwarded WorkOS JWT cookie → tenant resolver populates resolvedIdentityId.
+// The WorkOS secret stays server-side (ADR 0015) — never returned to/from the
+// dashboard.
 //
-// Accepted, in priority order:
-//   1. A WorkOS `sk_*` key (the dashboard's server token) → trusted service caller.
-//   2. The standard authenticated identity (ses_*/API key resolved upstream).
-//   3. A forwarded browser WorkOS JWT (legacy path for direct user calls).
-
-type Bearer = string | null
-
-function extractBearer(req: Request): Bearer {
-  const auth = req.headers.get('authorization')
-  if (auth?.startsWith('Bearer ')) return auth.slice(7)
-  return null
-}
+// This handler still resolves the caller's WorkOS user id when callable —
+// `POST /api/orgs` + `GET /api/orgs` need it to attribute the new/listed orgs.
+// For a service-token caller (no WorkOS user id), endpoints either accept an
+// explicit `owner_sub` (POST /api/orgs) or are not user-scoped (members CRUD).
 
 interface OrgAuthResult {
   ok: boolean
@@ -102,20 +95,14 @@ interface OrgAuthResult {
 }
 
 /**
- * Authenticate a `/api/orgs/*` request. Returns `{ ok }` plus, when available,
- * the caller's WorkOS user id (needed by the create/list-mine endpoints, not
- * by the org-scoped member endpoints).
+ * Surface the auth state populated by `authenticateRequest`, plus a final
+ * forwarded-JWT fallback for direct browser calls that bypass the cookie
+ * path. The middleware has already rejected (401) any presented-but-invalid
+ * credential before we get here.
  */
 async function authenticateOrgRequest(c: any): Promise<OrgAuthResult> {
-  // 1. Server token: a WorkOS sk_* key presented as Bearer.
-  const bearer = extractBearer(c.req.raw)
-  if (bearer?.startsWith('sk_') && c.env.WORKOS_API_KEY) {
-    const result = await validateWorkOSApiKey(bearer, c.env.WORKOS_API_KEY)
-    if (result.valid) return { ok: true }
-    return { ok: false }
-  }
-
-  // 2. Standard authenticated identity (resolved upstream by authenticateRequest).
+  // Authenticated by upstream middleware (sk_* via WorkOS, oai_*/hly_sk_*/ses_*
+  // via DO, or cookie via tenant resolver).
   const auth = c.get('auth')
   if (auth?.authenticated && auth.identityId) {
     const stub = c.get('identityStub') as IdentityStub | undefined
@@ -123,7 +110,9 @@ async function authenticateOrgRequest(c: any): Promise<OrgAuthResult> {
     return { ok: true, workosUserId }
   }
 
-  // 3. Forwarded browser WorkOS JWT.
+  // Forwarded browser WorkOS JWT — kept for legacy direct user calls. The
+  // standard middleware path doesn't see WorkOS-signed JWTs unless tenant
+  // resolution already mapped them; this is the last-ditch resolver.
   const jwt = await extractWorkOSUserFromJWT(c.req.raw, c.env)
   if (jwt?.sub) return { ok: true, workosUserId: jwt.sub }
 

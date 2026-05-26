@@ -2,17 +2,21 @@
  * Organization-membership route tests.
  *
  * Mounts the `workosRoutes` Hono sub-app directly and drives requests through
- * `app.fetch(req, env)`. The server-to-server auth path (option b) is exercised
- * by presenting a WorkOS `sk_*` Bearer token; the route validates it against
- * WorkOS, which we intercept by mocking global `fetch`. All WorkOS upstream
- * calls are mocked, so no network is touched.
+ * `app.fetch(req, env)`. The server-to-server auth path is exercised by
+ * presenting a WorkOS `sk_*` Bearer token. Per the broker fix (PR #7 review),
+ * the upstream `authenticateRequest` middleware validates `sk_*` against
+ * WorkOS — these route tests simulate that with a tiny stand-in middleware
+ * that mirrors the broker's behaviour (sk_* via mocked WorkOS validations
+ * endpoint → authenticated service identity in `c.get('auth')`). The full
+ * integration with the real middleware is covered separately in
+ * `test/workos-org-membership-integration.test.ts`.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { workosRoutes } from '../worker/routes/workos'
 import type { Env, Variables } from '../worker/types'
-import type { MCPAuthResult } from '../src/sdk/mcp/auth'
+import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 
 const ORG = 'org_acme'
 const SERVER_TOKEN = 'sk_test_server_token'
@@ -26,11 +30,35 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   } as Env
 }
 
-/** Anonymous auth — forces the route onto the sk_/JWT paths. */
-function makeApp(env: Env, auth: MCPAuthResult | null = { authenticated: false, level: 0, scopes: [], capabilities: [] } as MCPAuthResult) {
+/**
+ * Mount the route under a stand-in for `authenticateRequest`. The real
+ * middleware delegates to AuthBroker which, for sk_* keys, calls
+ * `validateWorkOSApiKey`; we replicate the relevant slice here so the route
+ * tests faithfully exercise the post-middleware contract without dragging in
+ * the full DO stub plumbing. When the sk_ key fails WorkOS validation, we
+ * 401 just like the middleware would (mirrors `presentedExplicit && anon`).
+ */
+function makeApp(env: Env) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
   app.use('*', async (c, next) => {
-    if (auth) c.set('auth', auth as never)
+    const authHeader = c.req.header('authorization')
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+    if (bearer?.startsWith('sk_') && c.env.WORKOS_API_KEY) {
+      const wos = await validateWorkOSApiKey(bearer, c.env.WORKOS_API_KEY)
+      if (!wos.valid) {
+        return c.json({ error: 'unauthorized', error_description: 'Invalid or expired credentials' }, 401)
+      }
+      c.set('auth', {
+        authenticated: true,
+        identityId: wos.id ?? 'workos-key',
+        tenantId: wos.organization_id,
+        level: 2,
+        scopes: wos.permissions ?? ['read', 'write'],
+        capabilities: ['explore', 'search', 'fetch', 'try', 'do'],
+      } as never)
+    } else {
+      c.set('auth', { authenticated: false, level: 0, scopes: [], capabilities: [] } as never)
+    }
     await next()
   })
   app.route('', workosRoutes)
