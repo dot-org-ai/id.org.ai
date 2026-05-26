@@ -600,6 +600,216 @@ export async function sendOrgInvitation(
 }
 
 // ============================================================================
+// Organization Membership — Update / Delete (member-management surface)
+// ============================================================================
+
+/**
+ * The full WorkOS invitation shape returned by the Invitations API.
+ * Pending invitations are surfaced alongside active memberships so the
+ * dashboard's Members panel can render an "invited" row before acceptance.
+ */
+export interface WorkOSInvitation {
+  id: string
+  email: string
+  state: string // 'pending' | 'accepted' | 'expired' | 'revoked'
+  organization_id?: string
+  /** WorkOS stores the invited role under `role.slug`, like memberships. */
+  role?: { slug: string }
+  accepted_user_id?: string
+  created_at: string
+  updated_at?: string
+  expires_at?: string
+}
+
+/**
+ * Update a member's role on a WorkOS organization membership.
+ * Wraps `PUT /user_management/organization_memberships/:id` with `{ role_slug }`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param membershipId - WorkOS organization membership ID (`om_*`)
+ * @param roleSlug - The new role slug
+ * @returns The updated membership, or null on failure
+ */
+export async function updateOrgMembership(
+  apiKey: string,
+  membershipId: string,
+  roleSlug: string,
+): Promise<WorkOSOrganizationMembership | null> {
+  try {
+    const response = await fetch(
+      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ role_slug: roleSlug }),
+      },
+    )
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '')
+      console.error(`[updateOrgMembership] ${response.status} for ${membershipId}:`, errorBody)
+      return null
+    }
+    return (await response.json()) as WorkOSOrganizationMembership
+  } catch (err) {
+    console.error('[updateOrgMembership] exception:', err)
+    return null
+  }
+}
+
+/**
+ * Delete (remove) a WorkOS organization membership.
+ * Wraps `DELETE /user_management/organization_memberships/:id`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param membershipId - WorkOS organization membership ID (`om_*`)
+ * @returns true if removed (or already absent), false on a real failure
+ */
+export async function deleteOrgMembership(apiKey: string, membershipId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+    )
+    // 404 → already gone; treat as success (idempotent remove).
+    return response.ok || response.status === 404
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Fetch a WorkOS user's full profile by ID (email + name).
+ * Used to hydrate the member-list DTO with email / display name.
+ *
+ * Distinct from `fetchWorkOSUser` (which is identity-focused and returns
+ * `null` quietly) only in intent; reuses the same endpoint shape but is
+ * named for the membership-enrichment path.
+ *
+ * @param apiKey - WorkOS API key
+ * @param userId - WorkOS user ID
+ */
+export interface WorkOSUserProfile {
+  id: string
+  email: string
+  first_name?: string
+  last_name?: string
+}
+
+export async function fetchWorkOSUserProfile(apiKey: string, userId: string): Promise<WorkOSUserProfile | null> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSUserProfile
+  } catch {
+    return null
+  }
+}
+
+/**
+ * List pending invitations for a WorkOS organization.
+ * Wraps `GET /user_management/invitations?organization_id=…`.
+ *
+ * Only `pending` invitations are returned — accepted ones have a matching
+ * active membership already, and expired/revoked ones are noise for the UI.
+ *
+ * @param apiKey - WorkOS API key
+ * @param organizationId - WorkOS organization ID
+ * @returns Array of pending invitations, or empty array on failure
+ */
+export async function listOrgInvitations(apiKey: string, organizationId: string): Promise<WorkOSInvitation[]> {
+  try {
+    const response = await fetch(
+      `https://api.workos.com/user_management/invitations?organization_id=${organizationId}&limit=100`,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+    )
+    if (!response.ok) return []
+    const data = (await response.json()) as { data: WorkOSInvitation[] }
+    return (data.data ?? []).filter((inv) => inv.state === 'pending')
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Look up a single pending invitation by id.
+ * Used by the remove path to distinguish a membership id from an invitation id.
+ *
+ * @param apiKey - WorkOS API key
+ * @param invitationId - WorkOS invitation ID (`invitation_*`)
+ * @returns The invitation, or null if not found / on failure
+ */
+export async function getInvitation(apiKey: string, invitationId: string): Promise<WorkOSInvitation | null> {
+  try {
+    const response = await fetch(`https://api.workos.com/user_management/invitations/${invitationId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSInvitation
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Rescind (revoke) a pending WorkOS invitation.
+ * Wraps `POST /user_management/invitations/:id/revoke`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param invitationId - WorkOS invitation ID (`invitation_*`)
+ * @returns true if revoked (or already absent), false on a real failure
+ */
+export async function revokeInvitation(apiKey: string, invitationId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `https://api.workos.com/user_management/invitations/${invitationId}/revoke`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+    )
+    return response.ok || response.status === 404
+  } catch {
+    return false
+  }
+}
+
+// ============================================================================
+// Organization lookup (idempotent provisioning)
+// ============================================================================
+
+/**
+ * Find an existing WorkOS organization for a given owner user, by scanning
+ * that user's memberships for one whose org metadata marks them as owner.
+ *
+ * Used by `POST /api/orgs` to make account auto-creation idempotent: a
+ * returning builder's existing org is returned (HTTP 200) rather than a
+ * duplicate created (HTTP 201).
+ *
+ * Strategy: list the user's memberships; the first org where the user is an
+ * `admin`/`owner` role membership is treated as their account org. Returns
+ * `{ orgId }` or null when the user owns no org yet.
+ *
+ * @param apiKey - WorkOS API key
+ * @param ownerUserId - WorkOS user ID of the prospective owner
+ */
+export async function findOwnedOrg(apiKey: string, ownerUserId: string): Promise<{ orgId: string; role: string } | null> {
+  const memberships = await listUserOrgMemberships(apiKey, ownerUserId)
+  // Prefer an owner/admin membership; that's the account they own.
+  const owned = memberships.find((m) => m.role?.slug === 'owner' || m.role?.slug === 'admin')
+  const chosen = owned ?? memberships[0]
+  if (!chosen) return null
+  return { orgId: chosen.organization_id, role: chosen.role?.slug ?? 'member' }
+}
+
+// ============================================================================
 // State Encoding (CSRF + continue URL)
 // ============================================================================
 

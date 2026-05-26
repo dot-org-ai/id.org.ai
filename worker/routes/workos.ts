@@ -18,7 +18,16 @@ import {
   extractGitHubId,
   fetchGitHubUsername,
   updateWorkOSUser,
+  updateOrgMembership,
+  deleteOrgMembership,
+  fetchWorkOSUserProfile,
+  listOrgInvitations,
+  getInvitation,
+  revokeInvitation,
+  findOwnedOrg,
 } from '../../src/sdk/workos/upstream'
+import type { WorkOSOrganizationMembership, WorkOSInvitation } from '../../src/sdk/workos/upstream'
+import { workosSlugToAccountRole, accountRoleToWorkosSlug } from '../../src/sdk/workos/roles'
 import {
   ensureSCIMTables,
   handleDSyncUserCreated,
@@ -62,56 +71,183 @@ async function resolveWorkOSUserId(stub: IdentityStub, identityId: string): Prom
   return record?.workosUserId ?? null
 }
 
+// ── Server-to-server org-token auth ───────────────────────────────────────
+// Credential validation for `/api/orgs/*` is owned by the upstream
+// `authenticateRequest` middleware (worker/middleware/auth.ts) which delegates
+// to AuthBroker. The broker resolves three credential shapes for these routes:
+//   1. WorkOS `sk_*` service token (SaaS.Studio dashboard's IDORGAI_ORG_TOKEN)
+//      → AuthBroker.identify → DO `validateApiKey` miss → falls back to
+//      `validateWorkOSKey` (wired in middleware) → service Identity.
+//   2. id.org.ai-issued `oai_*` / `hly_sk_*` / `ses_*` → standard DO path.
+//   3. Forwarded WorkOS JWT cookie → tenant resolver populates resolvedIdentityId.
+// The WorkOS secret stays server-side (ADR 0015) — never returned to/from the
+// dashboard.
+//
+// This handler still resolves the caller's WorkOS user id when callable —
+// `POST /api/orgs` + `GET /api/orgs` need it to attribute the new/listed orgs.
+// For a service-token caller (no WorkOS user id), endpoints either accept an
+// explicit `owner_sub` (POST /api/orgs) or are not user-scoped (members CRUD).
+
+interface OrgAuthResult {
+  ok: boolean
+  /** WorkOS user id when resolvable (JWT/identity paths); absent for the sk_ service token. */
+  workosUserId?: string
+}
+
+/**
+ * Surface the auth state populated by `authenticateRequest`, plus a final
+ * forwarded-JWT fallback for direct browser calls that bypass the cookie
+ * path. The middleware has already rejected (401) any presented-but-invalid
+ * credential before we get here.
+ */
+async function authenticateOrgRequest(c: any): Promise<OrgAuthResult> {
+  // Authenticated by upstream middleware (sk_* via WorkOS, oai_*/hly_sk_*/ses_*
+  // via DO, or cookie via tenant resolver).
+  const auth = c.get('auth')
+  if (auth?.authenticated && auth.identityId) {
+    const stub = c.get('identityStub') as IdentityStub | undefined
+    const workosUserId = stub ? (await resolveWorkOSUserId(stub, auth.identityId)) ?? undefined : undefined
+    return { ok: true, workosUserId }
+  }
+
+  // Forwarded browser WorkOS JWT — kept for legacy direct user calls. The
+  // standard middleware path doesn't see WorkOS-signed JWTs unless tenant
+  // resolution already mapped them; this is the last-ditch resolver.
+  const jwt = await extractWorkOSUserFromJWT(c.req.raw, c.env)
+  if (jwt?.sub) return { ok: true, workosUserId: jwt.sub }
+
+  return { ok: false }
+}
+
+// ── Member DTO ────────────────────────────────────────────────────────────
+// Field names align with saas.studio `membership.ts#dtoToMember`, which reads:
+//   id | sub, name | display_name | email | sub, email, role, status, joined_at
+// A member row is built from a WorkOS membership (active) hydrated with the
+// user's email/name; a pending row is built from a WorkOS invitation.
+
+interface MemberDto {
+  id: string
+  sub: string
+  name: string
+  display_name: string
+  email: string
+  role: string
+  status: 'active' | 'pending'
+  joined_at: string
+}
+
+/** Build an active-member DTO from a membership + (optional) hydrated profile. */
+function activeMemberDto(
+  m: WorkOSOrganizationMembership,
+  profile: { email?: string; first_name?: string; last_name?: string } | null,
+): MemberDto {
+  const email = profile?.email ?? ''
+  const fullName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim()
+  const display = fullName || email || m.user_id
+  return {
+    // The dashboard keys members by their id.org.ai sub once accepted. We use
+    // the WorkOS membership id as the stable handle for role-change / remove
+    // (it's what PATCH/DELETE target), and expose the user id as `sub`.
+    id: m.id,
+    sub: m.user_id,
+    name: display,
+    display_name: display,
+    email,
+    role: workosSlugToAccountRole(m.role?.slug),
+    status: 'active',
+    joined_at: m.created_at,
+  }
+}
+
+/** Build a pending-member DTO from a WorkOS invitation. */
+function pendingMemberDto(inv: WorkOSInvitation): MemberDto {
+  const local = inv.email.split('@')[0] ?? inv.email
+  return {
+    // Pending rows are addressed by the invitation id for rescind (DELETE).
+    id: inv.id,
+    sub: '',
+    name: local,
+    display_name: local,
+    email: inv.email,
+    role: workosSlugToAccountRole(inv.role?.slug),
+    status: 'pending',
+    joined_at: inv.created_at,
+  }
+}
+
 // ── Organization Management Endpoints ────────────────────────────────────
 // CRUD for organizations. Uses WorkOS Organization + Membership APIs.
 // Requires L1+ auth. The authenticated user's WorkOS user ID is resolved
 // from the identity record stored in the DO.
 
-// POST /api/orgs — Create a new organization
+// POST /api/orgs — Create (or resolve) an organization.
+//
+// Two callers:
+//   - SaaS.Studio account auto-create: `{ name, owner_sub }` with the server
+//     token. Idempotent — if `owner_sub` already owns an org, return it (200);
+//     otherwise create it and add `owner_sub` as owner (201). Matches
+//     `_data/account.ts#idorgaiEnsureAccount`.
+//   - A signed-in user creating their own org: `{ name }`, owner resolved from
+//     the caller's identity/JWT (legacy path, returns 201).
 app.post('/api/orgs', async (c) => {
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
   }
 
-  const body = (await c.req.json().catch(() => ({}))) as { name?: string }
+  const orgAuth = await authenticateOrgRequest(c)
+  if (!orgAuth.ok) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  const body = (await c.req.json().catch(() => ({}))) as { name?: string; owner_sub?: string }
   if (!body.name || body.name.trim().length === 0) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'name is required')
   }
 
-  // Resolve WorkOS user ID: standard auth (ses_*/API key) or JWT fallback
-  let workosUserId: string | null = null
-  const auth = c.get('auth')
-  if (auth.authenticated && auth.identityId) {
-    const stub = c.get('identityStub')
-    if (stub) {
-      workosUserId = await resolveWorkOSUserId(stub, auth.identityId)
-    }
-  }
-  if (!workosUserId) {
-    const jwt = await extractWorkOSUserFromJWT(c.req.raw, c.env)
-    if (jwt?.sub) workosUserId = jwt.sub
-  }
-  if (!workosUserId) {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  // Owner: explicit `owner_sub` (server-token path) wins, else the caller.
+  const ownerUserId = body.owner_sub || orgAuth.workosUserId
+  if (!ownerUserId) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'owner_sub is required when not acting as a user')
   }
 
-  // 1. Create the organization in WorkOS
+  // Idempotency: if the owner already has an org, return it (200, created=false).
+  const existing = await findOwnedOrg(c.env.WORKOS_API_KEY, ownerUserId)
+  if (existing) {
+    const info = await fetchOrgInfo(c.env.WORKOS_API_KEY, existing.orgId)
+    return c.json(
+      {
+        id: existing.orgId,
+        name: info?.name ?? body.name.trim(),
+        owner_sub: ownerUserId,
+        workosOrgId: existing.orgId,
+        created: false,
+      },
+      200,
+    )
+  }
+
+  // 1. Create the organization in WorkOS.
   const org = await createWorkOSOrganization(c.env.WORKOS_API_KEY, body.name.trim())
   if (!org) {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to create organization in WorkOS')
   }
 
-  // 2. Add the creator as admin member
-  const membershipCreated = await createWorkOSMembership(c.env.WORKOS_API_KEY, workosUserId, org.id, 'admin')
+  // 2. Add the owner as the `owner`-role member (ADR 0021 top role).
+  const membershipCreated = await createWorkOSMembership(c.env.WORKOS_API_KEY, ownerUserId, org.id, 'owner')
   if (!membershipCreated) {
     return errorResponse(c, 500, ErrorCode.ServerError, 'Organization created but failed to add membership')
   }
 
-  return c.json({
-    id: org.id,
-    name: org.name,
-    workosOrgId: org.id,
-  }, 201)
+  return c.json(
+    {
+      id: org.id,
+      name: org.name,
+      owner_sub: ownerUserId,
+      workosOrgId: org.id,
+      created: true,
+    },
+    201,
+  )
 })
 
 // GET /api/orgs — List the authenticated user's organizations
@@ -155,60 +291,168 @@ app.get('/api/orgs', async (c) => {
   return c.json({ organizations: orgs })
 })
 
-// GET /api/orgs/:id/members — List members of an organization
+// GET /api/orgs/:id/members — List members of an organization.
+//
+// Returns active memberships (hydrated with email + name from WorkOS) plus
+// pending invitations as `status:'pending'` rows. Field names align with
+// saas.studio `membership.ts#dtoToMember`.
 app.get('/api/orgs/:id/members', async (c) => {
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
   }
 
-  // Require auth: standard or JWT
-  const auth = c.get('auth')
-  const jwt = (!auth.authenticated || !auth.identityId) ? await extractWorkOSUserFromJWT(c.req.raw, c.env) : null
-  if (!auth.authenticated && !jwt) {
+  const orgAuth = await authenticateOrgRequest(c)
+  if (!orgAuth.ok) {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   const orgId = c.req.param('id')
-  const members = await listOrgMembers(c.env.WORKOS_API_KEY, orgId)
+  const apiKey = c.env.WORKOS_API_KEY
 
-  return c.json({
-    members: members.map((m) => ({
-      id: m.id,
-      userId: m.user_id,
-      role: m.role?.slug ?? 'member',
-      status: m.status,
-      createdAt: m.created_at,
-    })),
-  })
+  // Active memberships + pending invitations, fetched in parallel.
+  const [memberships, invitations] = await Promise.all([
+    listOrgMembers(apiKey, orgId),
+    listOrgInvitations(apiKey, orgId),
+  ])
+
+  // Hydrate each membership with the user's email/name. De-duplicate the user
+  // lookups so two memberships for the same user only fetch once.
+  const uniqueUserIds = [...new Set(memberships.map((m) => m.user_id))]
+  const profiles = new Map(
+    await Promise.all(
+      uniqueUserIds.map(async (uid) => [uid, await fetchWorkOSUserProfile(apiKey, uid)] as const),
+    ),
+  )
+
+  const activeRows = memberships.map((m) => activeMemberDto(m, profiles.get(m.user_id) ?? null))
+  const pendingRows = invitations.map(pendingMemberDto)
+
+  return c.json({ members: [...activeRows, ...pendingRows] })
 })
 
-// POST /api/orgs/:id/invitations — Send an invitation to join an organization
-app.post('/api/orgs/:id/invitations', async (c) => {
+// PATCH /api/orgs/:id/members/:membershipId — Change a member's role.
+// Wraps WorkOS PUT /user_management/organization_memberships/:id { role_slug }.
+app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
   }
 
-  // Require auth: standard or JWT
-  const auth = c.get('auth')
-  const jwt = (!auth.authenticated || !auth.identityId) ? await extractWorkOSUserFromJWT(c.req.raw, c.env) : null
-  if (!auth.authenticated && !jwt) {
+  const orgAuth = await authenticateOrgRequest(c)
+  if (!orgAuth.ok) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  const membershipId = c.req.param('membershipId')
+  const body = (await c.req.json().catch(() => ({}))) as { role?: string }
+  if (!body.role) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'role is required')
+  }
+
+  const roleSlug = accountRoleToWorkosSlug(body.role)
+  const updated = await updateOrgMembership(c.env.WORKOS_API_KEY, membershipId, roleSlug)
+  if (!updated) {
+    return errorResponse(c, 502, ErrorCode.ServerError, 'Failed to update membership role')
+  }
+
+  return c.json(activeMemberDto(updated, null))
+})
+
+// DELETE /api/orgs/:id/members/:membershipId — Remove a member or rescind a
+// pending invite. WorkOS membership ids (`om_*`) and invitation ids
+// (`invitation_*`) are disjoint, so the path is the same; we detect which by
+// prefix and route to DELETE membership vs revoke invitation.
+app.delete('/api/orgs/:id/members/:membershipId', async (c) => {
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const orgAuth = await authenticateOrgRequest(c)
+  if (!orgAuth.ok) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+
+  const id = c.req.param('membershipId')
+  const apiKey = c.env.WORKOS_API_KEY
+
+  // Invitation id → rescind. Membership id → delete. We branch on the WorkOS
+  // id prefix; for ambiguous ids we look the invitation up first.
+  const looksLikeInvitation = id.startsWith('invitation_')
+  let ok: boolean
+  if (looksLikeInvitation) {
+    ok = await revokeInvitation(apiKey, id)
+  } else if (id.startsWith('om_') || id.startsWith('member_')) {
+    ok = await deleteOrgMembership(apiKey, id)
+  } else {
+    // Unknown prefix: probe the invitation API, else treat as a membership.
+    const inv = await getInvitation(apiKey, id)
+    ok = inv ? await revokeInvitation(apiKey, id) : await deleteOrgMembership(apiKey, id)
+  }
+
+  if (!ok) {
+    return errorResponse(c, 502, ErrorCode.ServerError, 'Failed to remove member')
+  }
+
+  return c.json({ ok: true })
+})
+
+// POST /api/orgs/:id/invites (+ /invitations alias) — Invite a Person.
+//
+// The SaaS.Studio dashboard posts `{ email, role }` to `/invites` and parses
+// the response as a member DTO (`membership.ts#idorgaiInviteMember` →
+// `dtoToMember`). We map the Account role → WorkOS slug, send the invitation,
+// then return a pending member row. `/invitations` is kept as a back-compat
+// alias for the legacy `{ ok }` shape callers.
+async function handleInvite(c: any): Promise<Response> {
+  if (!c.env.WORKOS_API_KEY) {
+    return errorResponse(c, 503, ErrorCode.ServerError, 'WorkOS not configured')
+  }
+
+  const orgAuth = await authenticateOrgRequest(c)
+  if (!orgAuth.ok) {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
   const orgId = c.req.param('id')
   const body = (await c.req.json().catch(() => ({}))) as { email?: string; role?: string }
-
   if (!body.email) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'email is required')
   }
 
-  const sent = await sendOrgInvitation(c.env.WORKOS_API_KEY, body.email, orgId, body.role || 'member')
+  const email = body.email.trim().toLowerCase()
+  const roleSlug = accountRoleToWorkosSlug(body.role)
+  const sent = await sendOrgInvitation(c.env.WORKOS_API_KEY, email, orgId, roleSlug)
   if (!sent) {
-    return errorResponse(c, 500, ErrorCode.ServerError, 'Failed to send invitation')
+    return errorResponse(c, 502, ErrorCode.ServerError, 'Failed to send invitation')
   }
 
-  return c.json({ ok: true, email: body.email, organizationId: orgId }, 201)
-})
+  // Reflect the new pending invite back as a member DTO. We don't have the
+  // WorkOS invitation id from `sendOrgInvitation` (it returns a boolean), so
+  // look it up from the org's pending invitations by email.
+  const invitations = await listOrgInvitations(c.env.WORKOS_API_KEY, orgId)
+  const created = invitations.find((inv) => inv.email.toLowerCase() === email)
+  if (created) {
+    return c.json(pendingMemberDto(created), 201)
+  }
+  // Fallback: synthesise a pending row (id keyed by email) if the lookup
+  // raced or returned nothing — the next list call reconciles the real id.
+  const local = email.split('@')[0] ?? email
+  return c.json(
+    {
+      id: `invite:${email}`,
+      sub: '',
+      name: local,
+      display_name: local,
+      email,
+      role: workosSlugToAccountRole(roleSlug),
+      status: 'pending',
+      joined_at: new Date().toISOString(),
+    },
+    201,
+  )
+}
+
+app.post('/api/orgs/:id/invites', handleInvite)
+app.post('/api/orgs/:id/invitations', handleInvite)
 
 
 // ── WorkOS Directory Sync Webhooks ────────────────────────────────────────
