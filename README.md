@@ -281,6 +281,30 @@ The MCP spec moved to CIMD (Client ID Metadata Documents) as the default. For an
 
 id.org.ai wraps WorkOS AuthKit for all human authentication. The custom AuthKit domain is `id.org.ai`. WorkOS handles SSO, social login, MFA, enterprise directory sync. id.org.ai adds the agent layer on top.
 
+### Trusted-Account OAuth (ADR-0007)
+
+Consumer domains that live in the **same Cloudflare account** as id.org.ai can integrate without per-app Dynamic Client Registration. Account membership *is* the trust boundary.
+
+A single canonical client_id — `cid_trusted_account_v1` — is recognized at `/oauth/authorize` and `/oauth/token` for any `redirect_uri` whose host is in the `TRUSTED_ACCOUNT_DOMAINS` allowlist (worker env var, comma-separated bare hostnames). PKCE remains mandatory; scope and state validation are unchanged. There is no client_secret — it's a public client.
+
+Implementation choice: the trusted-account client is fully synthesized from env config at request time. There is no `client:cid_trusted_account_v1` row in the DCR store; the lookup is bypassed when the incoming client_id matches the canonical id. This avoids a one-time bootstrap step and means the allowlist is the single source of truth.
+
+**Onboarding a new in-account consumer:**
+
+1. Add the consumer's apex (or relevant) hostname to `TRUSTED_ACCOUNT_DOMAINS` in `worker/wrangler.jsonc`.
+2. Redeploy id.org.ai.
+3. On the consumer side, configure your OAuth client (e.g. better-auth) with:
+   - `issuer = https://id.org.ai`
+   - `client_id = cid_trusted_account_v1`
+   - `redirect_uri` on a host matching the allowlist
+   - PKCE (S256), no client_secret
+
+That's it — no DCR call, no `client_id` paste, no env-var coordination. Removing a consumer is the inverse: remove its host from the allowlist and redeploy. Existing DCR'd clients (`cid_*` records in storage) continue to work unchanged for third-party consumers.
+
+Trade-off: per-app revocation is coarser. Revoking the trusted-account client invalidates every in-account consumer at once. The intended granularity is per-domain via the allowlist.
+
+See [`docs/adr/0007-trusted-account-oauth-via-better-auth.md`](https://github.com/dot-do/startup.games/blob/main/docs/adr/0007-trusted-account-oauth-via-better-auth.md) for the full rationale.
+
 ## Implementation Phases
 
 ### Phase 1: Anonymous → Sandboxed (Level 0 → 1)

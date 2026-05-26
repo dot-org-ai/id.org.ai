@@ -20,6 +20,33 @@ import { AUDIT_EVENTS } from '../../src/sdk/audit'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
+// ── Trusted-Account OAuth (ADR-0007) ────────────────────────────────────────
+//
+// Canonical shared client_id for in-Cloudflare-account consumers. Any request
+// using this client_id is validated against the TRUSTED_ACCOUNT_DOMAINS env
+// allowlist instead of a per-app DCR `redirect_uris` array.
+//
+// We pick option (b) from ADR-0007: bypass the DCR lookup entirely rather
+// than provisioning a real `client:cid_trusted_account_v1` record. This keeps
+// the diff small (no one-time bootstrap endpoint, no seeding step) and the
+// virtual client's metadata is fully derivable from env config.
+export const TRUSTED_ACCOUNT_CLIENT_ID = 'cid_trusted_account_v1'
+
+/** Parse a comma-separated env value into a Set of bare hostnames. */
+export function parseTrustedAccountDomains(value: string | undefined): Set<string> {
+  const set = new Set<string>()
+  if (!value) return set
+  for (const raw of value.split(',')) {
+    const host = raw.trim().toLowerCase()
+    if (!host) continue
+    // Defensive: reject obvious mistakes (schemes, paths) so a typo in
+    // the env doesn't silently widen the trust boundary.
+    if (host.includes('/') || host.includes(':') || host.includes(' ')) continue
+    set.add(host)
+  }
+  return set
+}
+
 // ── Helper ──────────────────────────────────────────────────────────────────
 
 export function getOAuthProvider(c: any): OAuthProvider {
@@ -28,6 +55,14 @@ export function getOAuthProvider(c: any): OAuthProvider {
   const stub = getStubForIdentity(c.env, 'oauth')
   const signingKeyManager = getSigningKeyManager(c.env)
   const base = 'https://id.org.ai'
+  const allowedDomains = parseTrustedAccountDomains(c.env.TRUSTED_ACCOUNT_DOMAINS)
+  // ADR-0007 (BLOCKER 2): wire audit emission through the existing
+  // IdentityDO RPC. The DO routes to AuditService which writes immutable
+  // `audit:*` rows. Fire-and-forget on the provider side — the request
+  // flow never blocks on audit success. We layer the request's IP and UA
+  // onto the metadata-only event the provider constructs.
+  const reqIp = c.req.raw.headers.get('cf-connecting-ip') ?? undefined
+  const reqUa = c.req.raw.headers.get('user-agent') ?? undefined
   return new OAuthProvider({
     storage: {
       async get<T = unknown>(key: string): Promise<T | undefined> {
@@ -65,6 +100,29 @@ export function getOAuthProvider(c: any): OAuthProvider {
       return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string; level?: number }
     },
     signingKeyManager,
+    // ADR-0007: enable trusted-account mode only when the allowlist is non-empty.
+    ...(allowedDomains.size > 0 && {
+      trustedAccount: {
+        clientId: TRUSTED_ACCOUNT_CLIENT_ID,
+        allowedDomains,
+      },
+    }),
+    // ADR-0007 (BLOCKER 2): trusted-account audit emission. The provider
+    // only invokes this for trusted-account flows; DCR'd clients are
+    // intentionally untouched.
+    auditEmit: async (event) => {
+      // logFireAndForget on the DO swallows errors; we add one more layer
+      // here so even an RPC-level failure can't break /oauth/token.
+      try {
+        await stub.auditEvent({
+          ...event,
+          ip: event.ip ?? reqIp,
+          userAgent: event.userAgent ?? reqUa,
+        })
+      } catch {
+        // fire-and-forget
+      }
+    },
   })
 }
 
@@ -90,8 +148,20 @@ app.get('/oauth/authorize', async (c) => {
 
   // Skip CSRF wrapping for service binding callers — the proxy handles its own security
   const isServiceBinding = !!c.req.header('X-Issuer')
+  // ADR-0007: also skip for the canonical trusted-account client. Trusted-
+  // account clients have `client.trusted === true`, which makes provider.ts
+  // (handleAuthorize, ~line 582) bypass the consent page and call
+  // issueAuthorizationCode directly — there's no consent POST round-trip
+  // where a wrapped state would be unwrapped, so the wrapped value would
+  // leak straight through to the consumer's better-auth callback and fail
+  // CSRF on that side. better-auth (and any standards-conformant OAuth
+  // client) compares the returned `state` against the one it sent and
+  // rejects on mismatch. Same failure mode as 08abc13 fixed for ChatGPT
+  // via the X-Issuer path; same fix shape.
+  const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
+  const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
 
-  if (isServiceBinding) {
+  if (isServiceBinding || isTrustedAccount) {
     const provider = getOAuthProvider(c)
     return provider.handleAuthorize(c.req.raw, identityId)
   }

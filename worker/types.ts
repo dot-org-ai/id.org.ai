@@ -31,6 +31,10 @@ export interface Env {
   APP_NAME?: string
   APP_TAGLINE?: string
   REDIRECT_URI?: string
+  // Trusted-account OAuth (ADR-0007). Comma-separated list of bare hostnames
+  // (e.g. "startup.games,foo.example") whose redirect_uri is accepted under
+  // the canonical shared client_id `cid_trusted_account_v1` without per-app DCR.
+  TRUSTED_ACCOUNT_DOMAINS?: string
 }
 
 export type Variables = {

@@ -62,6 +62,27 @@ export interface OAuthConfig {
   jwksUri?: string
 }
 
+/**
+ * Trusted-account OAuth configuration (ADR-0007).
+ *
+ * When a request arrives with `client_id === clientId` and the request's
+ * `redirect_uri` host is in `allowedDomains`, the OAuth flow bypasses the
+ * usual DCR `client:{cid_*}` storage lookup and treats the request as
+ * coming from a public client whose redirect_uri list is implicit-via-
+ * allowlist. PKCE remains mandatory; scope/state validation are unchanged.
+ *
+ * This implements option (b) from ADR-0007: bypass DCR lookup entirely for
+ * the canonical client rather than provisioning a real DCR record. Chosen
+ * to keep the diff small and avoid a one-time bootstrap step — the trusted-
+ * account "client" is fully synthesized from env config at request time.
+ */
+export interface TrustedAccountConfig {
+  /** Canonical shared client_id for in-Cloudflare-account consumers. */
+  clientId: string
+  /** Bare hostnames (no scheme/path) accepted as redirect_uri hosts. */
+  allowedDomains: Set<string>
+}
+
 export interface OAuthProviderClient {
   id: string                   // cid_xxx
   name: string
@@ -116,6 +137,16 @@ interface RefreshToken {
   createdAt: number
   resource?: string            // RFC 8707 resource indicator
   effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
+  /**
+   * ADR-0007: the consumer's redirect_uri host at issuance time, captured for
+   * trusted-account flows so `handleRefreshTokenGrant` can re-validate the
+   * host against the current allowlist. Removing a domain from
+   * TRUSTED_ACCOUNT_DOMAINS must invalidate live refresh tokens for that
+   * domain, otherwise per-app revocation (ADR-0007 §"per-app revocation")
+   * doesn't actually hold for the refresh grant. Unset for non-trusted-
+   * account flows.
+   */
+  consumerHost?: string
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -274,11 +305,33 @@ const DEVICE_POLL_INTERVAL = 5             // 5 seconds
 // OAuthProvider
 // ============================================================================
 
+/**
+ * Audit event emitter callback used by the OAuthProvider to record
+ * trusted-account flow events (ADR-0007 BLOCKER 2). Fire-and-forget —
+ * implementations must not throw, and the provider treats failures as
+ * non-fatal. When unset, the provider emits nothing.
+ *
+ * In production, the worker passes `oauthStub.auditEvent` here; the stub
+ * forwards to AuditService which writes immutable `audit:*` rows in the
+ * shared OAuth DO shard. In tests, callers may pass a vi.fn() to capture
+ * emissions.
+ */
+export type OAuthAuditEmit = (event: {
+  event: string
+  actor?: string
+  target?: string
+  metadata?: Record<string, unknown>
+  ip?: string
+  userAgent?: string
+}) => Promise<void> | void
+
 export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
   private getIdentity: (id: string) => Promise<IdentityInfo | null>
   private signingKeyManager?: SigningKeyManager
+  private trustedAccount?: TrustedAccountConfig
+  private auditEmit?: OAuthAuditEmit
 
   get issuer(): string {
     return this.config.issuer
@@ -303,11 +356,75 @@ export class OAuthProvider {
     config: OAuthConfig
     getIdentity: (id: string) => Promise<IdentityInfo | null>
     signingKeyManager?: SigningKeyManager
+    /** ADR-0007: trusted-account OAuth mode for in-CF-account consumers. */
+    trustedAccount?: TrustedAccountConfig
+    /**
+     * ADR-0007 (BLOCKER 2): callback to record audit events for trusted-
+     * account flow. Currently the provider emits `oauth.code.issued` and
+     * `oauth.token.issued` only on the trusted-account code paths, since
+     * those use one shared canonical client_id and would otherwise have
+     * no per-request traceability. DCR'd clients are intentionally untouched.
+     */
+    auditEmit?: OAuthAuditEmit
   }) {
     this.storage = options.storage
     this.config = options.config
     this.getIdentity = options.getIdentity
     this.signingKeyManager = options.signingKeyManager
+    this.trustedAccount = options.trustedAccount
+    this.auditEmit = options.auditEmit
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRIVATE: Trusted-Account Helpers (ADR-0007)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** True iff `clientId` is the canonical trusted-account client id. */
+  private isTrustedAccountClient(clientId: string): boolean {
+    return !!this.trustedAccount && clientId === this.trustedAccount.clientId
+  }
+
+  /**
+   * Returns true if `redirectUri` parses cleanly, uses https (or localhost
+   * for dev), and its host is in the trusted-account allowlist.
+   */
+  private isTrustedAccountRedirect(redirectUri: string): boolean {
+    if (!this.trustedAccount) return false
+    let parsed: URL
+    try {
+      parsed = new URL(redirectUri)
+    } catch {
+      return false
+    }
+    if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+      return false
+    }
+    if (parsed.hash) return false
+    return this.trustedAccount.allowedDomains.has(parsed.hostname)
+  }
+
+  /**
+   * Synthesize a virtual `OAuthProviderClient` for the canonical trusted-
+   * account client. Used in place of a DCR storage lookup. `redirectUris`
+   * is intentionally empty — host validation is performed separately
+   * against the allowlist via {@link isTrustedAccountRedirect}.
+   */
+  private buildTrustedAccountClient(): OAuthProviderClient {
+    return {
+      id: this.trustedAccount!.clientId,
+      name: 'Trusted Account Consumer',
+      // No secret — this is a public client; PKCE is enforced as usual.
+      redirectUris: [], // implicit-via-allowlist; do not validate via this array
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
+      // Standard OIDC scopes; per-app scope narrowing is not needed under
+      // the trusted-account model — account membership is the trust boundary.
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      // First-party: skip consent screen. Account membership = consent.
+      trusted: true,
+      tokenEndpointAuthMethod: 'none',
+      createdAt: 0,
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -440,14 +557,26 @@ export class OAuthProvider {
     const resource = params.get('resource') || undefined
 
     // ── Validate client ─────────────────────────────────────────────────
-    const client = await this.getClient(clientId)
-    if (!client) {
-      return oauthError('invalid_client', 'Unknown client_id')
-    }
-
-    // ── Validate redirect URI ───────────────────────────────────────────
-    if (!client.redirectUris.includes(redirectUri)) {
-      return oauthError('invalid_request', 'Invalid redirect_uri')
+    // ADR-0007: trusted-account clients bypass the DCR lookup entirely.
+    // Their redirect_uri allowlist is host-based and supplied by env config.
+    let client: OAuthProviderClient | null
+    if (this.isTrustedAccountClient(clientId)) {
+      if (!this.isTrustedAccountRedirect(redirectUri)) {
+        return oauthError(
+          'invalid_request',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
+      client = this.buildTrustedAccountClient()
+    } else {
+      client = await this.getClient(clientId)
+      if (!client) {
+        return oauthError('invalid_client', 'Unknown client_id')
+      }
+      // Validate redirect URI against the DCR-registered list
+      if (!client.redirectUris.includes(redirectUri)) {
+        return oauthError('invalid_request', 'Invalid redirect_uri')
+      }
     }
 
     // ── Validate response_type ──────────────────────────────────────────
@@ -931,6 +1060,22 @@ export class OAuthProvider {
       return oauthError('invalid_grant', 'redirect_uri mismatch')
     }
 
+    // ── ADR-0007: re-verify host against trusted-account allowlist ──────
+    // Defense in depth: even though the redirect_uri matches the one stored
+    // on the code (which was validated at /authorize time), re-check that
+    // its host is still in the allowlist. This catches an allowlist that
+    // shrank between authorize and token exchange.
+    if (this.isTrustedAccountClient(clientId)) {
+      if (!this.isTrustedAccountRedirect(redirectUri)) {
+        return oauthError(
+          'invalid_grant',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
+      // Trusted-account is a public client — no client_secret required.
+      // Fall through to PKCE verification below.
+    }
+
     // ── Verify PKCE (mandatory per OAuth 2.1) ───────────────────────────
     if (codeData.codeChallenge) {
       if (!codeVerifier) {
@@ -941,8 +1086,9 @@ export class OAuthProvider {
       if (computedChallenge !== codeData.codeChallenge) {
         return oauthError('invalid_grant', 'Invalid code_verifier')
       }
-    } else {
-      // No PKCE — confidential client must present valid secret
+    } else if (!this.isTrustedAccountClient(clientId)) {
+      // No PKCE — confidential client must present valid secret.
+      // (Trusted-account clients always have PKCE per /authorize enforcement.)
       const client = await this.getClient(clientId)
       if (client?.secret && client.secret !== clientSecret) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
@@ -953,6 +1099,14 @@ export class OAuthProvider {
     await this.storage.delete(`code:${code}`)
 
     // ── Issue tokens ────────────────────────────────────────────────────
+    // ADR-0007: stamp the consumer host on the refresh token so the
+    // refresh-grant path can re-check it against the current allowlist
+    // (per-app revocation by domain removal). Also feeds the
+    // `oauth.token.issued` audit event's `redirectUriHost` field.
+    const consumerHost = this.isTrustedAccountClient(clientId)
+      ? this.extractRedirectUriHost(codeData.redirectUri)
+      : undefined
+
     return this.issueTokenPair({
       clientId,
       identityId: codeData.identityId,
@@ -960,6 +1114,7 @@ export class OAuthProvider {
       nonce: codeData.nonce,
       resource: codeData.resource,
       effectiveIssuer: codeData.effectiveIssuer,
+      consumerHost,
     })
   }
 
@@ -985,9 +1140,29 @@ export class OAuthProvider {
     }
 
     // ── Verify client secret for confidential clients ───────────────────
-    const client = await this.getClient(clientId)
-    if (client?.secret && client.secret !== clientSecret) {
-      return oauthError('invalid_client', 'Invalid client credentials', 401)
+    // Trusted-account is a public client (no secret); skip the lookup so we
+    // don't materialise a DCR row for it.
+    if (!this.isTrustedAccountClient(clientId)) {
+      const client = await this.getClient(clientId)
+      if (client?.secret && client.secret !== clientSecret) {
+        return oauthError('invalid_client', 'Invalid client credentials', 401)
+      }
+    }
+
+    // ── ADR-0007 (QUESTION resolved): re-validate consumer host against ──
+    //     the current trusted-account allowlist. The authorize-code grant
+    //     does the same check at code → token exchange; refresh must fail
+    //     closed when a domain is removed from TRUSTED_ACCOUNT_DOMAINS,
+    //     otherwise "per-app revocation" (ADR-0007 §"Negative / mitigations")
+    //     doesn't actually hold for the refresh grant.
+    if (this.isTrustedAccountClient(clientId)) {
+      const host = tokenData.consumerHost
+      if (!host || !this.trustedAccount!.allowedDomains.has(host)) {
+        return oauthError(
+          'invalid_grant',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
     }
 
     // ── Check if revoked (replay detection) ─────────────────────────────
@@ -1017,6 +1192,9 @@ export class OAuthProvider {
       family: tokenData.family,
       resource: tokenData.resource,
       effectiveIssuer: tokenData.effectiveIssuer,
+      // Propagate the consumer host through rotation so subsequent refreshes
+      // can keep enforcing the allowlist (ADR-0007).
+      consumerHost: tokenData.consumerHost,
     })
   }
 
@@ -1170,6 +1348,24 @@ export class OAuthProvider {
       expirationTtl: AUTH_CODE_TTL + 60,
     })
 
+    // ADR-0007 (BLOCKER 2): trace which consumer host produced this code.
+    // DCR'd clients are intentionally untouched — traceability for them is
+    // still via the `client:{cid_*}` row. Trusted-account is the only case
+    // where one canonical client_id is reused across an unbounded host set.
+    if (this.isTrustedAccountClient(client.id)) {
+      await this.safeEmitAudit({
+        event: 'oauth.code.issued',
+        actor: identityId,
+        target: codeId,
+        metadata: {
+          clientId: client.id,
+          identityId,
+          redirectUriHost: this.extractRedirectUriHost(params.redirectUri),
+          scopes: params.scopes,
+        },
+      })
+    }
+
     const redirectUrl = new URL(params.redirectUri)
     redirectUrl.searchParams.set('code', codeId)
     if (params.state) {
@@ -1177,6 +1373,41 @@ export class OAuthProvider {
     }
 
     return Response.redirect(redirectUrl.toString(), 302)
+  }
+
+  /**
+   * Extract the bare hostname from a redirect_uri, or undefined if the URI
+   * doesn't parse. Used for audit-event `redirectUriHost` (ADR-0007 BLOCKER 2)
+   * and for the consumerHost stamped on trusted-account refresh tokens (the
+   * QUESTION resolution in PR #8 review).
+   */
+  private extractRedirectUriHost(redirectUri: string): string | undefined {
+    try {
+      return new URL(redirectUri).hostname
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Fire-and-forget audit emission. Wraps the optional auditEmit callback
+   * in a try/catch so a downstream sink failure can never break the OAuth
+   * flow. Mirrors `worker/utils/audit.ts#logAuditEvent` semantics.
+   */
+  private async safeEmitAudit(event: {
+    event: string
+    actor?: string
+    target?: string
+    metadata?: Record<string, unknown>
+    ip?: string
+    userAgent?: string
+  }): Promise<void> {
+    if (!this.auditEmit) return
+    try {
+      await this.auditEmit(event)
+    } catch {
+      // never break the request flow for an audit failure
+    }
   }
 
   private async issueTokenPair(options: {
@@ -1187,8 +1418,16 @@ export class OAuthProvider {
     nonce?: string
     resource?: string
     effectiveIssuer?: string
+    /**
+     * ADR-0007: consumer's redirect_uri host. Stored on the refresh-token
+     * record so `handleRefreshTokenGrant` can re-validate against the
+     * current allowlist (QUESTION resolution from PR #8 review). Also used
+     * as the `redirectUriHost` audit metadata field. Trusted-account flows
+     * only; ignored for everything else.
+     */
+    consumerHost?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer } = options
+    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, consumerHost } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1214,6 +1453,7 @@ export class OAuthProvider {
       createdAt: now,
       ...(resource !== undefined && { resource }),
       ...(effectiveIssuer !== undefined && { effectiveIssuer }),
+      ...(consumerHost !== undefined && { consumerHost }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1223,6 +1463,23 @@ export class OAuthProvider {
     await this.storage.put(`refresh:${refreshTokenId}`, refreshToken, {
       expirationTtl: REFRESH_TOKEN_TTL + 60,
     })
+
+    // ADR-0007 (BLOCKER 2): emit token-issuance audit for trusted-account
+    // flows. Trace points: access token id, refresh token id, consumer host.
+    if (this.isTrustedAccountClient(clientId)) {
+      await this.safeEmitAudit({
+        event: 'oauth.token.issued',
+        actor: identityId,
+        target: accessTokenId,
+        metadata: {
+          clientId,
+          identityId,
+          redirectUriHost: consumerHost,
+          refreshTokenId,
+          scopes,
+        },
+      })
+    }
 
     // Mint OIDC id_token when openid scope is granted and signing is available
     let idToken: string | undefined
