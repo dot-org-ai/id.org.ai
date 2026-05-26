@@ -125,8 +125,20 @@ app.get('/oauth/authorize', async (c) => {
 
   // Skip CSRF wrapping for service binding callers — the proxy handles its own security
   const isServiceBinding = !!c.req.header('X-Issuer')
+  // ADR-0007: also skip for the canonical trusted-account client. Trusted-
+  // account clients have `client.trusted === true`, which makes provider.ts
+  // (handleAuthorize, ~line 582) bypass the consent page and call
+  // issueAuthorizationCode directly — there's no consent POST round-trip
+  // where a wrapped state would be unwrapped, so the wrapped value would
+  // leak straight through to the consumer's better-auth callback and fail
+  // CSRF on that side. better-auth (and any standards-conformant OAuth
+  // client) compares the returned `state` against the one it sent and
+  // rejects on mismatch. Same failure mode as 08abc13 fixed for ChatGPT
+  // via the X-Issuer path; same fix shape.
+  const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
+  const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
 
-  if (isServiceBinding) {
+  if (isServiceBinding || isTrustedAccount) {
     const provider = getOAuthProvider(c)
     return provider.handleAuthorize(c.req.raw, identityId)
   }
