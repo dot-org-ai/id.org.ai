@@ -429,6 +429,136 @@ describe('OAuthProvider - trusted-account mode (ADR-0007)', () => {
     })
   })
 
+  // ── /oauth/token refresh_token grant — ADR-0007 QUESTION resolution ───────
+
+  describe('/oauth/token refresh_token grant — allowlist re-check (ADR-0007 QUESTION)', () => {
+    async function exchangeForTokens(
+      provider: OAuthProvider,
+      redirectUri: string,
+    ): Promise<{ accessToken: string; refreshToken: string }> {
+      const verifier = 'verifier-1234567890abcdef'
+      const codeChallenge = await computeS256Challenge(verifier)
+      const url = buildAuthorizeUrl({
+        client_id: TRUSTED_CLIENT_ID,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid profile email offline_access',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+      })
+      const authRes = await provider.handleAuthorize(
+        new Request(url, { method: 'GET', redirect: 'manual' }),
+        'user-1',
+      )
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+
+      const tokenRes = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id: TRUSTED_CLIENT_ID,
+            code_verifier: verifier,
+          }),
+        }),
+      )
+      const body = (await tokenRes.json()) as { access_token: string; refresh_token: string }
+      return { accessToken: body.access_token, refreshToken: body.refresh_token }
+    }
+
+    it('refresh succeeds while the consumer host is still allowlisted', async () => {
+      const provider = createTrustedProvider(['startup.games'], storage)
+      const { refreshToken } = await exchangeForTokens(
+        provider,
+        'https://startup.games/api/auth/callback/id-org-ai',
+      )
+
+      const res = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: TRUSTED_CLIENT_ID,
+          }),
+        }),
+      )
+
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(body.access_token).toMatch(/^at_/)
+      expect(body.refresh_token).toMatch(/^rt_/)
+      // Rotation: the new refresh token is distinct from the original.
+      expect(body.refresh_token).not.toBe(refreshToken)
+    })
+
+    it('refresh fails closed when the allowlist shrinks between issuance and refresh', async () => {
+      const provider = createTrustedProvider(['startup.games'], storage)
+      const { refreshToken } = await exchangeForTokens(
+        provider,
+        'https://startup.games/api/auth/callback/id-org-ai',
+      )
+
+      // Allowlist shrinks: the same storage now sees a provider whose env
+      // no longer trusts 'startup.games'. Mirrors the existing
+      // authorization-code grant's "allowlist shrinks" test.
+      const shrunkProvider = createTrustedProvider(['someone-else.com'], storage)
+
+      const res = await shrunkProvider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: TRUSTED_CLIENT_ID,
+          }),
+        }),
+      )
+
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error: string; error_description: string }
+      expect(body.error).toBe('invalid_grant')
+      expect(body.error_description).toMatch(/trusted-account allowlist/i)
+    })
+
+    it('stores the consumer host on the issued refresh token', async () => {
+      const provider = createTrustedProvider(['startup.games'], storage)
+      const { refreshToken } = await exchangeForTokens(
+        provider,
+        'https://startup.games/api/auth/callback/id-org-ai',
+      )
+      const stored = await storage.get<{ consumerHost?: string }>(`refresh:${refreshToken}`)
+      expect(stored?.consumerHost).toBe('startup.games')
+    })
+
+    it('propagates the consumer host through rotation', async () => {
+      const provider = createTrustedProvider(['startup.games'], storage)
+      const { refreshToken } = await exchangeForTokens(
+        provider,
+        'https://startup.games/api/auth/callback/id-org-ai',
+      )
+      const res = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: TRUSTED_CLIENT_ID,
+          }),
+        }),
+      )
+      const body = (await res.json()) as { refresh_token: string }
+      const rotated = await storage.get<{ consumerHost?: string }>(`refresh:${body.refresh_token}`)
+      expect(rotated?.consumerHost).toBe('startup.games')
+    })
+  })
+
   // ── Audit emission — ADR-0007 BLOCKER 2 ───────────────────────────────────
 
   describe('audit emission (ADR-0007 BLOCKER 2)', () => {
@@ -481,6 +611,62 @@ describe('OAuthProvider - trusted-account mode (ADR-0007)', () => {
       expect(tokenEvents[0].metadata?.clientId).toBe(TRUSTED_CLIENT_ID)
       expect(tokenEvents[0].metadata?.identityId).toBe('user-1')
       expect(tokenEvents[0].metadata?.redirectUriHost).toBe('startup.games')
+    })
+
+    it('emits oauth.token.issued on refresh-token rotation for trusted-account clients', async () => {
+      const emit = vi.fn<Parameters<OAuthAuditEmit>, ReturnType<OAuthAuditEmit>>()
+      const provider = createTrustedProvider(['startup.games'], storage, emit)
+
+      const redirectUri = 'https://startup.games/api/auth/callback/id-org-ai'
+      const verifier = 'verifier-1234567890abcdef'
+      const codeChallenge = await computeS256Challenge(verifier)
+
+      const authUrl = buildAuthorizeUrl({
+        client_id: TRUSTED_CLIENT_ID,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid profile email offline_access',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+      })
+      const authRes = await provider.handleAuthorize(
+        new Request(authUrl, { method: 'GET', redirect: 'manual' }),
+        'user-1',
+      )
+      const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!
+
+      const initialTokenRes = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id: TRUSTED_CLIENT_ID,
+            code_verifier: verifier,
+          }),
+        }),
+      )
+      const { refresh_token: refreshToken } = (await initialTokenRes.json()) as { refresh_token: string }
+
+      emit.mockClear()
+
+      await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: TRUSTED_CLIENT_ID,
+          }),
+        }),
+      )
+
+      const refreshEvents = emit.mock.calls.map((c) => c[0]).filter((e) => e.event === 'oauth.token.issued')
+      expect(refreshEvents).toHaveLength(1)
+      expect(refreshEvents[0].metadata?.redirectUriHost).toBe('startup.games')
     })
 
     it('does NOT emit audit events for non-trusted clients (DCR path unchanged)', async () => {

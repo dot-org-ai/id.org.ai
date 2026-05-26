@@ -137,6 +137,16 @@ interface RefreshToken {
   createdAt: number
   resource?: string            // RFC 8707 resource indicator
   effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
+  /**
+   * ADR-0007: the consumer's redirect_uri host at issuance time, captured for
+   * trusted-account flows so `handleRefreshTokenGrant` can re-validate the
+   * host against the current allowlist. Removing a domain from
+   * TRUSTED_ACCOUNT_DOMAINS must invalidate live refresh tokens for that
+   * domain, otherwise per-app revocation (ADR-0007 §"per-app revocation")
+   * doesn't actually hold for the refresh grant. Unset for non-trusted-
+   * account flows.
+   */
+  consumerHost?: string
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -1089,10 +1099,11 @@ export class OAuthProvider {
     await this.storage.delete(`code:${code}`)
 
     // ── Issue tokens ────────────────────────────────────────────────────
-    // ADR-0007 (BLOCKER 2): forward the consumer host to issueTokenPair so
-    // its `oauth.token.issued` audit event can record it. Computed from the
-    // redirect_uri the code was bound to (already verified above).
-    const redirectUriHost = this.isTrustedAccountClient(clientId)
+    // ADR-0007: stamp the consumer host on the refresh token so the
+    // refresh-grant path can re-check it against the current allowlist
+    // (per-app revocation by domain removal). Also feeds the
+    // `oauth.token.issued` audit event's `redirectUriHost` field.
+    const consumerHost = this.isTrustedAccountClient(clientId)
       ? this.extractRedirectUriHost(codeData.redirectUri)
       : undefined
 
@@ -1103,7 +1114,7 @@ export class OAuthProvider {
       nonce: codeData.nonce,
       resource: codeData.resource,
       effectiveIssuer: codeData.effectiveIssuer,
-      redirectUriHost,
+      consumerHost,
     })
   }
 
@@ -1129,9 +1140,29 @@ export class OAuthProvider {
     }
 
     // ── Verify client secret for confidential clients ───────────────────
-    const client = await this.getClient(clientId)
-    if (client?.secret && client.secret !== clientSecret) {
-      return oauthError('invalid_client', 'Invalid client credentials', 401)
+    // Trusted-account is a public client (no secret); skip the lookup so we
+    // don't materialise a DCR row for it.
+    if (!this.isTrustedAccountClient(clientId)) {
+      const client = await this.getClient(clientId)
+      if (client?.secret && client.secret !== clientSecret) {
+        return oauthError('invalid_client', 'Invalid client credentials', 401)
+      }
+    }
+
+    // ── ADR-0007 (QUESTION resolved): re-validate consumer host against ──
+    //     the current trusted-account allowlist. The authorize-code grant
+    //     does the same check at code → token exchange; refresh must fail
+    //     closed when a domain is removed from TRUSTED_ACCOUNT_DOMAINS,
+    //     otherwise "per-app revocation" (ADR-0007 §"Negative / mitigations")
+    //     doesn't actually hold for the refresh grant.
+    if (this.isTrustedAccountClient(clientId)) {
+      const host = tokenData.consumerHost
+      if (!host || !this.trustedAccount!.allowedDomains.has(host)) {
+        return oauthError(
+          'invalid_grant',
+          'redirect_uri host is not in the trusted-account allowlist',
+        )
+      }
     }
 
     // ── Check if revoked (replay detection) ─────────────────────────────
@@ -1161,6 +1192,9 @@ export class OAuthProvider {
       family: tokenData.family,
       resource: tokenData.resource,
       effectiveIssuer: tokenData.effectiveIssuer,
+      // Propagate the consumer host through rotation so subsequent refreshes
+      // can keep enforcing the allowlist (ADR-0007).
+      consumerHost: tokenData.consumerHost,
     })
   }
 
@@ -1343,7 +1377,9 @@ export class OAuthProvider {
 
   /**
    * Extract the bare hostname from a redirect_uri, or undefined if the URI
-   * doesn't parse. Used for audit-event `redirectUriHost` (ADR-0007 BLOCKER 2).
+   * doesn't parse. Used for audit-event `redirectUriHost` (ADR-0007 BLOCKER 2)
+   * and for the consumerHost stamped on trusted-account refresh tokens (the
+   * QUESTION resolution in PR #8 review).
    */
   private extractRedirectUriHost(redirectUri: string): string | undefined {
     try {
@@ -1383,13 +1419,15 @@ export class OAuthProvider {
     resource?: string
     effectiveIssuer?: string
     /**
-     * ADR-0007 (BLOCKER 2): consumer's redirect_uri host, captured for the
-     * `oauth.token.issued` audit event metadata. Trusted-account flows only;
-     * ignored for everything else.
+     * ADR-0007: consumer's redirect_uri host. Stored on the refresh-token
+     * record so `handleRefreshTokenGrant` can re-validate against the
+     * current allowlist (QUESTION resolution from PR #8 review). Also used
+     * as the `redirectUriHost` audit metadata field. Trusted-account flows
+     * only; ignored for everything else.
      */
-    redirectUriHost?: string
+    consumerHost?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, redirectUriHost } = options
+    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, consumerHost } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1415,6 +1453,7 @@ export class OAuthProvider {
       createdAt: now,
       ...(resource !== undefined && { resource }),
       ...(effectiveIssuer !== undefined && { effectiveIssuer }),
+      ...(consumerHost !== undefined && { consumerHost }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1435,7 +1474,7 @@ export class OAuthProvider {
         metadata: {
           clientId,
           identityId,
-          redirectUriHost,
+          redirectUriHost: consumerHost,
           refreshTokenId,
           scopes,
         },
