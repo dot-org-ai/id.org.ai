@@ -64,6 +64,9 @@
   ],
   "scripts": {
     "build": "tsup",
+    "build:react": "cd packages/react && pnpm install --ignore-workspace && pnpm build",
+    "publish-packages": "node scripts/publish.ts",
+    "release": "pnpm build && pnpm build:react && pnpm publish-packages",
     "build:site": "cd site && pnpm install --ignore-workspace && pnpm build && rm -rf ../worker/public && cp -r out ../worker/public",
     "build:dash": "cd ../../.studio/ui/packages/auth && npx vite build --config vite.app.config.ts --base /dash/ --outDir \"$(cd ../../../../.org.ai/id/worker/public && pwd)/dash\" --emptyOutDir",
     "dev": "tsup --watch",
