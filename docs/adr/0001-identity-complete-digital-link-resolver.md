@@ -9,7 +9,7 @@
 
 ## Context
 
-org.ai ADR 0013 rules that id.org.ai is *the* GS1 Digital Link resolver, that the resolver is the GET face of the authority membrane, and that — because it is the identity layer — it supplies the authenticated **Who** that completes EPCIS's 5W+H (the delta `id.gs1.org` structurally cannot provide). This repo currently has **no resolver code** (greenfield). This ADR records how we build it without contradicting the identity/auth model already shipped (the `AuthBroker`, `CapabilityLevel`, the AAP `Agent`/`Host` split, the claim-by-commit flow).
+org.ai ADR 0013 rules that id.org.ai is *the* GS1 Digital Link resolver, that the resolver is the GET face of the authority membrane, and that — because it is the identity layer — it supplies the authenticated **Who** that completes EPCIS's 5W+H natively and by default (the delta `id.gs1.org` does not provide — it resolves anonymously by policy; org.ai ADR 0013 R3). This repo currently has **no resolver code** (greenfield). This ADR records how we build it without contradicting the identity/auth model already shipped (the `AuthBroker`, `CapabilityLevel`, the AAP `Agent`/`Host` split, the claim-by-commit flow).
 
 The one non-obvious build fact: **we already have the Who.** `AuthBroker.identify(req)` (`broker-impl.ts:276`) resolves the principal from any request's credential, returning the L0 anonymous identity when none is presented and never throwing. The resolver does not need a new identity mechanism — it needs to route GS1 keys through the broker and attach the resolved principal to the staged/captured event.
 
@@ -51,7 +51,7 @@ The resolved principal's authorization to capture (and to see private lenses) is
 
 ## Consequences
 
-- **Sunrise 2027 readiness is a build target, not a slogan.** A brand pointing its 2D Digital Link at id.org.ai gets identity-complete resolution the day the resolver ships; the differentiator over `id.gs1.org` is structural (D3).
+- **Sunrise 2027 readiness is a build target, not a slogan.** A brand pointing its 2D Digital Link at id.org.ai gets identity-complete resolution the day the resolver ships; the differentiator over `id.gs1.org` is the integration and ownership — one attested session across resolve→capture, agents first-class, the identity graph platform-owned (D3; org.ai ADR 0013 R3), not a structural monopoly.
 - **No new identity surface.** The resolver is a route over the existing `AuthBroker` + membrane; it introduces the GS1 path grammar and the EPCIS seam, nothing else in the auth model.
 - **Greenfield, so vocabulary-clean from day one** (D6): the resolver names authorization `Scope`, never `Capability` — it never carries the legacy field, so its half of the ADR 0012 realignment is free.
 - **Conformance tests are the acceptance bar.** The GS1-Conformant Resolver Standard's test vectors + RESOLVER.md's worked examples (`startup_xioNCf7…`, the pharma SGTIN `01/00840034001234/21/A1B2C3`) are the resolver's regression suite; an implementation that fails a row fails the ADR.
