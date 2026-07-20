@@ -19,17 +19,17 @@ The one non-obvious build fact: **we already have the Who.** `AuthBroker.identif
 
 A new worker route (`worker/routes/resolve.ts`) owns `GET` for both id grammars, dispatched by shape:
 - **`/{type}_{sqid}`** — the existing typed-sqid identity IRI (RESOLVER.md §1–2). Unchanged behavior.
-- **`/01/{gtin}[/21/{serial}]`** (and further GS1 AIs as trailing path/query) — the **GS1 Digital Link path form** (org.ai ADR 0013 R2), parsed per the GS1 URI Syntax. Presence of AI `21` selects **instance** grain (SGTIN → G5/Tier-3 object); its absence selects **class** grain (GTIN → the product's dimension entry) — ADR 0013 R7.
+- **`/01/{gtin}[/21/{serial}]`** (and further GS1 AIs as trailing path/query) — the **GS1 Digital Link path form** (org.ai ADR 0013 R2), parsed per the GS1 URI Syntax. This form is a **resolvable address, not an `$id`** (ADR 0013 R2/R5): it dereferences via the registry to the object's canonical `{type}_{sqid}` `$id`, which the emitted JSON-LD carries with the Digital Link URI as `sameAs`.
 
-Parsing is GS1-conformant: unknown AIs are tolerated, the primary key is the leftmost, and the compressed/uncompressed forms both resolve.
+Grain routes by **GS1 key semantics, not AI `21` alone** (ADR 0013 R7): instance-grain keys (SGTIN `01`+`21`, **and the serial-less SSCC `00` / GIAI `8004` / GRAI `8003`**) → a G5/Tier-3 instance; a bare GTIN (`01`) → the product's dimension entry; LGTIN (`01`+`10`) → a lot node whose tier follows the product's regime (lot-managed pharma is not public by default). Parsing is GS1-conformant: unknown AIs are tolerated, the primary key is the leftmost, and the compressed/uncompressed forms both resolve.
 
 ### D2 — Content negotiation & `linkType` (delegate to the contract)
 
 Behavior is exactly RESOLVER.md §2–3 — implemented here, ruled there:
-- default (`text/html`) → **303** to the primary surface; for a GS1 class key with no override, the default is GS1's **`gs1:pip`** (product-information page).
+- default (`text/html`) → **303** to the primary surface; for a GS1 key with no override, the target is GS1's **`gs1:defaultLink`** (configurable per entry — commonly `gs1:pip`, the product-information page, for consumer products).
 - `application/ld+json` / MDX → **200** identity/product document (`$context: https://schema.org.ai`, tier rules §4).
 - `?linkType=linkset` **or** `Accept: application/linkset+json` → **200** RFC 9264 linkset; **no redirect** (GS1-conformant). `?linkType=all` → the same linkset (GS1 convention).
-- `?linkType=<lens>` → the R13 lens taxonomy (`identity`/`scope`/`representation`/`redirect`/`action`), plus GS1 linkTypes (`gs1:pip`, …) served from the object's registered links.
+- `?linkType=<lens>` → the R13 lens taxonomy (`identity`/`scope`/`representation`/`redirect`/`action`), plus GS1 linkTypes (`gs1:pip`, `gs1:defaultLink`, …) served from the object's registered links.
 
 ### D3 — The Who wiring (GET stages, POST captures)
 
