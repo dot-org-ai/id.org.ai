@@ -9,7 +9,7 @@
 
 ## Context
 
-org.ai ADR 0013 rules that id.org.ai is *the* GS1 Digital Link resolver, that the resolver is the GET face of the authority membrane, and that — because it is the identity layer — it supplies the authenticated **Who** that completes EPCIS's 5W+H (the delta `id.gs1.org` structurally cannot provide). This repo currently has **no resolver code** (greenfield). This ADR records how we build it without contradicting the identity/auth model already shipped (the `AuthBroker`, `CapabilityLevel`, the AAP `Agent`/`Host` split, the claim-by-commit flow).
+org.ai ADR 0013 rules that id.org.ai is *the* GS1 Digital Link resolver, that the resolver is the GET face of the authority membrane, and that — because it is the identity layer — it supplies the authenticated **Who** that completes EPCIS's 5W+H natively and by default (the delta `id.gs1.org` does not provide — it resolves anonymously by policy; org.ai ADR 0013 R3). This repo currently has **no resolver code** (greenfield). This ADR records how we build it without contradicting the identity/auth model already shipped (the `AuthBroker`, `CapabilityLevel`, the AAP `Agent`/`Host` split, the claim-by-commit flow).
 
 The one non-obvious build fact: **we already have the Who.** `AuthBroker.identify(req)` (`broker-impl.ts:276`) resolves the principal from any request's credential, returning the L0 anonymous identity when none is presented and never throwing. The resolver does not need a new identity mechanism — it needs to route GS1 keys through the broker and attach the resolved principal to the staged/captured event.
 
@@ -19,17 +19,17 @@ The one non-obvious build fact: **we already have the Who.** `AuthBroker.identif
 
 A new worker route (`worker/routes/resolve.ts`) owns `GET` for both id grammars, dispatched by shape:
 - **`/{type}_{sqid}`** — the existing typed-sqid identity IRI (RESOLVER.md §1–2). Unchanged behavior.
-- **`/01/{gtin}[/21/{serial}]`** (and further GS1 AIs as trailing path/query) — the **GS1 Digital Link path form** (org.ai ADR 0013 R2), parsed per the GS1 URI Syntax. Presence of AI `21` selects **instance** grain (SGTIN → G5/Tier-3 object); its absence selects **class** grain (GTIN → the product's dimension entry) — ADR 0013 R7.
+- **`/01/{gtin}[/21/{serial}]`** (and further GS1 AIs as trailing path/query) — the **GS1 Digital Link path form** (org.ai ADR 0013 R2), parsed per the GS1 URI Syntax. This form is a **resolvable address, not an `$id`** (ADR 0013 R2/R5): it dereferences via the registry to the object's canonical `{type}_{sqid}` `$id`, which the emitted JSON-LD carries with the Digital Link URI as `sameAs`.
 
-Parsing is GS1-conformant: unknown AIs are tolerated, the primary key is the leftmost, and the compressed/uncompressed forms both resolve.
+Grain routes by **GS1 key semantics, not AI `21` alone** (ADR 0013 R7): instance-grain keys (SGTIN `01`+`21`, **and the serial-less SSCC `00` / GIAI `8004` / GRAI `8003`**) → a G5/Tier-3 instance; a bare GTIN (`01`) → the product's dimension entry; LGTIN (`01`+`10`) → a lot node whose tier follows the product's regime (lot-managed pharma is not public by default). Parsing is GS1-conformant: unknown AIs are tolerated, the primary key is the leftmost, and the compressed/uncompressed forms both resolve.
 
 ### D2 — Content negotiation & `linkType` (delegate to the contract)
 
 Behavior is exactly RESOLVER.md §2–3 — implemented here, ruled there:
-- default (`text/html`) → **303** to the primary surface; for a GS1 class key with no override, the default is GS1's **`gs1:pip`** (product-information page).
+- default (`text/html`) → **303** to the primary surface; for a GS1 key with no override, the target is GS1's **`gs1:defaultLink`** (configurable per entry — commonly `gs1:pip`, the product-information page, for consumer products).
 - `application/ld+json` / MDX → **200** identity/product document (`$context: https://schema.org.ai`, tier rules §4).
 - `?linkType=linkset` **or** `Accept: application/linkset+json` → **200** RFC 9264 linkset; **no redirect** (GS1-conformant). `?linkType=all` → the same linkset (GS1 convention).
-- `?linkType=<lens>` → the R13 lens taxonomy (`identity`/`scope`/`representation`/`redirect`/`action`), plus GS1 linkTypes (`gs1:pip`, …) served from the object's registered links.
+- `?linkType=<lens>` → the R13 lens taxonomy (`identity`/`scope`/`representation`/`redirect`/`action`), plus GS1 linkTypes (`gs1:pip`, `gs1:defaultLink`, …) served from the object's registered links.
 
 ### D3 — The Who wiring (GET stages, POST captures)
 
@@ -51,7 +51,7 @@ The resolved principal's authorization to capture (and to see private lenses) is
 
 ## Consequences
 
-- **Sunrise 2027 readiness is a build target, not a slogan.** A brand pointing its 2D Digital Link at id.org.ai gets identity-complete resolution the day the resolver ships; the differentiator over `id.gs1.org` is structural (D3).
+- **Sunrise 2027 readiness is a build target, not a slogan.** A brand pointing its 2D Digital Link at id.org.ai gets identity-complete resolution the day the resolver ships; the differentiator over `id.gs1.org` is the integration and ownership — one attested session across resolve→capture, agents first-class, the identity graph platform-owned (D3; org.ai ADR 0013 R3), not a structural monopoly.
 - **No new identity surface.** The resolver is a route over the existing `AuthBroker` + membrane; it introduces the GS1 path grammar and the EPCIS seam, nothing else in the auth model.
 - **Greenfield, so vocabulary-clean from day one** (D6): the resolver names authorization `Scope`, never `Capability` — it never carries the legacy field, so its half of the ADR 0012 realignment is free.
 - **Conformance tests are the acceptance bar.** The GS1-Conformant Resolver Standard's test vectors + RESOLVER.md's worked examples (`startup_xioNCf7…`, the pharma SGTIN `01/00840034001234/21/A1B2C3`) are the resolver's regression suite; an implementation that fails a row fails the ADR.
