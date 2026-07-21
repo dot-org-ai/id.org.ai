@@ -44,17 +44,19 @@ import type { DSyncEvent, DSyncUser, DSyncGroup, DSyncGroupMembership } from '..
 import { FGA_RESOURCE_TYPES, defineResourceTypes, checkPermission, shareResource, unshareResource, listAccessible, entityTypeToFGA } from '../../src/sdk/workos/fga'
 import type { FGACheckRequest, FGARelation } from '../../src/sdk/workos/fga'
 import {
-  createVaultSecret,
   getVaultSecret,
   readVaultSecretValue,
-  listVaultSecrets,
   updateVaultSecret,
   deleteVaultSecret,
-  resolveSecret,
-  resolveSecrets,
-  interpolateSecrets,
 } from '../../src/sdk/workos/vault'
-import type { CreateSecretOptions, UpdateSecretOptions } from '../../src/sdk/workos/vault'
+import type { CreateSecretOptions, UpdateSecretOptions, VaultSecret } from '../../src/sdk/workos/vault'
+import {
+  putTenantSecret,
+  listTenantSecrets,
+  getTenantSecretValue,
+  deleteTenantSecret,
+  decodeTenantVaultName,
+} from '../../src/sdk/workos/tenant-vault'
 import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../../src/sdk/workos/pipes'
 import type { PipesProvider } from '../../src/sdk/workos/pipes'
 
@@ -607,112 +609,193 @@ app.get('/fga/accessible', async (c) => {
   return c.json({ resources })
 })
 
-// ── WorkOS Vault — Secret Management ────────────────────────────────────────
+// ── WorkOS Vault — Secret Management (TENANT-SCOPED) ─────────────────────────
 // CRUD for encrypted secrets stored in WorkOS Vault.
-// Secrets are used by code functions, workflows, integrations, and API proxies.
+// Secrets are used by code functions, workflows, integrations, and API proxies —
+// notably api.lawyer's per-tenant BYOL license credentials.
+//
+// SECURITY (ax-e6b.17.4): the WorkOS Vault is a single platform-wide store keyed
+// by the platform WORKOS_API_KEY. Every route here is therefore tenant-scoped:
+//   - authentication is REQUIRED (401/403 for missing/insufficient auth), which
+//     is distinct from the 503 returned when WORKOS_API_KEY itself is missing;
+//   - secrets are namespaced to the caller's tenant via `tenant-vault` (the
+//     `tenant_{tenantId}__{name}` naming convention), so cross-tenant names can
+//     neither collide nor be enumerated;
+//   - id-addressed routes verify the secret decodes to the caller's tenant and
+//     otherwise return 404 (never disclosing another tenant's secret existence).
 // The /vault/resolve endpoint does NOT expose actual secret values in the API
 // response — values are only injected by runtime (code execution, workflows).
 
-// POST /vault/secrets — Create a new secret
-app.post('/vault/secrets', async (c) => {
+/**
+ * Gate every vault route: WorkOS must be configured (else 503) and the caller
+ * must be authenticated with a resolvable tenant (else 401). Returns the
+ * platform apiKey + the caller's tenant scope, or a Response to short-circuit.
+ *
+ * Tenant scope: the parent `tenantId` when present (agents/service tokens),
+ * else the identity itself. This is the same auth surface every other route in
+ * this file reads via `c.get('auth')`.
+ */
+function resolveVaultTenant(c: any): { apiKey: string; tenant: string } | Response {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
-  const body = await c.req.json<CreateSecretOptions>()
+  const auth = c.get('auth')
+  const tenant = auth?.authenticated ? (auth.tenantId ?? auth.identityId) : undefined
+  if (!tenant) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
+  }
+  return { apiKey: c.env.WORKOS_API_KEY, tenant }
+}
+
+/**
+ * Load a secret by WorkOS id and confirm it belongs to `tenant`. Returns null
+ * when the secret is missing, un-decodable (foreign / non-tenant-scoped), or
+ * owned by a different tenant — all of which the caller must treat as 404 so
+ * cross-tenant existence is never disclosed.
+ */
+async function loadOwnedSecret(apiKey: string, id: string, tenant: string): Promise<VaultSecret | null> {
+  let secret: VaultSecret
+  try {
+    secret = await getVaultSecret(apiKey, id)
+  } catch {
+    return null
+  }
+  const decoded = decodeTenantVaultName(secret.name)
+  if (!decoded || decoded.tenantId !== tenant) return null
+  return secret
+}
+
+// POST /vault/secrets — Create a new secret (bound to the caller's tenant)
+app.post('/vault/secrets', async (c) => {
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
+  const body = await c.req.json<CreateSecretOptions>().catch(() => ({}) as CreateSecretOptions)
   if (!body.name || !body.value) {
     return c.json({ error: 'name and value are required' }, 400)
   }
-  const secret = await createVaultSecret(c.env.WORKOS_API_KEY, body)
-  return c.json(secret, 201)
-})
-
-// GET /vault/secrets — List all secrets (metadata only)
-app.get('/vault/secrets', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
-  const env = c.req.query('environment')
-  const limit = c.req.query('limit')
-  const after = c.req.query('after')
-  const result = await listVaultSecrets(c.env.WORKOS_API_KEY, {
-    environment: env,
-    limit: limit ? parseInt(limit) : undefined,
-    after,
-  })
-  return c.json(result)
-})
-
-// GET /vault/secrets/:id — Get secret metadata (no value)
-app.get('/vault/secrets/:id', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
-  const id = c.req.param('id')
   try {
-    const secret = await getVaultSecret(c.env.WORKOS_API_KEY, id)
-    return c.json(secret)
-  } catch {
-    return c.json({ error: 'Secret not found' }, 404)
+    const info = await putTenantSecret(apiKey, tenant, body.name, body.value, { description: body.description })
+    return c.json(info, 201)
+  } catch (err) {
+    // Bad name (e.g. contains the reserved `__` separator) → client error.
+    return c.json({ error: errorMessage(err) }, 400)
   }
 })
 
-// GET /vault/secrets/:id/reveal — Get secret with decrypted value
+// GET /vault/secrets — List ONLY the caller's tenant's secrets (metadata only)
+app.get('/vault/secrets', async (c) => {
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
+  const data = await listTenantSecrets(apiKey, tenant)
+  return c.json({ data })
+})
+
+// GET /vault/secrets/:id — Get secret metadata (no value); 404 if not the caller's
+app.get('/vault/secrets/:id', async (c) => {
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
+  const secret = await loadOwnedSecret(apiKey, c.req.param('id'), tenant)
+  if (!secret) return c.json({ error: 'Secret not found' }, 404)
+  const decoded = decodeTenantVaultName(secret.name)!
+  return c.json({ ...secret, name: decoded.name, tenantId: tenant })
+})
+
+// GET /vault/secrets/:id/reveal — Get secret with decrypted value; 404 if not the caller's
 app.get('/vault/secrets/:id/reveal', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
   const id = c.req.param('id')
+  // Ownership is verified BEFORE the value is ever read — a foreign id never
+  // reaches readVaultSecretValue.
+  const owned = await loadOwnedSecret(apiKey, id, tenant)
+  if (!owned) return c.json({ error: 'Secret not found or cannot be revealed' }, 404)
   try {
-    const secret = await readVaultSecretValue(c.env.WORKOS_API_KEY, id)
-    return c.json(secret)
+    const secret = await readVaultSecretValue(apiKey, id)
+    const decoded = decodeTenantVaultName(secret.name)!
+    return c.json({ ...secret, name: decoded.name, tenantId: tenant })
   } catch {
     return c.json({ error: 'Secret not found or cannot be revealed' }, 404)
   }
 })
 
-// PUT /vault/secrets/:id — Update a secret
+// PUT /vault/secrets/:id — Update a secret; 404 if not the caller's
 app.put('/vault/secrets/:id', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
   const id = c.req.param('id')
-  const body = await c.req.json<UpdateSecretOptions>()
-  const secret = await updateVaultSecret(c.env.WORKOS_API_KEY, id, body)
-  return c.json(secret)
+  const owned = await loadOwnedSecret(apiKey, id, tenant)
+  if (!owned) return c.json({ error: 'Secret not found' }, 404)
+
+  const body = await c.req.json<UpdateSecretOptions>().catch(() => ({}) as UpdateSecretOptions)
+  const secret = await updateVaultSecret(apiKey, id, body)
+  const decoded = decodeTenantVaultName(secret.name)!
+  return c.json({ ...secret, name: decoded.name, tenantId: tenant })
 })
 
-// DELETE /vault/secrets/:id — Delete a secret
+// DELETE /vault/secrets/:id — Delete a secret; 404 (no-op) if not the caller's
 app.delete('/vault/secrets/:id', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
+
   const id = c.req.param('id')
-  await deleteVaultSecret(c.env.WORKOS_API_KEY, id)
+  // Verify ownership BEFORE deleting — a foreign secret is never touched.
+  const owned = await loadOwnedSecret(apiKey, id, tenant)
+  if (!owned) return c.json({ error: 'Secret not found' }, 404)
+  await deleteVaultSecret(apiKey, id)
   return c.json({ ok: true })
 })
 
-// POST /vault/resolve — Resolve a secret by name (runtime API)
+// POST /vault/resolve — Resolve a secret by name within the caller's tenant.
 // NOTE: This endpoint does NOT expose actual secret values in the response.
 // Values are only injected into runtime contexts by the code execution worker
-// and workflow engine, which call resolveSecret() directly.
+// and workflow engine, which call the tenant-scoped resolver directly.
 app.post('/vault/resolve', async (c) => {
-  if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
-  const body = await c.req.json<{ name?: string; names?: string[]; template?: string }>()
+  const gate = resolveVaultTenant(c)
+  if (gate instanceof Response) return gate
+  const { apiKey, tenant } = gate
 
-  // Single secret resolution
+  const body = await c.req.json<{ name?: string; names?: string[]; template?: string }>().catch(() => ({}))
+
+  // Single secret resolution — scoped to the caller's tenant.
   if (body.name) {
     try {
-      await resolveSecret(c.env.WORKOS_API_KEY, body.name)
+      await getTenantSecretValue(apiKey, tenant, body.name)
+      // We return resolved:true but NOT the value — values are only injected
+      // into runtime contexts, never exposed via this API.
       return c.json({ name: body.name, resolved: true })
-      // NOTE: We return resolved:true but NOT the value in the response
-      // The value should only be injected into runtime contexts, not exposed via API
     } catch {
       return c.json({ name: body.name, resolved: false, error: 'Secret not found' }, 404)
     }
   }
 
-  // Batch resolution
+  // Batch resolution — only names that exist within the caller's tenant resolve.
   if (body.names) {
-    const resolved = await resolveSecrets(c.env.WORKOS_API_KEY, body.names)
+    const owned = new Set((await listTenantSecrets(apiKey, tenant)).map((s) => s.name))
     return c.json({
-      resolved: Object.keys(resolved),
-      missing: body.names.filter((n) => !(n in resolved)),
+      resolved: body.names.filter((n) => owned.has(n)),
+      missing: body.names.filter((n) => !owned.has(n)),
     })
   }
 
-  // Template interpolation
+  // Template interpolation — verify referenced names against the caller's
+  // tenant; never return the interpolated string (would leak values).
   if (body.template) {
-    await interpolateSecrets(c.env.WORKOS_API_KEY, body.template)
+    const referenced = [...body.template.matchAll(/\{\{vault:([A-Za-z0-9_-]+)\}\}/g)].map((m) => m[1])
+    if (referenced.length > 0) {
+      const owned = new Set((await listTenantSecrets(apiKey, tenant)).map((s) => s.name))
+      const missing = referenced.filter((n) => !owned.has(n))
+      if (missing.length > 0) return c.json({ interpolated: false, missing }, 404)
+    }
     return c.json({ interpolated: true })
-    // Again, don't return the actual interpolated string via API
   }
 
   return c.json({ error: 'Provide name, names, or template' }, 400)
