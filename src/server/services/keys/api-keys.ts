@@ -1,6 +1,7 @@
 import { Ok, Err } from '../../../sdk/foundation/result'
 import type { Result } from '../../../sdk/foundation/result'
 import { ValidationError, NotFoundError, KeyError } from '../../../sdk/foundation/errors'
+import { isScope } from '../../../sdk/auth/scope'
 import type { StorageAdapter } from '../../../sdk/storage'
 import type { AuditService } from '../audit/service'
 import type {
@@ -54,6 +55,13 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       }
     }
 
+    // Optional structured Scope — a scope-shaped may-do grant. When present it
+    // must be structurally valid; a malformed grant is rejected rather than
+    // silently dropped (a key that can't be evaluated must not be minted).
+    if (input.scope !== undefined && !isScope(input.scope)) {
+      return Err(new ValidationError('scope', 'Invalid scope: expected { grants: [{ verb, resource }] }'))
+    }
+
     if (input.expiresAt) {
       const expiry = new Date(input.expiresAt).getTime()
       if (expiry <= Date.now()) {
@@ -73,6 +81,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       prefix,
       identityId: input.identityId,
       scopes,
+      scope: input.scope,
       status: 'active',
       createdAt: now,
       expiresAt: input.expiresAt,
@@ -90,6 +99,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
     })
 
     const result: CreateApiKeyResult = { id, key, name: input.name, prefix, scopes, createdAt: now }
+    if (input.scope) result.scope = input.scope
     if (input.expiresAt) result.expiresAt = input.expiresAt
     return Ok(result)
   }
@@ -175,6 +185,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       valid: true,
       identityId: apiKey.identityId,
       scopes: apiKey.scopes,
+      scope: apiKey.scope,
       level: level as CapabilityLevel,
     })
   }

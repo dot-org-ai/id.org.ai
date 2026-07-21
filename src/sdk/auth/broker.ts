@@ -16,6 +16,7 @@
  */
 import type { CapabilityLevel, Identity } from '../types'
 import type { ThingRef } from 'schema.org.ai'
+import type { Measure } from './scope'
 
 /**
  * What a caller needs to be authorised. Two shapes:
@@ -38,6 +39,20 @@ export type AuthRequirement =
       scopes?: string[]
       /** ANY-of: at least one scope must be present. */
       anyScopes?: string[]
+      /**
+       * Structured may-do the request represents. When set, the caller's key
+       * Scope (`identity.scope`) is evaluated via `scopeSatisfies`: allow iff
+       * the requested verb+resource (and `amount`, when the grant carries a
+       * ceiling) sits inside the granted Scope. Additive to the flat
+       * `scopes`/`anyScopes` path — both are evaluable in one requirement, and
+       * a requirement without `need` behaves exactly as before.
+       */
+      need?: {
+        verb: string
+        resource: string
+        /** Amount the request would consume — tested against a grant's ceiling. */
+        amount?: Measure
+      }
       /** WorkOS / org roles. */
       roles?: string[]
       /** Optional resource — enables per-resource (FGA-shaped) checks. */

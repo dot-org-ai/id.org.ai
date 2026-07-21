@@ -17,8 +17,10 @@
 import type { Result } from '../../../sdk/foundation'
 import type { NotFoundError, ValidationError, KeyError } from '../../../sdk/foundation'
 import type { CapabilityLevel } from '../identity/types'
+import type { Scope } from '../../../sdk/auth/scope'
 
 export type { CapabilityLevel } from '../identity/types'
+export type { Scope } from '../../../sdk/auth/scope'
 
 // ============================================================================
 // Domain Types
@@ -33,6 +35,8 @@ export interface ApiKeyRecord {
   prefix: string
   identityId: string
   scopes: string[]
+  /** Optional structured capability grant — a scope-shaped may-do subset. */
+  scope?: Scope
   status: ApiKeyStatus
   createdAt: string
   expiresAt?: string
@@ -56,6 +60,8 @@ export interface CreateApiKeyInput {
   name: string
   identityId: string
   scopes?: string[]
+  /** Optional structured capability grant carried on the minted key. */
+  scope?: Scope
   expiresAt?: string
 }
 
@@ -65,6 +71,7 @@ export interface CreateApiKeyResult {
   name: string
   prefix: string
   scopes: string[]
+  scope?: Scope
   createdAt: string
   expiresAt?: string
 }
@@ -73,6 +80,8 @@ export interface ValidateApiKeyResult {
   valid: boolean
   identityId?: string
   scopes?: string[]
+  /** Structured capability grant carried on the key, when minted with one. */
+  scope?: Scope
   level?: CapabilityLevel
 }
 

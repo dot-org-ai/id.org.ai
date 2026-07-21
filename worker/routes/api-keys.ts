@@ -59,6 +59,7 @@ app.post('/api/keys', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     name?: string
     scopes?: string[]
+    scope?: import('../../src/sdk/auth/scope').Scope
     expiresAt?: string
   }
 
@@ -88,6 +89,7 @@ app.post('/api/keys', async (c) => {
       name: body.name,
       identityId: auth.identityId,
       scopes: body.scopes,
+      scope: body.scope,
       expiresAt: body.expiresAt,
     })
 

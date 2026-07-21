@@ -58,6 +58,14 @@ export interface Identity {
   /** Authorisation scopes — AuthBroker.check() consumes these. */
   scopes?: string[]
 
+  /**
+   * Structured capability grant carried by the credential (an API key minted
+   * with a scope-shaped grant). When present, AuthBroker.check()/gate()
+   * evaluates a structured `need` against it via `scopeSatisfies`. Additive to
+   * — never a replacement for — the flat `scopes` string path.
+   */
+  scope?: import('./auth/scope').Scope
+
   /** Bound payment instruments. Consumed by PaymentBroker for rail selection. */
   paymentInstruments?: import('./payment/types').PaymentInstrument[]
 
@@ -168,8 +176,8 @@ export interface IdentityStub {
 
   // Auth
   getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>
-  validateApiKey(key: string): Promise<{ valid: boolean; identityId?: string; scopes?: string[]; level?: CapabilityLevel }>
-  createApiKey(data: { name: string; identityId: string; scopes?: string[]; expiresAt?: string }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string }>
+  validateApiKey(key: string): Promise<{ valid: boolean; identityId?: string; scopes?: string[]; scope?: import('./auth/scope').Scope; level?: CapabilityLevel }>
+  createApiKey(data: { name: string; identityId: string; scopes?: string[]; scope?: import('./auth/scope').Scope; expiresAt?: string }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; scope?: import('./auth/scope').Scope; createdAt: string; expiresAt?: string }>
   listApiKeys(identityId: string): Promise<Array<{ id: string; name: string; prefix: string; scopes: string[]; status: string; createdAt: string; expiresAt?: string; lastUsedAt?: string }>>
   revokeApiKey(keyId: string, identityId: string): Promise<{ id: string; status: string; revokedAt: string; key?: string } | null>
   checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{ allowed: boolean; remaining: number; resetAt: number }>

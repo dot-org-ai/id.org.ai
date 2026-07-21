@@ -29,6 +29,8 @@
 import { errorJson, ErrorCode } from '../errors'
 import type { CapabilityLevel, Identity, IdentityStub } from '../types'
 import type { AuthBroker, AuthDecision, AuthDenialReason, AuthRequirement } from './broker'
+import { scopeSatisfies } from './scope'
+import type { Scope } from './scope'
 
 // ── Anonymous L0 identity ─────────────────────────────────────────────────
 
@@ -254,6 +256,17 @@ export class AuthBrokerImpl implements AuthBroker {
       }
     }
 
+    // Structured scope-shaped need: the request declares a concrete may-do
+    // (verb + resource, optionally an amount tested against a grant ceiling).
+    // The caller's key Scope must cover it. No I/O — a pure evaluation over
+    // `identity.scope`, so this stays inside check()'s synchronous contract.
+    if (need.need) {
+      const granted = identity.scope
+      if (!granted || !scopeSatisfies(granted, need.need)) {
+        return { ok: false, identity, reason: 'missing-scope' }
+      }
+    }
+
     // Roles: today id.org.ai does not store WorkOS roles on Identity. The
     // shape exists so digital-tools can declare role requirements; the
     // check is a no-op until WorkOS-role propagation lands.
@@ -294,11 +307,13 @@ export class AuthBrokerImpl implements AuthBroker {
           return this.hydrateAgent(data.identityId, {
             level: (data.level ?? 2) as CapabilityLevel,
             scopes: data.scopes,
+            scope: data.scope,
           })
         }
         return this.hydrateIdentity(data.identityId, {
           level: (data.level ?? 2) as CapabilityLevel,
           scopes: data.scopes,
+          scope: data.scope,
           fallback: { type: 'agent', name: 'api-key' },
         })
       }
@@ -408,6 +423,7 @@ export class AuthBrokerImpl implements AuthBroker {
     overlay: {
       level: CapabilityLevel
       scopes?: string[]
+      scope?: Scope
       fallback: { type: Identity['type']; name: string }
     },
   ): Promise<Identity> {
@@ -420,6 +436,7 @@ export class AuthBrokerImpl implements AuthBroker {
         level: overlay.level,
         claimStatus: 'unclaimed',
         scopes: overlay.scopes,
+        scope: overlay.scope,
       }
     }
 
@@ -428,11 +445,13 @@ export class AuthBrokerImpl implements AuthBroker {
 
     if (stored) {
       // Prefer the credential-derived level (an API key may scope-down a
-      // higher-level identity); always carry credential scopes.
+      // higher-level identity); always carry credential scopes. The structured
+      // Scope is a property of the *key*, so it always comes from the overlay.
       return {
         ...stored,
         level: Math.max(stored.level, overlay.level) as CapabilityLevel,
         scopes: overlay.scopes ?? stored.scopes,
+        scope: overlay.scope ?? stored.scope,
       }
     }
 
@@ -444,6 +463,7 @@ export class AuthBrokerImpl implements AuthBroker {
       level: overlay.level,
       claimStatus: 'unclaimed',
       scopes: overlay.scopes,
+      scope: overlay.scope,
     }
   }
 
@@ -461,6 +481,7 @@ export class AuthBrokerImpl implements AuthBroker {
     overlay: {
       level: CapabilityLevel
       scopes?: string[]
+      scope?: Scope
     },
   ): Promise<Identity> {
     if (!this.deps) {
@@ -472,6 +493,7 @@ export class AuthBrokerImpl implements AuthBroker {
         level: overlay.level,
         claimStatus: 'claimed',
         scopes: overlay.scopes,
+        scope: overlay.scope,
       }
     }
 
@@ -499,6 +521,8 @@ export class AuthBrokerImpl implements AuthBroker {
       // overlay scopes (from the API key) when set, else falls back to the
       // agent's full capability set.
       scopes: overlay.scopes ?? agent.capabilities,
+      // Structured Scope is a property of the key, not the agent row.
+      scope: overlay.scope,
     }
   }
 

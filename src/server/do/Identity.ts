@@ -389,8 +389,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     name: string
     identityId: string
     scopes?: string[]
+    scope?: import('../services/keys/types').Scope
     expiresAt?: string
-  }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; createdAt: string; expiresAt?: string }> {
+  }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; scope?: import('../services/keys/types').Scope; createdAt: string; expiresAt?: string }> {
     const result = await this.keyService.apiKeys.create(data)
     if (!result.success) throw new Error(result.error.message)
     return result.data
@@ -415,6 +416,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     valid: boolean
     identityId?: string
     scopes?: string[]
+    scope?: import('../services/keys/types').Scope
     level?: CapabilityLevel
   }> {
     const result = await this.keyService.apiKeys.validate(key)
