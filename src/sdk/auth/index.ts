@@ -21,6 +21,13 @@ export { AuthBrokerImpl } from './broker-impl'
 export { wrap, denialResponse, statusForDenial } from './wrap'
 export type { WrapDenialBody } from './wrap'
 
+// `verifyToken()` — stable token-verification primitive. Turns an
+// id.org.ai-issued JWT into a verified identity. Consumed over RPC as
+// `env.AUTH.verifyToken(token)` (builder.domains custom-domain projection)
+// and over HTTP via `POST /auth/verify`.
+export { verifyToken } from './verify-token'
+export type { VerifiedIdentity, VerifyTokenResult, VerifyTokenOptions } from './verify-token'
+
 export const CANONICAL_AUTH_ORIGIN = 'https://id.org.ai'
 export const CANONICAL_API_ORIGIN = CANONICAL_AUTH_ORIGIN
 export const CANONICAL_AUTH_HOSTNAME = 'id.org.ai'
