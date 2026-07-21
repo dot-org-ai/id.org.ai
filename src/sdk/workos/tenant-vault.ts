@@ -35,6 +35,39 @@ import {
 
 const SEP = '__'
 
+// ============================================================================
+// Pagination
+// ============================================================================
+
+/**
+ * List EVERY secret in the platform-wide WorkOS Vault by following the
+ * `list_metadata.after` cursor to exhaustion.
+ *
+ * SECURITY (ax-e6b.17.4): the vault is a single platform-wide store shared by
+ * ALL tenants. A single `listVaultSecrets(apiKey, { limit: 100 })` call only
+ * ever sees the first 100 secrets platform-wide, so once total volume exceeds
+ * 100 a given tenant's secrets can fall off the end — making reads silently
+ * miss, `putTenantSecret` create a DUPLICATE instead of updating, and a noisy
+ * tenant effectively evict a victim tenant's secrets. Paginating to completion
+ * means a tenant's own secrets are never bounded by other tenants' volume.
+ */
+async function listAllVaultSecrets(apiKey: string): Promise<VaultSecret[]> {
+  const all: VaultSecret[] = []
+  const seenCursors = new Set<string>()
+  let after: string | undefined
+  // Hard page cap as a defensive stop against a pathological/looping cursor;
+  // 100 pages * 100 per page = 10k secrets, far beyond expected scale.
+  for (let page = 0; page < 100; page++) {
+    const res = await listVaultSecrets(apiKey, { limit: 100, after })
+    all.push(...res.data)
+    const next = res.list_metadata?.after
+    if (!next || seenCursors.has(next)) break
+    seenCursors.add(next)
+    after = next
+  }
+  return all
+}
+
 /** Compose the WorkOS Vault `name` from a tenant ID and caller-facing secret name. */
 export function encodeTenantVaultName(tenantId: string, name: string): string {
   if (!tenantId || tenantId.includes(SEP)) {
@@ -93,10 +126,11 @@ export async function putTenantSecret(
 ): Promise<TenantSecretInfo> {
   const fullName = encodeTenantVaultName(tenantId, name)
 
-  // Look up existing — listVaultSecrets paginates, but with limit=100 this
-  // is enough for the current scale (id.org.ai is greenfield).
-  const list = await listVaultSecrets(apiKey, { limit: 100 })
-  const existing = list.data.find((s) => s.name === fullName)
+  // Look up existing across the ENTIRE platform-wide vault (paginated). The
+  // existence check MUST be reliable regardless of how many secrets other
+  // tenants hold, otherwise an update silently becomes a duplicate create.
+  const all = await listAllVaultSecrets(apiKey)
+  const existing = all.find((s) => s.name === fullName)
 
   let secret: VaultSecret
   if (existing) {
@@ -121,8 +155,8 @@ export async function putTenantSecret(
  */
 export async function getTenantSecretValue(apiKey: string, tenantId: string, name: string): Promise<string> {
   const fullName = encodeTenantVaultName(tenantId, name)
-  const list = await listVaultSecrets(apiKey, { limit: 100 })
-  const secret = list.data.find((s) => s.name === fullName)
+  const all = await listAllVaultSecrets(apiKey)
+  const secret = all.find((s) => s.name === fullName)
   if (!secret) {
     throw new Error(`Tenant secret not found: ${tenantId}/${name}`)
   }
@@ -132,9 +166,9 @@ export async function getTenantSecretValue(apiKey: string, tenantId: string, nam
 
 /** List all secrets for a tenant (metadata only). */
 export async function listTenantSecrets(apiKey: string, tenantId: string): Promise<TenantSecretInfo[]> {
-  const list = await listVaultSecrets(apiKey, { limit: 100 })
+  const all = await listAllVaultSecrets(apiKey)
   const result: TenantSecretInfo[] = []
-  for (const secret of list.data) {
+  for (const secret of all) {
     const decoded = decodeTenantVaultName(secret.name)
     if (decoded && decoded.tenantId === tenantId) {
       result.push(toInfo(secret, decoded.tenantId, decoded.name))
@@ -146,8 +180,8 @@ export async function listTenantSecrets(apiKey: string, tenantId: string): Promi
 /** Delete a tenant-scoped secret by name. Idempotent — no error if absent. */
 export async function deleteTenantSecret(apiKey: string, tenantId: string, name: string): Promise<void> {
   const fullName = encodeTenantVaultName(tenantId, name)
-  const list = await listVaultSecrets(apiKey, { limit: 100 })
-  const secret = list.data.find((s) => s.name === fullName)
+  const all = await listAllVaultSecrets(apiKey)
+  const secret = all.find((s) => s.name === fullName)
   if (!secret) return
   await deleteVaultSecret(apiKey, secret.id)
 }

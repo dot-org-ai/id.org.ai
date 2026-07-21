@@ -37,8 +37,18 @@ function fakeFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
 
   if (path === '/vault/v1/secrets' && method === 'GET') {
     const limit = Number(u.searchParams.get('limit') ?? '100')
-    const data = [...store.values()].slice(0, limit).map(stripValue)
-    return jsonResp(200, { data, list_metadata: {} })
+    const after = u.searchParams.get('after') ?? undefined
+    // Cursor-based pagination keyed on secret id, mirroring WorkOS' list API.
+    const all = [...store.values()]
+    let start = 0
+    if (after) {
+      const idx = all.findIndex((s) => s.id === after)
+      start = idx === -1 ? all.length : idx + 1
+    }
+    const page = all.slice(start, start + limit)
+    const hasMore = start + limit < all.length
+    const nextCursor = hasMore ? page[page.length - 1]?.id : undefined
+    return jsonResp(200, { data: page.map(stripValue), list_metadata: { after: nextCursor } })
   }
 
   if (path === '/vault/v1/secrets' && method === 'POST') {
@@ -226,5 +236,59 @@ describe('tenant-vault: CRUD', () => {
 
   it('rejects bad names at the encode layer', async () => {
     await expect(putTenantSecret(API_KEY, 'tenant_a', 'BAD__NAME', 'x')).rejects.toThrow()
+  })
+
+  // ── ax-e6b.17.4: cross-tenant eviction / duplicate-on-update at scale ──────
+  describe('pagination — a tenant is never bounded by platform-wide volume (>100 secrets)', () => {
+    // Seed 150 OTHER tenants' secrets so the victim's secret lands past the
+    // first 100-secret page. A single un-paginated listVaultSecrets(limit:100)
+    // would never see it: reads would miss, and put would duplicate-on-update.
+    function seedNoise(count: number) {
+      const now = new Date().toISOString()
+      for (let i = 0; i < count; i++) {
+        const id = `secret_noise_${i}`
+        store.set(id, {
+          id,
+          name: encodeTenantVaultName('tenant_noisy', `NOISE_${i}`),
+          value: `noise-${i}`,
+          environment: 'production',
+          created_at: now,
+          updated_at: now,
+        })
+      }
+    }
+
+    it('reads its own secret even when it sits beyond position 100', async () => {
+      seedNoise(150)
+      // Created AFTER the noise → last in insertion order → page 2+.
+      await putTenantSecret(API_KEY, 'tenant_victim', 'BYOL_LICENSE', 'license-v1')
+
+      expect(await getTenantSecretValue(API_KEY, 'tenant_victim', 'BYOL_LICENSE')).toBe('license-v1')
+      const list = await listTenantSecrets(API_KEY, 'tenant_victim')
+      expect(list.map((s) => s.name)).toEqual(['BYOL_LICENSE'])
+    })
+
+    it('updates in place (no duplicate) even when its secret is past position 100', async () => {
+      seedNoise(150)
+      const created = await putTenantSecret(API_KEY, 'tenant_victim', 'BYOL_LICENSE', 'license-v1')
+      const updated = await putTenantSecret(API_KEY, 'tenant_victim', 'BYOL_LICENSE', 'license-v2')
+
+      // Same WorkOS id → update path, not a second create.
+      expect(updated.id).toBe(created.id)
+      const list = await listTenantSecrets(API_KEY, 'tenant_victim')
+      expect(list.length).toBe(1)
+      expect(await getTenantSecretValue(API_KEY, 'tenant_victim', 'BYOL_LICENSE')).toBe('license-v2')
+
+      // Exactly one BYOL_LICENSE secret exists in the raw store — no duplicate.
+      const raw = [...store.values()].filter((s) => s.name === encodeTenantVaultName('tenant_victim', 'BYOL_LICENSE'))
+      expect(raw.length).toBe(1)
+    })
+
+    it('deletes its own secret even when it sits beyond position 100', async () => {
+      seedNoise(150)
+      await putTenantSecret(API_KEY, 'tenant_victim', 'BYOL_LICENSE', 'license-v1')
+      await deleteTenantSecret(API_KEY, 'tenant_victim', 'BYOL_LICENSE')
+      await expect(getTenantSecretValue(API_KEY, 'tenant_victim', 'BYOL_LICENSE')).rejects.toThrow(/not found/)
+    })
   })
 })
