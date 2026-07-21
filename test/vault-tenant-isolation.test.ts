@@ -1,25 +1,41 @@
 /**
  * Vault tenant-isolation route tests (ax-e6b.17.4 — SECURITY).
  *
- * Mounts the `workosRoutes` Hono sub-app behind a stand-in for
- * `authenticateRequest` that stamps `c.get('auth')` with a chosen tenant
- * (mirroring the MCPAuthResult the real middleware sets). Two distinct tenants,
- * A and B, exercise the isolation property directly:
+ * These tests exercise the REAL `authenticateRequest` middleware (the one
+ * `worker/index.ts` mounts on `/vault/*` in production), NOT a hand-rolled
+ * `app.use('*')` that stamps `c.get('auth')` directly. The harness mounts the
+ * chain EXACTLY as prod does:
  *
- *   - A creates a secret and can list / get / reveal / delete it.
+ *     app.use('*', <set identityStub>)     // ← identityStubMiddleware in prod
+ *     app.use('/vault/*', authenticateRequest)
+ *     app.route('', workosRoutes)
+ *
+ * `authenticateRequest` is what resolves the caller's tenant and populates
+ * `c.get('auth')`. If the production mount (`app.use('/vault/*', authenticateRequest)`
+ * in worker/index.ts) were removed, `c.get('auth')` would be undefined for every
+ * vault request and the OWNER happy-path below would 401 — so these tests fail
+ * loudly if the vault is not actually behind the auth middleware.
+ *
+ * Per-tenant auth is minted the real way: an `oai_*` API key whose stub returns
+ * an Identity carrying that tenant's `tenantId`, driven through the broker inside
+ * `authenticateRequest`. Two distinct tenants, A and B, exercise isolation:
+ *
+ *   - A creates a secret and can list / get / reveal / resolve / delete it.
  *   - B CANNOT list, get, reveal, resolve, or delete A's secret — every path
- *     returns 404/403 and never A's plaintext.
+ *     returns 404 and never A's plaintext.
  *   - An unauthenticated caller gets 401 (NOT 503, NOT 200).
- *   - resolve() only resolves within the caller's tenant.
+ *   - Missing WORKOS_API_KEY yields 503 (config error), distinct from 401.
  *
- * The WorkOS Vault HTTP surface is faked in-memory (same shape as
- * test/tenant-vault.test.ts) so the routes drive real fetch calls.
+ * The WorkOS Vault HTTP surface is faked in-memory so the routes drive real
+ * fetch calls; the oai_* auth path makes no fetch (DO/stub only).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
+import { authenticateRequest } from '../worker/middleware/auth'
 import { workosRoutes } from '../worker/routes/workos'
 import type { Env, Variables } from '../worker/types'
+import type { IdentityStub } from '../src/server/do/Identity'
 
 const TENANT_A = 'tenant_a'
 const TENANT_B = 'tenant_b'
@@ -55,8 +71,17 @@ function fakeVaultFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
 
   if (path === '/vault/v1/secrets' && method === 'GET') {
     const limit = Number(u.searchParams.get('limit') ?? '100')
-    const data = [...store.values()].slice(0, limit).map(stripValue)
-    return Promise.resolve(jsonResp(200, { data, list_metadata: {} }))
+    const after = u.searchParams.get('after') ?? undefined
+    const all = [...store.values()]
+    let start = 0
+    if (after) {
+      const idx = all.findIndex((s) => s.id === after)
+      start = idx === -1 ? all.length : idx + 1
+    }
+    const page = all.slice(start, start + limit)
+    const hasMore = start + limit < all.length
+    const nextCursor = hasMore ? page[page.length - 1]?.id : undefined
+    return Promise.resolve(jsonResp(200, { data: page.map(stripValue), list_metadata: { after: nextCursor } }))
   }
 
   if (path === '/vault/v1/secrets' && method === 'POST') {
@@ -100,41 +125,72 @@ function fakeVaultFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
   return Promise.resolve(jsonResp(404, { error: `not handled: ${method} ${path}` }))
 }
 
-// ── App harness ─────────────────────────────────────────────────────────────
+// ── Real per-tenant auth via the broker ────────────────────────────────────
+// Each tenant is fronted by an `oai_*` API key. The stub returns an Identity
+// carrying that tenant's `tenantId`, which the broker inside authenticateRequest
+// hydrates and MCPAuth.fromIdentity surfaces as `auth.tenantId` — exactly the
+// field resolveVaultTenant reads. No fetch is involved in this path.
+function keyForTenant(tenant: string): string {
+  return `oai_${tenant}_key`
+}
+
+function stubForTenant(tenant: string): IdentityStub {
+  return {
+    validateApiKey: vi.fn(async () => ({ valid: true, identityId: `id_${tenant}`, level: 2 as const, scopes: ['read', 'write'] })),
+    getSession: vi.fn(async () => ({ valid: false })),
+    getIdentity: vi.fn(async (id: string) => ({
+      id,
+      type: 'agent' as const,
+      name: `agent-${tenant}`,
+      tenantId: tenant,
+      verified: true,
+      level: 2 as const,
+      claimStatus: 'claimed' as const,
+      scopes: ['read', 'write'],
+    })),
+    getAgent: vi.fn(async () => null),
+    touchAgent: vi.fn(async () => {}),
+    checkRateLimit: vi.fn(async () => ({ allowed: true, remaining: 99, resetAt: Date.now() + 60_000 })),
+    oauthStorageOp: vi.fn(async () => ({ value: undefined })),
+  } as unknown as IdentityStub
+}
+
+/**
+ * Resolve the identityStub the way `identityStubMiddleware` does in prod:
+ * from the presented credential. An unknown/absent credential yields no stub —
+ * authenticateRequest then produces an anonymous result → the vault routes 401.
+ */
+function stubProvider(req: Request): IdentityStub | undefined {
+  const auth = req.headers.get('authorization')
+  if (!auth?.startsWith('Bearer ')) return undefined
+  const key = auth.slice('Bearer '.length)
+  if (key === keyForTenant(TENANT_A)) return stubForTenant(TENANT_A)
+  if (key === keyForTenant(TENANT_B)) return stubForTenant(TENANT_B)
+  return undefined
+}
+
+// ── App harness — mounts the REAL authenticateRequest exactly as prod ───────
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return { WORKOS_API_KEY: 'sk_platform_secret', WORKOS_CLIENT_ID: 'client_test', ...overrides } as Env
 }
 
-/**
- * Stand-in for `authenticateRequest`: the `x-test-tenant` header selects the
- * authenticated tenant. Absent header → anonymous (authenticated:false), which
- * every vault route must reject with 401.
- */
 function makeApp(env: Env) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+  // Stand-in for identityStubMiddleware (reads the credential from KV in prod).
   app.use('*', async (c, next) => {
-    const tenant = c.req.header('x-test-tenant')
-    if (tenant) {
-      c.set('auth', {
-        authenticated: true,
-        identityId: `id_${tenant}`,
-        tenantId: tenant,
-        level: 2,
-        scopes: ['read', 'write'],
-        capabilities: ['explore', 'search', 'fetch', 'try', 'do'],
-      } as never)
-    } else {
-      c.set('auth', { authenticated: false, level: 0, scopes: [], capabilities: [] } as never)
-    }
+    const stub = stubProvider(c.req.raw)
+    if (stub) c.set('identityStub', stub)
     await next()
   })
+  // The production mount under test (worker/index.ts).
+  app.use('/vault/*', authenticateRequest)
   app.route('', workosRoutes)
   return (req: Request) => app.fetch(req, env)
 }
 
 function req(tenant: string | null, path: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers)
-  if (tenant) headers.set('x-test-tenant', tenant)
+  if (tenant) headers.set('authorization', `Bearer ${keyForTenant(tenant)}`)
   return new Request(`https://id.org.ai${path}`, { ...init, headers })
 }
 
@@ -160,10 +216,10 @@ async function createSecret(tenant: string, name: string, value: string): Promis
 }
 
 // ============================================================================
-// Auth gate
+// Auth gate — driven by the REAL authenticateRequest
 // ============================================================================
 
-describe('vault routes — auth is required (401, not 503, not 200)', () => {
+describe('vault routes — auth is required via authenticateRequest (401, not 503, not 200)', () => {
   it('POST /vault/secrets rejects an unauthenticated caller with 401', async () => {
     const res = await fetchApp(req(null, '/vault/secrets', { method: 'POST', ...jbody({ name: 'K', value: 'v' }) }))
     expect(res.status).toBe(401)
@@ -181,6 +237,13 @@ describe('vault routes — auth is required (401, not 503, not 200)', () => {
     expect(res.status).toBe(401)
   })
 
+  it('a presented-but-unknown credential 401s (broker → anonymous → 401)', async () => {
+    const res = await fetchApp(
+      new Request('https://id.org.ai/vault/secrets', { headers: { authorization: 'Bearer oai_unknown_key' } }),
+    )
+    expect(res.status).toBe(401)
+  })
+
   it('still returns 503 (not 401) when WORKOS_API_KEY is missing, even authenticated', async () => {
     const app = makeApp(makeEnv({ WORKOS_API_KEY: undefined }))
     const res = await app(req(TENANT_A, '/vault/secrets'))
@@ -189,11 +252,11 @@ describe('vault routes — auth is required (401, not 503, not 200)', () => {
 })
 
 // ============================================================================
-// Owner (tenant A) happy path
+// Owner (tenant A) happy path — fails if authenticateRequest is not applied
 // ============================================================================
 
 describe('vault routes — owner can manage its own secrets', () => {
-  it('A creates, lists, gets, reveals, and deletes its own secret', async () => {
+  it('A creates, lists, gets, reveals, resolves, and deletes its own secret', async () => {
     const created = await createSecret(TENANT_A, 'STRIPE_KEY', 'sk_a_value')
     expect(created.status).toBe(201)
     expect(created.id).toMatch(/^secret_/)
@@ -240,39 +303,39 @@ describe('vault routes — cross-tenant isolation (B cannot reach A)', () => {
     aId = created.id
   })
 
-  it('B does NOT see A\'s secret in its list', async () => {
+  it("B does NOT see A's secret in its list", async () => {
     const res = await fetchApp(req(TENANT_B, '/vault/secrets'))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { data: unknown[] }
     expect(body.data).toEqual([])
   })
 
-  it('B cannot GET A\'s secret by id (404, no metadata)', async () => {
+  it("B cannot GET A's secret by id (404, no metadata)", async () => {
     const res = await fetchApp(req(TENANT_B, `/vault/secrets/${aId}`))
     expect(res.status).toBe(404)
     expect(JSON.stringify(await res.json())).not.toContain('STRIPE_KEY')
   })
 
-  it('B cannot REVEAL A\'s secret (404, never the plaintext)', async () => {
+  it("B cannot REVEAL A's secret (404, never the plaintext)", async () => {
     const res = await fetchApp(req(TENANT_B, `/vault/secrets/${aId}/reveal`))
     expect(res.status).toBe(404)
     expect(JSON.stringify(await res.json())).not.toContain('sk_a_value')
   })
 
-  it('B cannot UPDATE A\'s secret (404) and A\'s value is untouched', async () => {
+  it("B cannot UPDATE A's secret (404) and A's value is untouched", async () => {
     const res = await fetchApp(req(TENANT_B, `/vault/secrets/${aId}`, { method: 'PUT', ...jbody({ value: 'hacked' }) }))
     expect(res.status).toBe(404)
     expect(store.get(aId)?.value).toBe('sk_a_value')
   })
 
-  it('B cannot DELETE A\'s secret (404) and A\'s secret survives', async () => {
+  it("B cannot DELETE A's secret (404) and A's secret survives", async () => {
     const res = await fetchApp(req(TENANT_B, `/vault/secrets/${aId}`, { method: 'DELETE' }))
     expect(res.status).toBe(404)
     expect(store.has(aId)).toBe(true)
     expect(store.get(aId)?.value).toBe('sk_a_value')
   })
 
-  it('B cannot RESOLVE A\'s secret name (404, resolved:false)', async () => {
+  it("B cannot RESOLVE A's secret name (404, resolved:false)", async () => {
     const res = await fetchApp(req(TENANT_B, '/vault/resolve', { method: 'POST', ...jbody({ name: 'STRIPE_KEY' }) }))
     expect(res.status).toBe(404)
     const body = (await res.json()) as { resolved: boolean }
@@ -280,7 +343,7 @@ describe('vault routes — cross-tenant isolation (B cannot reach A)', () => {
     expect(JSON.stringify(body)).not.toContain('sk_a_value')
   })
 
-  it('batch resolve for B lists A\'s name as missing, never resolved', async () => {
+  it("batch resolve for B lists A's name as missing, never resolved", async () => {
     const res = await fetchApp(req(TENANT_B, '/vault/resolve', { method: 'POST', ...jbody({ names: ['STRIPE_KEY'] }) }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { resolved: string[]; missing: string[] }

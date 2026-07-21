@@ -772,6 +772,13 @@ app.use('/api/*', authenticateRequest)
 app.use('/mcp', authenticateRequest)
 app.use('/mcp/*', authenticateRequest)
 app.use('/agent/*', authenticateRequest)
+// WorkOS Vault is tenant-scoped: every /vault/* route reads c.get('auth') to
+// resolve the caller's tenant (worker/routes/workos.ts:resolveVaultTenant). The
+// vault is NOT the anonymous/no-ask zone — it must be gated by authenticateRequest
+// (L1+; anonymous → authenticated:false → 401) exactly like /api/*. Scoped to
+// /vault/* ONLY so the other workosRoutes (org/portal/FGA/pipes) that authenticate
+// themselves on bare paths are unaffected.
+app.use('/vault/*', authenticateRequest)
 app.route('', auditRoutes)
 app.route('', mcpRoutes)
 app.route('', apiKeyRoutes)
