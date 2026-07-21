@@ -24,8 +24,9 @@
 
 /**
  * A bounded quantity — a `value` in some `unit`. Grounds `ceiling: Measure`
- * from agent-led-commerce: a Scope grant may cap the amount a verb may consume
- * (e.g. `{ value: 100, unit: 'requests' }`, `{ value: 50, unit: 'usd' }`).
+ * from agent-led-commerce: a Scope grant may cap the amount a *single* verb
+ * invocation may consume (e.g. `{ value: 100, unit: 'requests' }`,
+ * `{ value: 50, unit: 'usd' }`).
  */
 export interface Measure {
   value: number
@@ -36,13 +37,30 @@ export interface Measure {
  * A single may-do: permission to call `verb` on `resource`, optionally capped
  * by a `ceiling`. `verb` and `resource` may be the wildcard `*` or a trailing
  * glob (`listings/*`); an absent `ceiling` means unbounded.
+ *
+ * ── CEILING SEMANTICS (read this before treating it as a budget) ────────────
+ * `ceiling` is a PER-CALL maximum, NOT a cumulative spend budget. It caps the
+ * `amount` of ONE request (`scopeSatisfies` tests each request's `amount`
+ * against it in isolation); it does NOT track or subtract consumed amounts
+ * across calls. A key with `ceiling: { value: 50, unit: 'usd' }` authorises
+ * *any number* of ≤$50 calls — it is a per-transaction cap, not a $50 wallet.
+ *
+ * Enforcing a true cumulative budget (persisted consumed-amount per grant)
+ * requires the spend-ceiling/Mandate persistence primitive — the
+ * `@org.ai/authority` graduation, explicitly out of scope here (see the .ax
+ * repo ADR-0009 / ADR-0011). Do not read cumulative enforcement into this
+ * field; the id.org.ai key record cannot impose it.
  */
 export interface ScopeGrant {
   /** Verb permitted (`read`, `write`, …) or `*` for any verb. */
   verb: string
   /** Resource permitted — exact (`listings/123`), prefix glob (`listings/*`), or `*`. */
   resource: string
-  /** Optional upper bound on the amount this grant permits. */
+  /**
+   * Optional PER-CALL upper bound on the `amount` a single invocation may
+   * consume. NOT a cumulative budget — see the interface doc above. Absent
+   * means this grant imposes no per-call cap.
+   */
   ceiling?: Measure
 }
 
@@ -61,18 +79,37 @@ export interface Scope {
 export interface ScopeRequirement {
   verb: string
   resource: string
-  /** The amount the request would consume; tested against a grant's ceiling. */
+  /**
+   * The amount the request would consume; tested (per-call) against a grant's
+   * ceiling. When a matched grant carries a ceiling but the request declares no
+   * amount, the request is DENIED (an un-evaluable ceiling fails closed).
+   */
   amount?: Measure
 }
 
 // ── Glob / pattern helpers ────────────────────────────────────────────────
 
 /**
+ * Does a slash-delimited resource contain a `..` (or `.`) path segment? Such
+ * segments enable path-traversal over-matching (`listings/../secrets/1` would
+ * `startsWith('listings/')`), so any resource or pattern carrying one is
+ * rejected outright rather than normalised — fail closed.
+ */
+function hasTraversalSegment(s: string): boolean {
+  return s.split('/').some((seg) => seg === '..' || seg === '.')
+}
+
+/**
  * Does `pattern` match the concrete `value`? Supports `*` (any) and a single
  * trailing prefix glob (`listings/*` matches `listings/123`, `listings/a/b`).
  * An exact pattern matches only itself.
+ *
+ * Path-traversal defence: a `value` (or `pattern`) containing a `..`/`.` path
+ * segment matches NOTHING — otherwise `listings/../secrets/1` would over-match
+ * `listings/*` via the prefix `startsWith` and escape the grant.
  */
 export function resourceMatches(pattern: string, value: string): boolean {
+  if (hasTraversalSegment(value) || hasTraversalSegment(pattern)) return false
   if (pattern === '*') return true
   if (pattern === value) return true
   if (pattern.endsWith('/*')) {
@@ -88,6 +125,8 @@ export function resourceMatches(pattern: string, value: string): boolean {
  * child (`*` under `listings/*`) returns false.
  */
 function patternNarrows(child: string, parent: string): boolean {
+  // A traversal-bearing pattern can't be reasoned about safely — fail closed.
+  if (hasTraversalSegment(child) || hasTraversalSegment(parent)) return false
   if (parent === '*') return true
   if (child === parent) return true
   if (parent.endsWith('/*')) {
@@ -132,13 +171,15 @@ function ceilingNarrows(child: Measure | undefined, parent: Measure | undefined)
 function grantCovers(grant: ScopeGrant, required: ScopeRequirement): boolean {
   if (!verbNarrows(required.verb, grant.verb)) return false
   if (!resourceMatches(grant.resource, required.resource)) return false
-  if (required.amount) {
-    // The request wants `amount`; the grant permits up to `grant.ceiling`.
-    // An unbounded grant (no ceiling) permits any amount.
-    if (grant.ceiling) {
-      if (required.amount.unit !== grant.ceiling.unit) return false
-      if (required.amount.value > grant.ceiling.value) return false
-    }
+  // Ceiling (per-call cap). An unbounded grant (no ceiling) permits any amount.
+  // A ceiling-bearing grant is un-evaluable when the request declares no
+  // amount → DENY (fail closed): we cannot certify an unstated amount sits
+  // within the cap, and silently skipping the check would let a no-amount
+  // request bypass a ceiling the grant explicitly imposes.
+  if (grant.ceiling) {
+    if (!required.amount) return false
+    if (required.amount.unit !== grant.ceiling.unit) return false
+    if (required.amount.value > grant.ceiling.value) return false
   }
   return true
 }

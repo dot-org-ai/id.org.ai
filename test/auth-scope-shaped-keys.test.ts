@@ -87,6 +87,38 @@ describe('scope module — resourceMatches', () => {
     expect(resourceMatches('listings/*', 'secrets/1')).toBe(false)
     expect(resourceMatches('listings/123', 'listings/124')).toBe(false)
   })
+
+  it('FINDING 5 — a path-traversal resource cannot over-match a grant', () => {
+    // `listings/../secrets/1` must NOT satisfy `listings/*` (naive startsWith
+    // would over-match). A `..` segment denies the match outright.
+    expect(resourceMatches('listings/*', 'listings/../secrets/1')).toBe(false)
+    expect(resourceMatches('*', 'listings/../secrets/1')).toBe(false)
+    expect(resourceMatches('listings/../secrets/1', 'listings/../secrets/1')).toBe(false)
+    // Same defence flows through scopeSatisfies.
+    const granted: Scope = { grants: [{ verb: 'read', resource: 'listings/*' }] }
+    expect(scopeSatisfies(granted, { verb: 'read', resource: 'listings/../secrets/1' })).toBe(false)
+    // And through narrows() — a traversal child never narrows.
+    expect(narrows({ grants: [{ verb: 'read', resource: 'listings/../secrets/1' }] }, granted)).toBe(false)
+  })
+})
+
+describe('scope module — FINDING 3: ceiling fails closed when amount omitted', () => {
+  const capped: Scope = { grants: [{ verb: 'spend', resource: 'orders/*', ceiling: { value: 100, unit: 'usd' } }] }
+
+  it('DENIES a ceiling-bearing grant when the request declares no amount', () => {
+    // Un-evaluable ceiling → deny, rather than silently bypassing the cap.
+    expect(scopeSatisfies(capped, { verb: 'spend', resource: 'orders/9' })).toBe(false)
+  })
+
+  it('still allows a within-ceiling amount and denies an over-ceiling amount', () => {
+    expect(scopeSatisfies(capped, { verb: 'spend', resource: 'orders/9', amount: { value: 50, unit: 'usd' } })).toBe(true)
+    expect(scopeSatisfies(capped, { verb: 'spend', resource: 'orders/9', amount: { value: 150, unit: 'usd' } })).toBe(false)
+  })
+
+  it('an unbounded grant (no ceiling) still permits a no-amount request', () => {
+    const unbounded: Scope = { grants: [{ verb: 'read', resource: 'listings/*' }] }
+    expect(scopeSatisfies(unbounded, { verb: 'read', resource: 'listings/9' })).toBe(true)
+  })
 })
 
 describe('scope module — scopeSatisfies', () => {
@@ -224,6 +256,122 @@ describe('scope-shaped keys — gate() enforces the granted Scope', () => {
     const decision = await broker.gate(keyRequest(key), { need: { verb: 'read', resource: 'listings/123' } })
     expect(decision.ok).toBe(false)
     if (!decision.ok) expect(decision.response?.status).toBe(403)
+  })
+})
+
+// ============================================================================
+// FINDING 1 — mint enforces narrowing (privilege-escalation defence)
+// ============================================================================
+
+describe('mint narrowing — a delegated mint may only narrow the caller', () => {
+  let svc: ApiKeyServiceImpl
+
+  beforeEach(() => {
+    const storage = createTestStorage()
+    const audit = new AuditServiceImpl({ storage })
+    svc = new ApiKeyServiceImpl({ storage, audit, getIdentityLevel: async () => 2 as CapabilityLevel })
+  })
+
+  // Caller: {read, listings/*}.
+  const callerScope: Scope = { grants: [{ verb: 'read', resource: 'listings/*' }] }
+  const caller = { flatScopes: ['read'], scope: callerScope }
+
+  it('REJECTS a wider verb (write under a read-only caller)', async () => {
+    // scopes:['read'] keeps the flat check satisfied so the STRUCTURED narrowing
+    // is the rejecting gate.
+    const r = await svc.create({
+      name: 'esc',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read'],
+      scope: { grants: [{ verb: 'write', resource: 'listings/1' }] },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scope')
+  })
+
+  it('REJECTS a wider verb wildcard + resource wildcard (the escalation in the finding)', async () => {
+    const r = await svc.create({
+      name: 'esc',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read'],
+      scope: { grants: [{ verb: '*', resource: '*' }] },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scope')
+  })
+
+  it('REJECTS a resource outside the caller grant (listings/* → secrets/*)', async () => {
+    const r = await svc.create({
+      name: 'esc',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read'],
+      scope: { grants: [{ verb: 'read', resource: 'secrets/1' }] },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scope')
+  })
+
+  it('REJECTS a wider flat scope (admin under a read-only caller)', async () => {
+    const r = await svc.create({
+      name: 'esc',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read', 'admin'],
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scopes')
+  })
+
+  it('REJECTS a wider flat scope (write) even with an in-Scope structured grant', async () => {
+    const r = await svc.create({
+      name: 'esc',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read', 'write'],
+      scope: { grants: [{ verb: 'read', resource: 'listings/1' }] },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scopes')
+  })
+
+  it('SUCCEEDS minting a narrower-or-equal child', async () => {
+    const r = await svc.create({
+      name: 'ok',
+      identityId: 'usr_1',
+      caller,
+      scopes: ['read'],
+      scope: { grants: [{ verb: 'read', resource: 'listings/123' }] },
+    })
+    expect(r.success).toBe(true)
+    if (r.success) {
+      // The stored child Scope is the derived (narrowed) grant.
+      expect(r.data.scope?.grants[0].resource).toBe('listings/123')
+    }
+  })
+
+  it('FAILS CLOSED — a caller with NO resolvable structured Scope cannot mint a scope-shaped child', async () => {
+    const r = await svc.create({
+      name: 'nocaller',
+      identityId: 'usr_1',
+      caller: { flatScopes: ['read'] }, // no caller.scope
+      scopes: ['read'],
+      scope: { grants: [{ verb: 'read', resource: 'listings/1' }] },
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.field).toBe('scope')
+  })
+
+  it('FAILS CLOSED — a caller with empty flat scopes cannot mint any flat scope', async () => {
+    const r = await svc.create({
+      name: 'noflat',
+      identityId: 'usr_1',
+      caller: { flatScopes: [] },
+      scopes: ['read'],
+    })
+    expect(r.success).toBe(false)
   })
 })
 
