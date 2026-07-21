@@ -177,7 +177,7 @@ export interface IdentityStub {
   // Auth
   getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>
   validateApiKey(key: string): Promise<{ valid: boolean; identityId?: string; scopes?: string[]; scope?: import('./auth/scope').Scope; level?: CapabilityLevel }>
-  createApiKey(data: { name: string; identityId: string; scopes?: string[]; scope?: import('./auth/scope').Scope; expiresAt?: string }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; scope?: import('./auth/scope').Scope; createdAt: string; expiresAt?: string }>
+  createApiKey(data: { name: string; identityId: string; scopes?: string[]; scope?: import('./auth/scope').Scope; expiresAt?: string; caller?: { flatScopes?: string[]; scope?: import('./auth/scope').Scope } }): Promise<{ id: string; key: string; name: string; prefix: string; scopes: string[]; scope?: import('./auth/scope').Scope; createdAt: string; expiresAt?: string }>
   listApiKeys(identityId: string): Promise<Array<{ id: string; name: string; prefix: string; scopes: string[]; status: string; createdAt: string; expiresAt?: string; lastUsedAt?: string }>>
   revokeApiKey(keyId: string, identityId: string): Promise<{ id: string; status: string; revokedAt: string; key?: string } | null>
   checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{ allowed: boolean; remaining: number; resetAt: number }>

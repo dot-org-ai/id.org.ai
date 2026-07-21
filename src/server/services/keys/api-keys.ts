@@ -1,7 +1,8 @@
 import { Ok, Err } from '../../../sdk/foundation/result'
 import type { Result } from '../../../sdk/foundation/result'
 import { ValidationError, NotFoundError, KeyError } from '../../../sdk/foundation/errors'
-import { isScope } from '../../../sdk/auth/scope'
+import { isScope, narrows, deriveChildScope } from '../../../sdk/auth/scope'
+import type { Scope } from '../../../sdk/auth/scope'
 import type { StorageAdapter } from '../../../sdk/storage'
 import type { AuditService } from '../audit/service'
 import type {
@@ -62,6 +63,47 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       return Err(new ValidationError('scope', 'Invalid scope: expected { grants: [{ verb, resource }] }'))
     }
 
+    // ── Delegated-mint narrowing (privilege-escalation defence) ─────────────
+    // When the caller's own authority is supplied, a mint may only ever NARROW
+    // it: the child key can never hold more than the key that minted it. The
+    // worker route always supplies this, so through the HTTP surface every mint
+    // is checked. Fail closed on a structured mint with no caller Scope.
+    let derivedScope: Scope | undefined = input.scope
+    if (input.caller !== undefined) {
+      const callerFlat = new Set(input.caller.flatScopes ?? [])
+      for (const s of scopes) {
+        if (!callerFlat.has(s)) {
+          return Err(
+            new ValidationError('scopes', `scope '${s}' exceeds the minting caller's authority — issuance must narrow`),
+          )
+        }
+      }
+
+      if (input.scope !== undefined) {
+        if (!input.caller.scope) {
+          // Fail closed: cannot mint a scope-shaped child without a caller
+          // Scope to narrow from.
+          return Err(
+            new ValidationError(
+              'scope',
+              'minting a scope-shaped key requires the caller to carry a structured Scope to narrow from',
+            ),
+          )
+        }
+        try {
+          // deriveChildScope both validates (throws if the requested Scope
+          // widens the caller) and returns a cloned, narrowed child.
+          derivedScope = deriveChildScope(input.caller.scope, input.scope)
+        } catch {
+          return Err(new ValidationError('scope', 'requested scope widens the caller — issuance must narrow'))
+        }
+        // Belt-and-braces invariant check (deriveChildScope already guaranteed).
+        if (!narrows(derivedScope, input.caller.scope)) {
+          return Err(new ValidationError('scope', 'requested scope widens the caller — issuance must narrow'))
+        }
+      }
+    }
+
     if (input.expiresAt) {
       const expiry = new Date(input.expiresAt).getTime()
       if (expiry <= Date.now()) {
@@ -81,7 +123,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
       prefix,
       identityId: input.identityId,
       scopes,
-      scope: input.scope,
+      scope: derivedScope,
       status: 'active',
       createdAt: now,
       expiresAt: input.expiresAt,
@@ -99,7 +141,7 @@ export class ApiKeyServiceImpl implements ApiKeyWriter {
     })
 
     const result: CreateApiKeyResult = { id, key, name: input.name, prefix, scopes, createdAt: now }
-    if (input.scope) result.scope = input.scope
+    if (derivedScope) result.scope = derivedScope
     if (input.expiresAt) result.expiresAt = input.expiresAt
     return Ok(result)
   }

@@ -56,6 +56,25 @@ export interface ApiKeyInfo {
   lastUsedAt?: string
 }
 
+/**
+ * The minting caller's OWN resolved authority — the ceiling a delegated mint
+ * may not exceed. When present, `create()` treats the mint as a delegated
+ * issuance and enforces narrowing: the requested flat `scopes` must be a subset
+ * of `caller.flatScopes`, and any requested structured `scope` must `narrows()`
+ * the caller's own `caller.scope`. A structured mint with no resolvable
+ * `caller.scope` is denied (fail closed).
+ *
+ * The worker route ALWAYS supplies this from the authenticated identity, so a
+ * key can never mint a child broader than itself. It is omitted only for
+ * trusted internal/bootstrap provisioning that runs below the HTTP surface.
+ */
+export interface MintCaller {
+  /** The caller's flat scope vocabulary (`read`/`write`/`admin`/…). */
+  flatScopes?: string[]
+  /** The caller's structured Scope, when the caller carries one. */
+  scope?: Scope
+}
+
 export interface CreateApiKeyInput {
   name: string
   identityId: string
@@ -63,6 +82,11 @@ export interface CreateApiKeyInput {
   /** Optional structured capability grant carried on the minted key. */
   scope?: Scope
   expiresAt?: string
+  /**
+   * The minting caller's resolved authority. When present, the requested
+   * scopes/Scope MUST narrow it or the mint is rejected. See {@link MintCaller}.
+   */
+  caller?: MintCaller
 }
 
 export interface CreateApiKeyResult {

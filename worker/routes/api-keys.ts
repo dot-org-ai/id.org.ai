@@ -6,9 +6,11 @@
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import type { IdentityStub } from '../../src/server/do/Identity'
+import type { Identity } from '../../src/sdk/types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { ensurePersonalOrg } from '../../src/sdk/workos/upstream'
 import { createWorkOSApiKey, listWorkOSApiKeys, revokeWorkOSApiKey } from '../../src/sdk/workos/keys'
+import { requireScope } from '../middleware/require-scope'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -45,10 +47,23 @@ async function resolveOrgForApiKeys(env: Env, identityId: string, stub: Identity
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 
-app.post('/api/keys', async (c) => {
+// Minting a key is an ISSUANCE operation: the caller must carry explicit
+// issuance authority (`keys:issue`) or be an `admin`. Bare authentication is
+// NOT enough — otherwise any key could mint a broader child (privilege
+// escalation). The narrowing check in ApiKeyServiceImpl.create() then bounds
+// what an authorised issuer may mint to no more than its own authority.
+app.post('/api/keys', requireScope('keys:issue', 'admin'), async (c) => {
   const auth = c.get('auth')
   if (!auth.authenticated || !auth.identityId) {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required to create API keys')
+  }
+
+  // The minting caller's OWN resolved authority — the ceiling a delegated mint
+  // may not exceed. Fail closed if the identity context is missing/unresolvable
+  // (should be impossible after requireScope, but deny rather than mint blind).
+  const identity = c.get('identity') as Identity | undefined
+  if (!identity) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Caller authority unresolvable — refusing to mint')
   }
 
   const stub = c.get('identityStub')
@@ -69,6 +84,19 @@ app.post('/api/keys', async (c) => {
 
   // Use WorkOS API keys when configured — WorkOS handles generation, rotation, validation
   if (c.env.WORKOS_API_KEY) {
+    // Scope-shaped (structured) keys are a NATIVE-key primitive: their Scope is
+    // stored + enforced on the id.org.ai key record, which WorkOS-backed keys
+    // don't have. Minting a WorkOS key here would silently drop `body.scope`,
+    // yielding a scope-less key that then fail-closed-403s every scoped request.
+    // Reject up front rather than issue a subtly-broken key.
+    if (body.scope !== undefined) {
+      return errorResponse(
+        c,
+        400,
+        ErrorCode.InvalidRequest,
+        'scope-shaped keys are a native-key primitive; not supported on WorkOS-backed keys',
+      )
+    }
     try {
       const orgId = await resolveOrgForApiKeys(c.env, auth.identityId, stub)
       const result = await createWorkOSApiKey(c.env.WORKOS_API_KEY, {
@@ -91,6 +119,10 @@ app.post('/api/keys', async (c) => {
       scopes: body.scopes,
       scope: body.scope,
       expiresAt: body.expiresAt,
+      // Delegated-mint ceiling: the child may never exceed the caller's own
+      // flat scopes / structured Scope. create() enforces narrowing (and fails
+      // closed on a structured mint without a caller Scope).
+      caller: { flatScopes: identity.scopes, scope: identity.scope },
     })
 
     // Write KV mapping so future requests with this key route to the correct DO shard
