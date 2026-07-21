@@ -4,6 +4,14 @@
   // Consumed via:
   //   AUTH_HTTP service binding (default fetch) by apps/api, apis.do — for /login, /callback, /oauth/*, etc.
   //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser, etc.)
+  //   AUTH service binding (RPC) for the AuthIdentity entrypoint — the stable
+  //     token-verification seam for builder.domains custom-domain projection:
+  //     `env.AUTH.verifyToken(token) -> { valid, identity? }`. Validates ONLY
+  //     id.org.ai-issued JWTs. Also reachable over HTTP at POST /auth/verify.
+  //     WorkerEntrypoints need no extra declaration here — `export class
+  //     AuthIdentity` in worker/index.ts is sufficient for a consumer to bind.
+  //     The builder.domains side (documented, NOT provisioned here):
+  //       "services": [{ "binding": "AUTH", "service": "oauth", "entrypoint": "AuthIdentity" }]
   // The lightweight verifier (workers/auth/ "auth") handles AUTH RPC bindings for JWT/API key verification.
   "name": "oauth",
   "main": "index.ts",

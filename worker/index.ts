@@ -38,6 +38,8 @@ import {
 import { oauthRoutes, getOAuthProvider } from './routes/oauth'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
+import type { VerifyTokenResult } from '../src/sdk/auth'
+import { authVerifyRoutes, verifyIdentityTokenWithEnv } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
@@ -410,6 +412,31 @@ export class AuthService extends WorkerEntrypoint<Env> {
 // AuthRPC alias — events.do and other consumers bind with entrypoint: "AuthRPC"
 export { AuthService as AuthRPC }
 
+// ── AuthIdentity (RPC via Service Binding) ───────────────────────────────
+// Stable, narrow token-verification surface for builder.domains and other
+// .ax surfaces that project a claimed, owned page onto a custom domain.
+//
+// A bound Worker declares (in its wrangler config):
+//   "services": [{ "binding": "AUTH", "service": "oauth", "entrypoint": "AuthIdentity" }]
+// and then calls:
+//   const { valid, identity } = await env.AUTH.verifyToken(token)
+//
+// Unlike AuthService.verifyToken (which resolves opaque ses_*/oai_*/sk_*
+// tokens as well and returns { user }), this entrypoint validates ONLY
+// id.org.ai-issued JWTs against our live signing keys and returns a verified
+// { identity }. It is a thin wrapper over the shipped `verifyToken` primitive
+// (src/sdk/auth/verify-token.ts → src/sdk/oauth/jwt-verify.ts).
+export class AuthIdentity extends WorkerEntrypoint<Env> {
+  /**
+   * Verify an id.org.ai-issued JWT and return the projected identity.
+   * Never throws — a malformed/expired/tampered/wrong-issuer token yields
+   * `{ valid: false, error }`.
+   */
+  async verifyToken(token: string): Promise<VerifyTokenResult> {
+    return verifyIdentityTokenWithEnv(token, this.env)
+  }
+}
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 // ── CORS ──────────────────────────────────────────────────────────────────
@@ -706,6 +733,15 @@ app.get('/.well-known/jwks.json', async (c) => {
     'Cache-Control': 'public, max-age=3600',
   })
 })
+
+// ── Token Verification Endpoint (no auth required) ───────────────────────────
+// POST /auth/verify — cross-origin / non-binding counterpart to the
+// AuthIdentity RPC entrypoint. builder.domains and other .ax surfaces that
+// cannot service-bind POST the token here to project a claimed, owned page onto
+// a custom domain. Handler + shared core live in ./routes/auth-verify.
+//   200 { valid: true, identity: {...} }   — verified
+//   401 { valid: false, error }            — malformed/expired/tampered/wrong-issuer
+app.route('', authVerifyRoutes)
 
 // ── Auth Routes (login, callback, logout, session, widget-token) ─────────────
 // Mounted before authenticateRequest — these routes handle their own auth.
