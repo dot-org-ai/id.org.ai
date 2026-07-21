@@ -187,6 +187,12 @@ function projectResult(
     // A signed token with no subject cannot identify anyone — fail closed.
     return { valid: false, error: 'Token missing subject (sub) claim' }
   }
+  if (typeof payload.exp !== 'number') {
+    // The canonical identity seam must not accept a non-expiring token: every
+    // id.org.ai signing path sets exp, so a missing exp means the token never
+    // expires (revocation-via-expiry silently would not apply) — fail closed.
+    return { valid: false, error: 'Token missing expiry (exp) claim' }
+  }
   return { valid: true, identity: projectIdentity(payload, issuer) }
 }
 

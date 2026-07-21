@@ -33,12 +33,19 @@ export async function verifyIdentityTokenWithEnv(
   env: Env,
   resolveJwks: JwksResolver = defaultJwksResolver,
 ): Promise<VerifyTokenResult> {
+  // Separate a SERVER-side failure (JWKS/signing-key manager unavailable) from a
+  // TOKEN-side failure. A server failure must not be dressed up as "invalid
+  // token" (a 401) nor leak the raw internal error — it returns the stable
+  // `jwks_unavailable` code (logged server-side) which the HTTP layer maps to
+  // 503. Token-validity errors flow through verifyToken unchanged.
+  let jwks: JWKS
   try {
-    const jwks = await resolveJwks(env)
-    return await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN })
+    jwks = await resolveJwks(env)
   } catch (err) {
-    return { valid: false, error: err instanceof Error ? err.message : 'Verification failed' }
+    console.error('[auth/verify] JWKS resolution failed:', err instanceof Error ? err.message : err)
+    return { valid: false, error: 'jwks_unavailable' }
   }
+  return await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN })
 }
 
 /**
@@ -62,6 +69,11 @@ export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResol
     }
 
     const result = await verifyIdentityTokenWithEnv(token, c.env, resolveJwks)
+    if (!result.valid && result.error === 'jwks_unavailable') {
+      // Server-side verification substrate is down — 503, not a token 401, and
+      // a generic client message (the real cause is already logged).
+      return c.json({ valid: false, error: 'Verification temporarily unavailable' } satisfies VerifyTokenResult, 503)
+    }
     return c.json(result, result.valid ? 200 : 401)
   })
 
