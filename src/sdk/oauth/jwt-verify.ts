@@ -117,11 +117,11 @@ export interface JWTVerifyOptions {
 // Internal Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface JWKS {
+export interface JWKS {
   keys: JWK[]
 }
 
-interface JWK {
+export interface JWK {
   kty: string
   kid?: string
   use?: string
@@ -341,10 +341,16 @@ function decodeBase64Url(str: string): string {
 }
 
 function isSupportedAlgorithm(alg: string): boolean {
-  return ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'].includes(alg)
+  // `none` (unsigned) is deliberately excluded — an unsigned JWT is never
+  // accepted. EdDSA (Ed25519, per RFC 8037) is the AAP host-key / agent-auth
+  // signature suite and joins the RSA/ECDSA JWS families here.
+  return ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'EdDSA'].includes(alg)
 }
 
-type AlgorithmParams = { name: 'RSASSA-PKCS1-v1_5'; hash: string } | { name: 'ECDSA'; hash: string; namedCurve: string }
+type AlgorithmParams =
+  | { name: 'RSASSA-PKCS1-v1_5'; hash: string }
+  | { name: 'ECDSA'; hash: string; namedCurve: string }
+  | { name: 'Ed25519' }
 
 function getAlgorithmParams(alg: string): AlgorithmParams {
   switch (alg) {
@@ -360,6 +366,9 @@ function getAlgorithmParams(alg: string): AlgorithmParams {
       return { name: 'ECDSA', hash: 'SHA-384', namedCurve: 'P-384' }
     case 'ES512':
       return { name: 'ECDSA', hash: 'SHA-512', namedCurve: 'P-521' }
+    case 'EdDSA':
+      // RFC 8037 JOSE EdDSA over the Ed25519 curve (OKP key type).
+      return { name: 'Ed25519' }
     default:
       throw new Error(`Unsupported algorithm: ${alg}`)
   }
@@ -376,7 +385,10 @@ async function verifySignature(data: string, signature: string, key: CryptoKey, 
     signatureBytes = convertJWTSignatureToWebCrypto(signatureBytes, alg)
   }
 
-  const algorithm = params.name === 'ECDSA' ? { name: 'ECDSA', hash: params.hash } : { name: params.name }
+  // Ed25519 signatures are raw 64-byte R||S — no DER/concat conversion, and
+  // the verify algorithm is just the curve name.
+  const algorithm =
+    params.name === 'ECDSA' ? { name: 'ECDSA', hash: params.hash } : { name: params.name }
 
   return crypto.subtle.verify(algorithm, key, signatureBytes, dataBytes)
 }
@@ -441,10 +453,36 @@ async function getKeyFromJWKS(jwksUrl: string, kid: string | undefined, alg: str
   return null
 }
 
+/**
+ * Import a public JWK into a verify-only CryptoKey for the given JOSE alg.
+ * Supports RSA (RS256/384/512), EC (ES256/384/512), and OKP/Ed25519 (EdDSA).
+ * Returns null when the JWK shape does not match the algorithm — callers treat
+ * that as "no usable key" (fail-closed), never as a verified token.
+ *
+ * Exported so the AAP host+jwt / ID-JAG / SET verifiers (worker/routes/aap.ts)
+ * can import a caller-advertised JWKS key without re-implementing the crypto.
+ */
+export async function importPublicJwk(jwk: JWK, expectedAlg: string): Promise<CryptoKey | null> {
+  return importJWK(jwk, expectedAlg)
+}
+
 async function importJWK(jwk: JWK, expectedAlg: string): Promise<CryptoKey | null> {
   const params = getAlgorithmParams(expectedAlg)
 
-  if (jwk.kty === 'RSA' && params.name.startsWith('RSA')) {
+  if (jwk.kty === 'OKP' && params.name === 'Ed25519') {
+    if (!jwk.x || jwk.crv !== 'Ed25519') {
+      return null
+    }
+    return crypto.subtle.importKey(
+      'jwk',
+      { kty: 'OKP', crv: 'Ed25519', x: jwk.x, use: 'sig' },
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    )
+  }
+
+  if (jwk.kty === 'RSA' && params.name === 'RSASSA-PKCS1-v1_5') {
     if (!jwk.n || !jwk.e) {
       return null
     }
@@ -452,7 +490,7 @@ async function importJWK(jwk: JWK, expectedAlg: string): Promise<CryptoKey | nul
     return crypto.subtle.importKey(
       'jwk',
       { kty: 'RSA', n: jwk.n, e: jwk.e, alg: expectedAlg, use: 'sig' },
-      { name: params.name, hash: params.hash! },
+      { name: params.name, hash: params.hash },
       false,
       ['verify'],
     )

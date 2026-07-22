@@ -700,6 +700,20 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       ],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
+      // ID-JAG (Identity Assertion JWT Authorization Grant) is accepted as a
+      // token-exchange subject token — advertised in the RFC 8693 field the
+      // auth.md agent-identity check reads.
+      subject_token_types_supported: ['urn:ietf:params:oauth:token-type:id-jag'],
+      // auth.md agent-identity provider block. These are REAL, resolvable
+      // endpoints (worker/routes/aap.ts): identity verifies an ID-JAG, events
+      // verifies a SET (RFC 8417) for revocation, claim is the native
+      // claim-by-commit ceremony (worker/routes/claim.ts POST /api/claim).
+      agent_auth: {
+        identity_endpoint: `${issuer}/agent/identity`,
+        claim_endpoint: `${issuer}/api/claim`,
+        events_endpoint: `${issuer}/agent/events`,
+        subject_token_types_supported: ['urn:ietf:params:oauth:token-type:id-jag'],
+      },
     },
     200,
     {
