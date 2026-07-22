@@ -30,6 +30,24 @@ export function mcpResourceUri(origin: string): string {
 }
 
 /**
+ * Canonicalize a resource/audience URI for comparison: lowercases the
+ * scheme+host (case-insensitive per RFC 3986) and trims a single trailing
+ * slash from a non-root path, but leaves path-segment case untouched (paths
+ * CAN be case-sensitive). Falls back to a trailing-slash trim for values that
+ * aren't parseable as absolute URLs, so comparisons stay strict rather than
+ * silently matching.
+ */
+export function canonicalizeResourceUri(uri: string): string {
+  try {
+    const u = new URL(uri)
+    const path = u.pathname.length > 1 ? u.pathname.replace(/\/$/, '') : u.pathname
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${path}${u.search}`
+  } catch {
+    return trimSlash(uri)
+  }
+}
+
+/**
  * RFC 9728 default protected-resource metadata URL. api.qa (and most MCP
  * clients) resolve the metadata at the ROOT well-known path derived from the
  * MCP origin, so this is what the WWW-Authenticate challenge references.

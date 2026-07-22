@@ -18,7 +18,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { Hono } from 'hono'
 import { mcpRoutes } from '../worker/routes/mcp'
 import { authenticateRequest } from '../worker/middleware/auth'
-import { mcpResourceUri, protectedResourceMetadataUrl, mcpWwwAuthenticate } from '../worker/utils/mcp-resource'
+import {
+  mcpResourceUri,
+  protectedResourceMetadataUrl,
+  mcpWwwAuthenticate,
+  canonicalizeResourceUri,
+} from '../worker/utils/mcp-resource'
 import { MCPAuth } from '../src/sdk/mcp/auth'
 import type { MCPAuthResult } from '../src/sdk/mcp/auth'
 import type { Env, Variables } from '../worker/types'
@@ -182,5 +187,108 @@ describe('GAP 2 - audience binding (RFC 8707) at /mcp', () => {
     const { c } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
     const ret = (await authenticateRequest(c, async () => {})) as Response
     expect(ret.status).toBe(401)
+  })
+})
+
+// -- LOW gap fixes ------------------------------------------------------------
+
+describe('LOW gap - multi-valued (array) RFC 8707 audience', () => {
+  it('ACCEPTS an array-valued resource that INCLUDES the /mcp audience', async () => {
+    const rec = {
+      identityId: 'human:u1',
+      scopes: ['openid'],
+      expiresAt: Date.now() + 60_000,
+      resource: ['https://id.org.ai/mcp', 'https://other'],
+    }
+    const { env } = makeEnv(rec, IDENTITY)
+    const { c, store } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
+    let nexted = false
+    const ret = await authenticateRequest(c, async () => {
+      nexted = true
+    })
+    expect(ret).toBeUndefined()
+    expect(nexted).toBe(true)
+    expect((store.get('auth') as MCPAuthResult).authenticated).toBe(true)
+  })
+
+  it('REJECTS an array-valued resource that does NOT include the /mcp audience', async () => {
+    const rec = {
+      identityId: 'human:u1',
+      scopes: ['openid'],
+      expiresAt: Date.now() + 60_000,
+      resource: ['https://other'],
+    }
+    const { env } = makeEnv(rec, IDENTITY)
+    const { c } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
+    const ret = (await authenticateRequest(c, async () => {})) as Response
+    expect(ret).toBeInstanceOf(Response)
+    expect(ret.status).toBe(401)
+  })
+
+  it('ACCEPTS a resource with a trailing slash (canonicalized before compare)', async () => {
+    const rec = {
+      identityId: 'human:u1',
+      scopes: ['openid'],
+      expiresAt: Date.now() + 60_000,
+      resource: 'https://id.org.ai/mcp/',
+    }
+    const { env } = makeEnv(rec, IDENTITY)
+    const { c, store } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
+    let nexted = false
+    const ret = await authenticateRequest(c, async () => {
+      nexted = true
+    })
+    expect(ret).toBeUndefined()
+    expect(nexted).toBe(true)
+    expect((store.get('auth') as MCPAuthResult).authenticated).toBe(true)
+  })
+
+  it('canonicalizeResourceUri lowercases scheme+host, trims trailing slash, preserves path case', () => {
+    expect(canonicalizeResourceUri('https://ID.org.ai/mcp/')).toBe('https://id.org.ai/mcp')
+    expect(canonicalizeResourceUri('HTTPS://id.org.ai/Mcp')).toBe('https://id.org.ai/Mcp')
+    expect(canonicalizeResourceUri(mcpResourceUri(ORIGIN))).toBe(canonicalizeResourceUri('https://id.org.ai/mcp/'))
+  })
+})
+
+describe('LOW gap - expiry fails closed when expiresAt is missing/non-numeric', () => {
+  it('REJECTS a token record with a missing expiresAt (not treated as non-expiring)', async () => {
+    const rec = { identityId: 'human:u1', scopes: ['openid'], resource: MCP_URL } as any
+    const { env } = makeEnv(rec, IDENTITY)
+    const { c } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
+    const ret = (await authenticateRequest(c, async () => {})) as Response
+    expect(ret).toBeInstanceOf(Response)
+    expect(ret.status).toBe(401)
+  })
+
+  it('REJECTS a token record with a non-numeric (NaN) expiresAt', async () => {
+    const rec = { identityId: 'human:u1', scopes: ['openid'], expiresAt: NaN, resource: MCP_URL } as any
+    const { env } = makeEnv(rec, IDENTITY)
+    const { c } = makeCtx({ url: MCP_URL, authorization: `Bearer ${TOKEN}`, env })
+    const ret = (await authenticateRequest(c, async () => {})) as Response
+    expect(ret).toBeInstanceOf(Response)
+    expect(ret.status).toBe(401)
+  })
+})
+
+describe('LOW gap - at_ tokens are not honored outside /mcp', () => {
+  it('a /mcp-bound at_ token presented at a NON-/mcp route does not authenticate via the at_ path', async () => {
+    const rec = { identityId: 'human:u1', scopes: ['openid'], expiresAt: Date.now() + 60_000, resource: MCP_URL }
+    const { env } = makeEnv(rec, IDENTITY)
+    const otherUrl = `${ORIGIN}/api/whoami`
+    const { c, store } = makeCtx({ url: otherUrl, authorization: `Bearer ${TOKEN}`, env })
+    let nexted = false
+    const ret = await authenticateRequest(c, async () => {
+      nexted = true
+    })
+    // Falls through to the broker path (no stub/creds it understands here) —
+    // it must NOT resolve to the identity behind the at_ token.
+    expect(ret).toBeUndefined()
+    expect(nexted).toBe(true)
+    const auth = store.get('auth') as MCPAuthResult | undefined
+    if (auth) {
+      expect(auth.authenticated).not.toBe(true)
+      expect(auth.identityId).not.toBe('human:u1')
+    }
+    expect(store.get('identity')).toBeFalsy()
   })
 })

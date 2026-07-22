@@ -16,7 +16,7 @@ import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { validateWorkOSApiKey } from '../../src/sdk/workos/apikey'
 import { getStubForIdentity } from './tenant'
-import { mcpResourceUri, mcpWwwAuthenticate, isMcpPath } from '../utils/mcp-resource'
+import { mcpResourceUri, mcpWwwAuthenticate, isMcpPath, canonicalizeResourceUri } from '../utils/mcp-resource'
 import type { IdentityStub } from '../../src/server/do/Identity'
 
 /**
@@ -25,47 +25,79 @@ import type { IdentityStub } from '../../src/server/do/Identity'
  * tokens live in the OAuth Durable Object's storage, not in the KV/session
  * paths the broker/tenant resolver understand.
  *
+ * `at_` tokens are ONLY accepted at /mcp — the one route with a defined
+ * resource URI + enforced audience check. On any other route we don't have
+ * an aud check to enforce, so an at_ bearer token is not treated as a valid
+ * credential there at all (falls through to the normal broker path, same as
+ * any other unrecognized credential) — otherwise a token minted for /mcp
+ * would silently authenticate at unrelated routes with no audience
+ * enforcement.
+ *
  * On /mcp the token MUST be audience-bound to this MCP resource URI: a token
  * minted for a DIFFERENT resource (or with no `resource` at all) is REJECTED,
- * so a token issued for another audience can never be replayed at /mcp.
+ * so a token issued for another audience can never be replayed at /mcp. The
+ * `resource` field is compared as a set (RFC 8707 permits multiple resource
+ * indicators on one token) and canonicalized (scheme+host case, trailing
+ * slash) before comparison.
  *
  * Returns:
  *   - a Response  → terminal (401): reject and emit the WWW-Authenticate chain
  *   - true        → token resolved & audience-valid; context populated, proceed
- *   - false       → not an `at_` token; fall through to the normal broker path
+ *   - false       → not an `at_` token, or not at /mcp; fall through to the
+ *                    normal broker path
  */
 async function tryOAuthAccessToken(c: any): Promise<Response | boolean> {
   const authz = c.req.raw.headers.get('authorization') as string | null
   if (!authz?.startsWith('Bearer at_')) return false
 
-  const token = authz.slice(7)
   const url = new URL(c.req.url)
   const origin = url.origin
   const onMcp = isMcpPath(url.pathname)
 
+  // at_ tokens carry a resource-bound audience that is only enforced on
+  // /mcp. Don't authenticate them anywhere else — fall through instead of
+  // granting access purely on a token scoped to a different resource.
+  if (!onMcp) return false
+
+  const token = authz.slice(7)
+
   const reject = (description: string): Response => {
-    if (onMcp) c.header('WWW-Authenticate', mcpWwwAuthenticate(origin, 'invalid_token', description))
+    c.header('WWW-Authenticate', mcpWwwAuthenticate(origin, 'invalid_token', description))
     return errorResponse(c, 401, ErrorCode.Unauthorized, description)
   }
 
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const res = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${token}` }).catch(() => ({}) as any)
   const rec = (res?.value ?? undefined) as
-    | { identityId?: string; scopes?: string[]; expiresAt?: number; resource?: string }
+    | { identityId?: string; scopes?: string[]; expiresAt?: number; resource?: string | string[] | null }
     | undefined
 
   if (!rec) return reject('Invalid access token')
-  if (typeof rec.expiresAt === 'number' && rec.expiresAt < Date.now()) return reject('Access token has expired')
+
+  // Fail closed: a record without a positive, finite numeric expiry is
+  // treated as expired, never as non-expiring. Mirrors the canonical
+  // provider.validateAccessToken contract (AccessToken.expiresAt is a
+  // required number) rather than trusting whatever shape came back from
+  // storage.
+  if (!(typeof rec.expiresAt === 'number' && Number.isFinite(rec.expiresAt) && rec.expiresAt > 0)) {
+    return reject('Access token has no valid expiry')
+  }
+  if (rec.expiresAt < Date.now()) return reject('Access token has expired')
 
   // RFC 8707 audience binding — enforced at the /mcp resource server. Require
   // the token to be bound to THIS resource; reject cross-resource and aud-less
-  // tokens (strict OAuth 2.1 resource-server policy).
-  if (onMcp) {
+  // tokens (strict OAuth 2.1 resource-server policy). `resource` may be a
+  // single string or an array (multi-valued audience) — accept if ANY bound
+  // audience canonically matches this resource.
+  {
     const mcpUri = mcpResourceUri(origin)
-    if (rec.resource !== mcpUri) {
+    const canonicalMcpUri = canonicalizeResourceUri(mcpUri)
+    const auds: string[] = Array.isArray(rec.resource) ? rec.resource : rec.resource == null ? [] : [rec.resource]
+    const bound = auds.some((a) => typeof a === 'string' && canonicalizeResourceUri(a) === canonicalMcpUri)
+    if (!bound) {
       return reject(
-        rec.resource
-          ? `token audience ${rec.resource} is not bound to ${mcpUri}`
+        auds.length
+          ? `token audience ${auds.join(', ')} is not bound to ${mcpUri}`
           : `token is not audience-bound to ${mcpUri} (RFC 8707 resource indicator required)`,
       )
     }
