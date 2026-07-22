@@ -15,7 +15,75 @@ import { MCPAuth } from '../../src/sdk/mcp/auth'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { validateWorkOSApiKey } from '../../src/sdk/workos/apikey'
+import { getStubForIdentity } from './tenant'
+import { mcpResourceUri, mcpWwwAuthenticate, isMcpPath } from '../utils/mcp-resource'
 import type { IdentityStub } from '../../src/server/do/Identity'
+
+/**
+ * OAuth 2.1 resource-server validation for opaque `at_` access tokens
+ * (RFC 8707 audience-binding). Runs before the broker because OAuth access
+ * tokens live in the OAuth Durable Object's storage, not in the KV/session
+ * paths the broker/tenant resolver understand.
+ *
+ * On /mcp the token MUST be audience-bound to this MCP resource URI: a token
+ * minted for a DIFFERENT resource (or with no `resource` at all) is REJECTED,
+ * so a token issued for another audience can never be replayed at /mcp.
+ *
+ * Returns:
+ *   - a Response  → terminal (401): reject and emit the WWW-Authenticate chain
+ *   - true        → token resolved & audience-valid; context populated, proceed
+ *   - false       → not an `at_` token; fall through to the normal broker path
+ */
+async function tryOAuthAccessToken(c: any): Promise<Response | boolean> {
+  const authz = c.req.raw.headers.get('authorization') as string | null
+  if (!authz?.startsWith('Bearer at_')) return false
+
+  const token = authz.slice(7)
+  const url = new URL(c.req.url)
+  const origin = url.origin
+  const onMcp = isMcpPath(url.pathname)
+
+  const reject = (description: string): Response => {
+    if (onMcp) c.header('WWW-Authenticate', mcpWwwAuthenticate(origin, 'invalid_token', description))
+    return errorResponse(c, 401, ErrorCode.Unauthorized, description)
+  }
+
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const res = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${token}` }).catch(() => ({}) as any)
+  const rec = (res?.value ?? undefined) as
+    | { identityId?: string; scopes?: string[]; expiresAt?: number; resource?: string }
+    | undefined
+
+  if (!rec) return reject('Invalid access token')
+  if (typeof rec.expiresAt === 'number' && rec.expiresAt < Date.now()) return reject('Access token has expired')
+
+  // RFC 8707 audience binding — enforced at the /mcp resource server. Require
+  // the token to be bound to THIS resource; reject cross-resource and aud-less
+  // tokens (strict OAuth 2.1 resource-server policy).
+  if (onMcp) {
+    const mcpUri = mcpResourceUri(origin)
+    if (rec.resource !== mcpUri) {
+      return reject(
+        rec.resource
+          ? `token audience ${rec.resource} is not bound to ${mcpUri}`
+          : `token is not audience-bound to ${mcpUri} (RFC 8707 resource indicator required)`,
+      )
+    }
+  }
+
+  if (!rec.identityId) return reject('Access token is not associated with an identity')
+
+  const identityStub = getStubForIdentity(c.env, rec.identityId)
+  const identity = await identityStub.getIdentity(rec.identityId).catch(() => null)
+  if (!identity) return reject('Identity not found for access token')
+
+  c.set('resolvedIdentityId', rec.identityId)
+  c.set('identityStub', identityStub)
+  c.set('identity', identity)
+  const rateLimit = await identityStub.checkRateLimit(identity.id, identity.level).catch(() => undefined)
+  c.set('auth', MCPAuth.fromIdentity(identity, rateLimit))
+  return true
+}
 
 /**
  * No-op stub for the broker when tenant resolution didn't produce an
@@ -37,6 +105,20 @@ export async function authenticateRequest(c: any, next: () => Promise<void>) {
   const stub = c.get('identityStub')
   const workosApiKey = c.env?.WORKOS_API_KEY as string | undefined
 
+  // OAuth 2.1 access tokens (`at_`) are validated here as a resource server:
+  // signature-equivalent lookup in the OAuth DO + RFC 8707 audience binding on
+  // /mcp. Runs first because these tokens don't live in the KV/session paths.
+  const oauthResult = await tryOAuthAccessToken(c)
+  if (oauthResult instanceof Response) return oauthResult
+  if (oauthResult === true) return next()
+
+  const mcpUnauthorized = () => {
+    if (isMcpPath(new URL(c.req.url).pathname)) {
+      c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
+    }
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired credentials')
+  }
+
   // No stub means tenant resolution didn't find an id.org.ai-issued identity
   // for the credential. For most credentials that's terminal (401). The one
   // exception is a WorkOS-issued `sk_*` API key: it never lives in our DO
@@ -48,7 +130,7 @@ export async function authenticateRequest(c: any, next: () => Promise<void>) {
     const explicitSession = extractSessionToken(c.req.raw)
     const isWorkosSk = explicitKey?.startsWith('sk_') && workosApiKey
     if ((explicitKey && !isWorkosSk) || explicitSession) {
-      return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired credentials')
+      return mcpUnauthorized()
     }
     if (!isWorkosSk) {
       c.set('auth', MCPAuth.anonymousResult())
@@ -95,7 +177,7 @@ export async function authenticateRequest(c: any, next: () => Promise<void>) {
 
   // Mirror prior behaviour: explicit creds that fail to resolve → 401, not L0.
   if (presentedExplicit && identity.id === 'anon') {
-    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired credentials')
+    return mcpUnauthorized()
   }
 
   c.set('identity', identity)

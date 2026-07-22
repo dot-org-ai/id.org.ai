@@ -11,8 +11,32 @@ import type { MCPAuthResult } from '../../src/sdk/mcp/auth'
 import { dispatchTool } from '../../src/sdk/mcp/tools'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
+import { mcpWwwAuthenticate } from '../utils/mcp-resource'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+/**
+ * RFC 9728 §5.1 / RFC 6750: an unauthenticated request to the /mcp OAuth
+ * resource server returns 401 with a WWW-Authenticate challenge that points
+ * MCP clients at the protected-resource metadata (→ authorization server).
+ */
+function unauthorizedChallenge(c: any, id?: string | number) {
+  c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
+  return c.json(
+    {
+      jsonrpc: '2.0',
+      ...(id !== undefined ? { id } : {}),
+      error: {
+        code: -32001,
+        message: 'Authentication required — this MCP endpoint is an OAuth 2.1 protected resource',
+        data: {
+          resource_metadata: `${new URL(c.req.url).origin}/.well-known/oauth-protected-resource`,
+        },
+      },
+    },
+    401,
+  )
+}
 
 // ── Null Stub ───────────────────────────────────────────────────────────────
 // A safe no-op stub for L0 (anonymous) requests that don't resolve a DO.
@@ -211,6 +235,10 @@ function buildResourceList(auth: MCPAuthResult): Array<{ name: string; descripti
 
 app.get('/mcp', async (c) => {
   const auth = c.get('auth')
+
+  // OAuth 2.1 resource server: unauthenticated requests are challenged.
+  if (!auth?.authenticated) return unauthorizedChallenge(c)
+
   const meta = MCPAuth.buildMetaStatic(auth)
 
   return c.json({
@@ -232,6 +260,10 @@ app.get('/mcp', async (c) => {
 
 app.post('/mcp', async (c) => {
   const auth = c.get('auth')
+
+  // OAuth 2.1 resource server: unauthenticated requests are challenged.
+  if (!auth?.authenticated) return unauthorizedChallenge(c)
+
   const stub = c.get('identityStub')
   const meta = MCPAuth.buildMetaStatic(auth)
 
@@ -317,6 +349,7 @@ app.post('/mcp', async (c) => {
 
     // L1+ tools require a DO stub (authenticated identity)
     if (requiredLevel >= 1 && !stub) {
+      c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
       return c.json(
         {
           jsonrpc: '2.0',

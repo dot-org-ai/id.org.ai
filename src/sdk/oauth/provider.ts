@@ -123,6 +123,10 @@ interface AccessToken {
   scopes: string[]
   expiresAt: number
   createdAt: number
+  resource?: string            // RFC 8707 resource indicator → the token's bound
+                               // audience. Enforced by the resource server (e.g.
+                               // /mcp) so a token minted for one resource cannot
+                               // be replayed against another.
 }
 
 // Internal storage type — see OAuthRefreshToken in ./types.ts for canonical API type
@@ -1233,6 +1237,8 @@ export class OAuthProvider {
       scopes,
       expiresAt: now + ACCESS_TOKEN_TTL * 1000,
       createdAt: now,
+      // RFC 8707: audience-bind to the requested resource, if any.
+      ...(body.resource !== undefined && { resource: body.resource }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1440,6 +1446,10 @@ export class OAuthProvider {
       scopes,
       expiresAt: now + ACCESS_TOKEN_TTL * 1000,
       createdAt: now,
+      // RFC 8707: bind the token's audience to the requested resource so the
+      // resource server can reject cross-resource replay (carried
+      // authorize → code → token, and re-carried through refresh rotation).
+      ...(resource !== undefined && { resource }),
     }
 
     const refreshToken: RefreshToken = {

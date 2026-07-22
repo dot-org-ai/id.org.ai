@@ -29,6 +29,7 @@ import { IdentityDO } from '../src/server/do/Identity'
 import type { IdentityStub } from '../src/server/do/Identity'
 import type { Env, Variables, AuthRPCResult, AuthUser, VerifyResult } from './types'
 import { parseCookieValue } from './utils/cookies'
+import { mcpResourceUri } from './utils/mcp-resource'
 import { authenticateRequest } from './middleware/auth'
 import {
   getStubForIdentity,
@@ -710,17 +711,28 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 // ── OAuth Protected Resource Metadata (RFC 9728) ──────────────────────────────
 // Tells MCP clients which authorization server protects this resource.
 
-app.get('/.well-known/oauth-protected-resource', (c) => {
+// The protected resource is the MCP endpoint (RFC 8707 audience), not the
+// origin as a whole — `resource` is the canonical `<origin>/mcp` URI so the
+// token audience-binding and the RFC 9728 discovery chain line up. The
+// authorization server is this origin's issuer.
+function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
   const xIssuer = c.req.header('X-Issuer')
   const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  const origin = new URL(c.req.url).origin
   return c.json({
-    resource: issuer,
+    resource: mcpResourceUri(origin),
     authorization_servers: [issuer],
     scopes_supported: ['openid', 'profile', 'email'],
     bearer_methods_supported: ['header'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
-})
+}
+
+// RFC 9728 default location (root well-known) — what api.qa and most MCP
+// clients resolve, and what the WWW-Authenticate challenge references.
+app.get('/.well-known/oauth-protected-resource', protectedResourceMetadata)
+// Path-scoped variant (RFC 9728 §3.1) — same document, keyed to the /mcp path.
+app.get('/.well-known/oauth-protected-resource/mcp', protectedResourceMetadata)
 
 // ── JWKS Endpoint (no auth required) ────────────────────────────────────────
 // Serves the public signing keys for JWT verification by other workers.
