@@ -18,15 +18,29 @@
  * `tenant_*` internally by this module — the rest of the codebase only
  * sees the Tenant vocabulary.
  *
- * Authentication (ax-e6b.21.3 — graduated): the AAP surface accepts BOTH
+ * Authentication (ax-e6b.21.3 — SECURITY FIX, see "host registration" below):
+ * the AAP surface accepts BOTH
  *   (a) a strict AAP **host+jwt** — an EdDSA/Ed25519 (or any JWKS-advertised
- *       alg) JWT signed by the host, VERIFIED against the host's advertised
- *       `jwks_uri` (SSRF-gated), fail-closed on bad/missing/expired/wrong-key;
- *       and
+ *       alg) JWT signed by the host, verified ONLY against a fixed TRUST
+ *       ANCHOR: either id.org.ai's OWN signing JWKS (self-issued, `iss` ===
+ *       this origin) or a jwks_uri/iss bound to the claimed `host_id` via a
+ *       prior AUTHENTICATED registration (POST /agent/host/register) —
+ *       NEVER a caller-supplied or token-`iss`-derived JWKS URL, and NEVER a
+ *       tenant named by an unverified token claim; fail-closed on
+ *       bad/missing/expired/wrong-key/unregistered-host; and
  *   (b) the existing id.org.ai session (`ses_*`) / API key (`oai_*`/`hly_sk_*`)
  *       path (unchanged — additive, not a replacement).
  * When a host+jwt is presented it MUST verify; a bad host+jwt never silently
  * falls back to session auth.
+ *
+ * SECURITY NOTE (ax-e6b.21.3): an earlier revision of this module verified a
+ * host+jwt / ID-JAG / SET against a JWKS the CALLER supplied (a header or a
+ * JWKS derived from the token's OWN `iss` claim) and then read the tenant
+ * from an unverified token claim (`host_id`/`tenant`/`sub`). That let anyone
+ * mint a fresh keypair, sign a token over it, and authenticate as ANY tenant
+ * — a critical cross-tenant auth bypass. The fix below removes every
+ * caller/token-supplied verification key and anchors trust to either
+ * id.org.ai's own JWKS or a pre-registered host record (see below).
  *
  * Capability execution (`/capability/list,describe,execute`) is NOT
  * implemented here — that pairs with FGA migration (id-lkj) which gives
@@ -38,7 +52,7 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import type { AgentMode } from '../../src/sdk/types'
 import { verifyJWT, decodeJWT, importPublicJwk, type JWK, type JWTHeader } from '../../src/sdk/oauth/jwt-verify'
-import { safeFetchJson } from '../utils/ssrf'
+import { safeFetchJson, assertPublicHttpsUrl } from '../utils/ssrf'
 import { getSigningKeyManager, getStubForIdentity } from '../middleware/tenant'
 
 /** ID-JAG token type (RFC 8693 token-exchange subject token) and JWT `typ`. */
@@ -72,15 +86,19 @@ app.get('/.well-known/agent-configuration', (c) => {
       subject_token_types_supported: [IDJAG_TOKEN_TYPE],
       conformance_notes: [
         'Default mode is claim-continuity: when a tenant gets claimed, agents stay active and become delegated. AAP-strict (autonomous → terminal claimed) requires `strict: true` on /agent/register.',
-        'Authentication: strict AAP host+jwt (EdDSA/Ed25519 or any JWKS-advertised alg, verified against the host jwks_uri, fail-closed) AND the existing id.org.ai session/API-key path are both accepted.',
+        'Authentication: strict AAP host+jwt (EdDSA/Ed25519 or any JWKS-advertised alg) is verified ONLY against a trust anchor — either self-issued (id.org.ai\'s own signing JWKS) or a host registered via an AUTHENTICATED POST /agent/host/register call (host_id bound to iss + jwks_uri); a caller-supplied or token-derived JWKS is NEVER trusted, and the tenant is ALWAYS the registered/self-issued tenant, never an unverified token claim. Third-party host+jwt from an UNREGISTERED host_id is rejected (401, fail-closed). The existing id.org.ai session/API-key path is also accepted (additive).',
         'approval_methods advertises the accurate native value `claim_by_commit` (a proof-of-control commit ceremony), not `device_authorization` — id.org.ai does not run a device_authorization ceremony.',
-        'identity_endpoint (POST /agent/identity) accepts + verifies an ID-JAG assertion; events_endpoint (POST /agent/events) accepts + verifies a SET (RFC 8417) for revocation. Revocation processing acts on session/agent subjects it can resolve; broader downstream propagation is phased.',
+        'identity_endpoint (POST /agent/identity) verifies an ID-JAG assertion ONLY against the same trust anchor (self-issued or a registered issuer) — never a caller-supplied jwks_uri; events_endpoint (POST /agent/events) verifies a SET (RFC 8417) the same way, and a registered issuer may only revoke subjects (sessions/agents) under ITS OWN registered tenant (cross-tenant SET subjects are rejected, 403). Revocation processing acts on session/agent subjects it can resolve; broader downstream propagation is phased.',
       ],
       endpoints: {
         register: '/agent/register',
         status: '/agent/status',
         revoke: '/agent/revoke',
         reactivate: '/agent/reactivate',
+        // Host-registration trust anchor onboarding (ses_/API-key AUTHENTICATED
+        // only): binds a host_id to {iss, jwks_uri} — the trust anchor a
+        // third-party host+jwt / ID-JAG / SET is verified against.
+        register_host: '/agent/host/register',
         // Agent-identity provider surface (auth.md). These RESOLVE — they are
         // not null stubs: identity verifies an ID-JAG, events verifies a SET,
         // claim points at the native claim-by-commit ceremony.
@@ -124,14 +142,65 @@ function requireTenant(c: Parameters<Parameters<typeof app.post>[1]>[0]) {
 // All three of the graduated flows (AAP host+jwt, ID-JAG resolution, SET
 // revocation) verify a caller-presented JWT. They share one crypto path:
 //   1. decode the header for alg/kid (reject `none`/unsupported at verifyJWT),
-//   2. obtain the verification key — either a key from the caller's SSRF-gated
-//      JWKS, or id.org.ai's OWN signing JWKS for self-issued assertions,
+//   2. obtain the verification key from a FIXED TRUST ANCHOR — id.org.ai's OWN
+//      signing JWKS for self-issued tokens (`iss` === this origin), or a
+//      PRE-REGISTERED host's jwks_uri (see "host registration" below) —
+//      NEVER a JWKS the caller/token names at verification time,
 //   3. delegate the signature + exp/nbf/iat/iss/aud checks to verifyJWT.
 // verifyJWT is the single source of cryptographic truth — this module never
 // re-implements a signature check.
 
 interface RemoteJwks {
   keys?: unknown[]
+}
+
+// ── host registration (trust anchor for third-party host+jwt / ID-JAG / SET) ─
+//
+// A THIRD-PARTY host+jwt / ID-JAG / SET (one whose `iss` is not id.org.ai
+// itself) is trusted ONLY when its issuer has a registration record,
+// established via POST /agent/host/register — an AUTHENTICATED
+// (ses_*/API-key) call. The record binds `host_id -> {iss, jwks_uri,
+// tenantId}`. Verification ALWAYS re-fetches the JWKS from the REGISTERED
+// `jwks_uri` (never from a caller-supplied header or a URL derived from the
+// token's own `iss`), and the tenant bound to a verified token is ALWAYS the
+// REGISTERED tenant — never a claim inside the token itself.
+//
+// This closes the ax-e6b.21.3 cross-tenant bypass: previously the caller
+// could supply ANY jwks_uri (or have it derived from their OWN token's
+// `iss`) and name ANY tenant via a `host_id`/`tenant`/`sub` claim — a valid
+// signature over an attacker-generated key then authenticated as any
+// tenant. Registration records live in `env.SESSIONS` (KV), keyed both by
+// `host_id` (host+jwt lookup) and by `iss` (ID-JAG/SET lookup, which don't
+// carry a `host_id` claim).
+interface HostRegistration {
+  hostId: string
+  tenantId: string
+  iss: string
+  jwksUri: string
+  registeredAt: number
+}
+
+const hostRegistrationKey = (hostId: string) => `aap:host:${hostId}`
+const hostRegistrationByIssKey = (iss: string) => `aap:host-iss:${iss}`
+
+async function lookupHostRegistrationById(env: Env, hostId: string): Promise<HostRegistration | null> {
+  const raw = await env.SESSIONS.get(hostRegistrationKey(hostId))
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as HostRegistration
+  } catch {
+    return null
+  }
+}
+
+async function lookupHostRegistrationByIss(env: Env, iss: string): Promise<HostRegistration | null> {
+  const raw = await env.SESSIONS.get(hostRegistrationByIssKey(iss))
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as HostRegistration
+  } catch {
+    return null
+  }
 }
 
 /** Pick the JWK matching the token header (by kid, else first importable). */
@@ -163,10 +232,23 @@ type AapAuth = { tenantId: string; principal: string; via: 'host+jwt' | 'session
 
 /**
  * AAP host+jwt: an EdDSA/Ed25519 (or any JWKS-advertised alg) JWT signed by the
- * host, presented in `X-AAP-Host-JWT`. The host's JWKS is taken from
- * `X-AAP-Host-JWKS-URI` when present, else derived from the token's `iss` as
- * `<iss>/.well-known/jwks.json`. The JWKS fetch is SSRF-gated. The token's
- * audience MUST be this AAP origin. Returns:
+ * host, presented in `X-AAP-Host-JWT`. Verified ONLY against a fixed trust
+ * anchor — NEVER a caller/token-supplied JWKS:
+ *   - self-issued (`iss` === this origin)  → verified against id.org.ai's OWN
+ *     signing JWKS; the tenant is taken from the (self-signed, therefore
+ *     trustworthy) `host_id`/`tenant`/`sub` claim.
+ *   - third-party (`iss` !== this origin)  → the claimed host_id (the
+ *     `host_id` claim, else `sub` — used ONLY as a registry lookup key, never
+ *     as the trusted identity) MUST resolve to a registration record (see
+ *     POST /agent/host/register below) whose `iss` matches the token's `iss`;
+ *     the verification key comes from the REGISTERED `jwks_uri` (re-fetched
+ *     here, SSRF-gated) — never from a request header or a URL derived from
+ *     the token itself — and the tenant is the REGISTERED tenant, NEVER a
+ *     token claim. An unregistered/unknown host_id is rejected (401,
+ *     fail-closed): an attacker who mints a fresh keypair over an arbitrary
+ *     `host_id` cannot pass verification because the registered jwks_uri
+ *     belongs to the REAL host, not the attacker.
+ * The token's audience MUST be this AAP origin. Returns:
  *   - null                → no host+jwt presented (caller may fall back)
  *   - { error }           → host+jwt WAS presented but failed (fail-closed)
  *   - AapAuth (host+jwt)  → verified
@@ -180,43 +262,63 @@ async function verifyHostJwt(c: any): Promise<AapAuth | { error: string } | null
   if (decoded.header.alg === 'none') return { error: 'unsigned host jwt rejected' }
 
   const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
-  let jwksUri = c.req.header('X-AAP-Host-JWKS-URI') ?? c.req.header('x-aap-host-jwks-uri')
-  if (!jwksUri && iss) {
-    try {
-      jwksUri = new URL('/.well-known/jwks.json', iss).toString()
-    } catch {
-      /* fall through to the missing-jwks error */
+  const selfOrigin = new URL(c.req.url).origin
+  const selfIssued = iss === selfOrigin
+
+  let key: CryptoKey | null
+  let tenantId: string | undefined
+  let trustedIss: string | undefined
+
+  if (selfIssued) {
+    key = await selectLocalKey(c.env, decoded.header)
+    if (!key) return { error: 'no matching key in id.org.ai signing jwks for self-issued host jwt' }
+    trustedIss = selfOrigin
+  } else {
+    const hostIdClaim =
+      (typeof decoded.payload.host_id === 'string' && decoded.payload.host_id) ||
+      (typeof decoded.payload.sub === 'string' && decoded.payload.sub) ||
+      undefined
+    if (!hostIdClaim) return { error: 'host jwt missing host_id/sub to resolve a registration' }
+
+    const reg = await lookupHostRegistrationById(c.env, hostIdClaim)
+    if (!reg) {
+      return { error: `unregistered host_id "${hostIdClaim}" — register via POST /agent/host/register first` }
     }
+    if (!iss || iss !== reg.iss) {
+      return { error: 'host jwt iss does not match the registered issuer for this host_id' }
+    }
+
+    let jwks: unknown
+    try {
+      jwks = await safeFetchJson(reg.jwksUri)
+    } catch (err: unknown) {
+      return { error: `registered host jwks fetch refused: ${errorMessage(err)}` }
+    }
+    key = await selectKeyFromJwks(jwks, decoded.header)
+    if (!key) return { error: 'no matching host key in the registered jwks' }
+    // The tenant is the REGISTERED tenant — fixed here, never overwritten by
+    // any claim inside the (as yet unverified-signature) token.
+    tenantId = reg.tenantId
+    trustedIss = reg.iss
   }
-  if (!jwksUri) return { error: 'no jwks_uri available to verify host jwt' }
 
-  let jwks: unknown
-  try {
-    jwks = await safeFetchJson(jwksUri)
-  } catch (err: unknown) {
-    return { error: `host jwks fetch refused: ${errorMessage(err)}` }
-  }
-
-  const key = await selectKeyFromJwks(jwks, decoded.header)
-  if (!key) return { error: 'no matching host key in jwks' }
-
-  const audience = new URL(c.req.url).origin
-  const result = await verifyJWT(jwt, {
-    publicKey: key,
-    ...(iss ? { issuer: iss } : {}),
-    audience,
-  })
+  const audience = selfOrigin
+  const result = await verifyJWT(jwt, { publicKey: key, issuer: trustedIss, audience })
   if (!result.valid) return { error: result.error }
 
   const sub = typeof result.payload.sub === 'string' ? result.payload.sub : undefined
   if (!sub) return { error: 'host jwt missing sub claim' }
 
-  // The host (tenant) is named by an explicit host claim when present, else by
-  // the verified subject.
-  const tenantId =
-    (typeof result.payload.host_id === 'string' && result.payload.host_id) ||
-    (typeof result.payload.tenant === 'string' && result.payload.tenant) ||
-    sub
+  if (selfIssued) {
+    // Self-issued: id.org.ai signed this token itself, so its own claims are
+    // trustworthy — same derivation as before the fix.
+    tenantId =
+      (typeof result.payload.host_id === 'string' && result.payload.host_id) ||
+      (typeof result.payload.tenant === 'string' && result.payload.tenant) ||
+      sub
+  }
+  if (!tenantId) return { error: 'unable to resolve tenant for host jwt' }
+
   return { tenantId, principal: sub, via: 'host+jwt' }
 }
 
@@ -246,6 +348,75 @@ async function authenticateAap(
   if (!t) return { ok: false, status: 401, message: 'Authentication required' }
   return { ok: true, auth: { tenantId: t.tenantId, principal: t.principal, via: 'session' } }
 }
+
+// ── /agent/host/register — host-registration trust anchor onboarding ────────
+//
+// Binds a `host_id` to `{iss, jwks_uri}` under the AUTHENTICATED caller's own
+// tenant. This binding is the trust anchor a THIRD-PARTY host+jwt / ID-JAG /
+// SET is verified against (see "host registration" above). Deliberately
+// authenticated via the EXISTING ses_/API-key path ONLY (`requireTenant`,
+// NOT `authenticateAap`) — a host+jwt can never be used to register itself
+// (or another host), which would otherwise let an unregistered caller
+// bootstrap its own trust anchor.
+app.post('/agent/host/register', async (c) => {
+  const tenant = requireTenant(c)
+  if (!tenant) return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required (ses_/API key)')
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    host_id?: string
+    iss?: string
+    jwks_uri?: string
+  }
+  const hostId = typeof body.host_id === 'string' ? body.host_id.trim() : ''
+  if (!hostId) return errorResponse(c, 400, ErrorCode.InvalidRequest, 'host_id is required')
+
+  let issUrl: URL
+  let jwksUrl: URL
+  try {
+    // `iss` is compared against the token's `iss` claim, never fetched — but
+    // requiring it to be a well-formed https origin keeps registrations
+    // canonical and comparable.
+    issUrl = assertPublicHttpsUrl(body.iss)
+  } catch (err: unknown) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, `iss: ${errorMessage(err)}`)
+  }
+  try {
+    // `jwks_uri` WILL be fetched (at verification time) — SSRF-gate it here,
+    // at registration time, so a private/loopback/metadata URL is never
+    // stored as a trust anchor in the first place.
+    jwksUrl = assertPublicHttpsUrl(body.jwks_uri)
+  } catch (err: unknown) {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, `jwks_uri: ${errorMessage(err)}`)
+  }
+  const iss = issUrl.toString().replace(/\/$/, '')
+  const jwksUri = jwksUrl.toString()
+
+  // Prevent hijacking an ALREADY-registered host_id/iss owned by a DIFFERENT
+  // tenant — re-registration is only an update for the OWNING tenant.
+  const existingById = await lookupHostRegistrationById(c.env, hostId)
+  if (existingById && existingById.tenantId !== tenant.tenantId) {
+    return errorResponse(c, 409, ErrorCode.Forbidden, 'host_id is already registered to a different tenant')
+  }
+  const existingByIss = await lookupHostRegistrationByIss(c.env, iss)
+  if (existingByIss && existingByIss.tenantId !== tenant.tenantId) {
+    return errorResponse(c, 409, ErrorCode.Forbidden, 'iss is already registered to a different tenant')
+  }
+
+  const record: HostRegistration = { hostId, tenantId: tenant.tenantId, iss, jwksUri, registeredAt: Date.now() }
+  await c.env.SESSIONS.put(hostRegistrationKey(hostId), JSON.stringify(record))
+  await c.env.SESSIONS.put(hostRegistrationByIssKey(iss), JSON.stringify(record))
+
+  return c.json(
+    {
+      host_id: record.hostId,
+      tenant_id: record.tenantId,
+      iss: record.iss,
+      jwks_uri: record.jwksUri,
+      registered_at: new Date(record.registeredAt).toISOString(),
+    },
+    201,
+  )
+})
 
 // ── /agent/register ───────────────────────────────────────────────────────
 //
@@ -449,7 +620,11 @@ app.get('/agent/identity', (c) => {
     endpoint: 'agent-identity',
     description: 'POST an ID-JAG assertion to resolve an agent identity.',
     method: 'POST',
-    request: { assertion: '<ID-JAG JWT>', jwks_uri: '<optional https JWKS to verify against>' },
+    // NOTE: `jwks_uri` is NOT an accepted request field — a verification key
+    // is never taken from the caller. See the trust-anchor doc on
+    // verifyHostJwt() above: self-issued (this origin's own JWKS) or a
+    // registered issuer (POST /agent/host/register) only.
+    request: { assertion: '<ID-JAG JWT>' },
     accepted_token_type: IDJAG_TOKEN_TYPE,
     accepted_assertion_typ: IDJAG_TYP,
     subject_token_types_supported: [IDJAG_TOKEN_TYPE],
@@ -459,7 +634,7 @@ app.get('/agent/identity', (c) => {
 
 app.post('/agent/identity', async (c) => {
   const origin = new URL(c.req.url).origin
-  const body = (await c.req.json().catch(() => ({}))) as { assertion?: string; jwks_uri?: string }
+  const body = (await c.req.json().catch(() => ({}))) as { assertion?: string }
   const assertion = typeof body.assertion === 'string' ? body.assertion : undefined
   if (!assertion) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'assertion (an ID-JAG JWT) is required')
@@ -480,25 +655,36 @@ app.post('/agent/identity', async (c) => {
     )
   }
 
-  // Verification key: a caller-advertised JWKS (SSRF-gated) or id.org.ai's own
-  // signing JWKS for a self-issued ID-JAG.
+  // Verification key: SAME trust anchor as verifyHostJwt() — id.org.ai's own
+  // signing JWKS for a self-issued ID-JAG (`iss` === this origin), or a
+  // PRE-REGISTERED issuer's jwks_uri. NEVER a caller-supplied jwks_uri (that
+  // was the ax-e6b.21.3 bypass: a caller could name its own verification key).
+  const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
   let key: CryptoKey | null
-  if (body.jwks_uri !== undefined) {
+  let trustedIss: string | undefined
+  if (iss === origin) {
+    key = await selectLocalKey(c.env, decoded.header)
+    trustedIss = origin
+  } else if (iss) {
+    const reg = await lookupHostRegistrationByIss(c.env, iss)
+    if (!reg) {
+      return errorResponse(c, 401, ErrorCode.InvalidToken, `unregistered issuer "${iss}" — ID-JAG rejected`)
+    }
     let jwks: unknown
     try {
-      jwks = await safeFetchJson(body.jwks_uri)
+      jwks = await safeFetchJson(reg.jwksUri)
     } catch (err: unknown) {
-      return errorResponse(c, 400, ErrorCode.InvalidRequest, `jwks_uri fetch refused: ${errorMessage(err)}`)
+      return errorResponse(c, 401, ErrorCode.InvalidToken, `registered issuer jwks fetch refused: ${errorMessage(err)}`)
     }
     key = await selectKeyFromJwks(jwks, decoded.header)
+    trustedIss = reg.iss
   } else {
-    key = await selectLocalKey(c.env, decoded.header)
+    return errorResponse(c, 401, ErrorCode.InvalidToken, 'ID-JAG missing iss claim')
   }
   if (!key) return errorResponse(c, 401, ErrorCode.InvalidToken, 'no verification key for ID-JAG assertion')
 
-  const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
   // The ID-JAG is presented TO this resource — its audience must be this origin.
-  const result = await verifyJWT(assertion, { publicKey: key, audience: origin, ...(iss ? { issuer: iss } : {}) })
+  const result = await verifyJWT(assertion, { publicKey: key, audience: origin, issuer: trustedIss })
   if (!result.valid) return errorResponse(c, 401, ErrorCode.InvalidToken, `ID-JAG verification failed: ${result.error}`)
 
   const sub = typeof result.payload.sub === 'string' ? result.payload.sub : undefined
@@ -523,13 +709,16 @@ app.post('/agent/identity', async (c) => {
 //
 // Accepts a SET (Security Event Token, RFC 8417 — a signed JWT with an `events`
 // claim) for REVOCATION and processes it (RFC 8935 push delivery: 202 on
-// accept, 400 on an invalid SET). The SET is verified (signature + typ +
-// `events` shape + audience) before any action; an invalid SET is never acted
-// on. Revocation acts idempotently on session/agent subjects it can resolve;
-// broader downstream propagation is phased (advertised in conformance_notes).
+// accept, 400/401/403 on an invalid/untrusted/cross-tenant SET). The SET is
+// verified (signature + typ + `events` shape + audience) against the SAME
+// trust anchor as verifyHostJwt()/`/agent/identity` (self-issued or a
+// registered issuer — NEVER a caller-supplied JWKS) before any action; a
+// verified-but-third-party SET may ONLY revoke subjects (sessions/agents)
+// that belong to the ISSUER'S OWN registered tenant — a cross-tenant subject
+// is rejected (403), never silently accepted.
 
-const SET_ERR = (c: any, err: string, description: string) =>
-  c.json({ err, description }, 400)
+const SET_ERR = (c: any, err: string, description: string, status: 400 | 401 | 403 = 400) =>
+  c.json({ err, description }, status)
 
 app.post('/agent/events', async (c) => {
   const origin = new URL(c.req.url).origin
@@ -558,48 +747,86 @@ app.post('/agent/events', async (c) => {
     return SET_ERR(c, 'invalid_request', 'SET is missing a valid `events` claim (RFC 8417)')
   }
 
-  // Verification key: header-advertised JWKS (SSRF-gated) or id.org.ai's own
-  // signing JWKS for a self-issued SET.
-  const remoteJwks = c.req.header('X-SET-JWKS-URI') ?? c.req.header('x-set-jwks-uri')
+  // Verification key: SAME trust anchor as verifyHostJwt()/`/agent/identity` —
+  // id.org.ai's own signing JWKS for a self-issued SET (`iss` === this
+  // origin), or a PRE-REGISTERED issuer's jwks_uri. NEVER a caller-supplied
+  // JWKS header (that was the ax-e6b.21.3 bypass — a forged SET at an
+  // attacker-advertised JWKS could trigger a revocation for any subject).
+  const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
+  const selfIssued = iss === origin
   let key: CryptoKey | null
-  if (remoteJwks) {
+  let trustedIss: string | undefined
+  let registeredTenantId: string | undefined // set ONLY for a registered (non-self) trust anchor
+  if (selfIssued) {
+    key = await selectLocalKey(c.env, decoded.header)
+    trustedIss = origin
+  } else if (iss) {
+    const reg = await lookupHostRegistrationByIss(c.env, iss)
+    if (!reg) return SET_ERR(c, 'invalid_key', `unregistered issuer "${iss}" — SET rejected`, 401)
     let jwks: unknown
     try {
-      jwks = await safeFetchJson(remoteJwks)
+      jwks = await safeFetchJson(reg.jwksUri)
     } catch (err: unknown) {
-      return SET_ERR(c, 'invalid_request', `SET jwks fetch refused: ${errorMessage(err)}`)
+      return SET_ERR(c, 'invalid_key', `registered issuer jwks fetch refused: ${errorMessage(err)}`, 401)
     }
     key = await selectKeyFromJwks(jwks, decoded.header)
+    trustedIss = reg.iss
+    registeredTenantId = reg.tenantId
   } else {
-    key = await selectLocalKey(c.env, decoded.header)
+    return SET_ERR(c, 'invalid_request', 'SET missing iss claim', 401)
   }
-  if (!key) return SET_ERR(c, 'invalid_key', 'no verification key for SET')
+  if (!key) return SET_ERR(c, 'invalid_key', 'no verification key for SET', 401)
 
-  const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
   // The SET is delivered TO this receiver — its audience must be this origin.
-  const result = await verifyJWT(token, { publicKey: key, audience: origin, ...(iss ? { issuer: iss } : {}) })
-  if (!result.valid) return SET_ERR(c, 'invalid_key', `SET verification failed: ${result.error}`)
+  const result = await verifyJWT(token, { publicKey: key, audience: origin, issuer: trustedIss })
+  if (!result.valid) return SET_ERR(c, 'invalid_key', `SET verification failed: ${result.error}`, 401)
 
   // Process revocation idempotently. Recognise a session/agent subject from the
-  // SET's `sub`/`sub_id` and act where we can resolve it; unknown subjects are a
-  // no-op (revocation is idempotent) but still yield 202 after verification.
+  // SET's `sub_id`, then AUTHORIZE it against the trust anchor's tenant before
+  // acting: a registered (third-party) issuer may only revoke subjects under
+  // ITS OWN registered tenant; a self-issued SET (id.org.ai's own key) may
+  // additionally declare an explicit `tenant`/`host_id` claim (trustworthy,
+  // since id.org.ai signed it) to scope an agent revocation. Unknown/
+  // unresolvable subjects are a safe no-op (still 202 after verification) —
+  // but a subject that resolves to a DIFFERENT tenant than the trust anchor is
+  // a hard 403, never a silent 202.
   const subId = decoded.payload.sub_id as { format?: string; agent_id?: string; session?: string } | undefined
-  const sub = typeof decoded.payload.sub === 'string' ? decoded.payload.sub : undefined
   const agentId = (subId && typeof subId.agent_id === 'string' && subId.agent_id) || undefined
   const sessionToken = (subId && typeof subId.session === 'string' && subId.session) || undefined
 
-  try {
-    if (sessionToken) {
-      // Revoke the session by deleting its KV binding.
-      await c.env.SESSIONS?.delete?.(`session:${sessionToken}`)
+  const selfIssuedClaimedTenant =
+    (typeof decoded.payload.tenant === 'string' && decoded.payload.tenant) ||
+    (typeof decoded.payload.host_id === 'string' && decoded.payload.host_id) ||
+    undefined
+  const actingTenantId = registeredTenantId ?? (selfIssued ? selfIssuedClaimedTenant : undefined)
+
+  if (agentId && actingTenantId) {
+    const stub = getStubForIdentity(c.env, actingTenantId)
+    const agent = await stub.getAgent(agentId).catch(() => null)
+    if (!agent) {
+      // A REGISTERED (non-self) trust anchor naming a subject outside its own
+      // tenant is a hard cross-tenant violation. A self-issued SET with an
+      // unresolved claimed tenant is treated as an unknown-subject no-op.
+      if (registeredTenantId) {
+        return SET_ERR(c, 'invalid_target', "SET subject agent is not registered under the issuer's tenant", 403)
+      }
+    } else {
+      await stub.revokeAgent?.(agentId, 'SET revocation event').catch(() => {
+        // Best-effort — the SET was cryptographically accepted; a downstream
+        // store hiccup does not un-accept the event.
+      })
     }
-    if (agentId) {
-      const stub = getStubForIdentity(c.env, agentId)
-      await stub.revokeAgent?.(agentId, 'SET revocation event')
+  }
+
+  if (sessionToken) {
+    if (registeredTenantId) {
+      const owner = await c.env.SESSIONS.get(`session:${sessionToken}`).catch(() => null)
+      if (owner && owner !== registeredTenantId) {
+        return SET_ERR(c, 'invalid_target', "SET subject session is not owned by the issuer's tenant", 403)
+      }
     }
-  } catch {
-    // Best-effort revocation — the SET was cryptographically accepted; a
-    // downstream store hiccup does not un-accept the event. Never leak details.
+    // Revoke the session by deleting its KV binding.
+    await c.env.SESSIONS?.delete?.(`session:${sessionToken}`).catch(() => {})
   }
 
   // RFC 8935 push delivery: 202 Accepted, empty body, on a validated SET.

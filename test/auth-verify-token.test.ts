@@ -28,6 +28,22 @@ beforeAll(async () => {
   jwks = await exportKeysToJWKS([key])
 })
 
+/** Decode a base64url string (no padding) into raw bytes. */
+function base64UrlToBytes(b64url: string): Uint8Array {
+  const padded = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(b64url.length + ((4 - (b64url.length % 4)) % 4), '=')
+  const bin = atob(padded)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+/** Encode raw bytes as base64url (no padding). */
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
 /** Mint an id.org.ai-issued JWT with the test signing key. */
 async function mint(
   claims: AccessTokenClaims,
@@ -91,9 +107,19 @@ describe('verifyToken (core primitive)', () => {
   it('rejects a token with a TAMPERED signature', async () => {
     const token = await mint({ sub: 'user_42' })
     const parts = token.split('.')
-    // Flip the last character of the signature segment.
-    const sig = parts[2]
-    const flipped = sig.slice(0, -1) + (sig.at(-1) === 'A' ? 'B' : 'A')
+    // Flip a bit in a MIDDLE byte of the (decoded) signature, then
+    // re-encode. Flipping only the LAST base64url character is flaky: an
+    // RSA signature's final byte-group carries trailing padding bits that
+    // some base64url decoders ignore, so a same-decoded-value flip (e.g.
+    // 'A' <-> 'B' when the meaningful bits are already 0) is sometimes a
+    // no-op and the "tampered" signature verifies anyway. Decoding, XORing a
+    // full byte in the middle of the buffer, and re-encoding always changes
+    // the bytes verifySignature() actually sees.
+    const sig = parts[2]!
+    const sigBytes = base64UrlToBytes(sig)
+    const mid = Math.floor(sigBytes.length / 2)
+    sigBytes[mid] = sigBytes[mid]! ^ 0xff
+    const flipped = bytesToBase64Url(sigBytes)
     const tampered = `${parts[0]}.${parts[1]}.${flipped}`
 
     const result = await verifyToken(tampered, { jwks, issuer: ISSUER })
@@ -209,8 +235,14 @@ describe('POST /auth/verify (HTTP wire surface)', () => {
   it('returns 401 for a TAMPERED signature', async () => {
     const token = await mint({ sub: 'user_42' })
     const parts = token.split('.')
-    const sig = parts[2]
-    const tampered = `${parts[0]}.${parts[1]}.${sig.slice(0, -1) + (sig.at(-1) === 'A' ? 'B' : 'A')}`
+    // Same deterministic-tamper fix as the core-primitive test above: flip a
+    // full MIDDLE byte after decoding, not the last base64url character
+    // (whose trailing padding bits some flips don't actually change).
+    const sig = parts[2]!
+    const sigBytes = base64UrlToBytes(sig)
+    const mid = Math.floor(sigBytes.length / 2)
+    sigBytes[mid] = sigBytes[mid]! ^ 0xff
+    const tampered = `${parts[0]}.${parts[1]}.${bytesToBase64Url(sigBytes)}`
     const res = await post({ token: tampered })
     expect(res.status).toBe(401)
     const json = (await res.json()) as { valid: boolean }
