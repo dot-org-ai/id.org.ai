@@ -195,6 +195,15 @@ export interface IdentityStub {
   ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
+  // AAP host-registration atomicity (ax-p18): atomically claims host_id ->
+  // tenantId. Callers route this through a DO instance dedicated to the
+  // host_id being claimed (see aapHostClaimShardKey in worker/routes/aap.ts)
+  // so the DO's input-gate serialization closes the check-then-put race on a
+  // brand-new host_id — the loser of a concurrent claim gets `claimed: false`
+  // and MUST be turned into a 409, never a silent overwrite. Re-claiming a
+  // host_id already owned by the SAME tenant is idempotent (`claimed: true`).
+  claimHostRegistration(input: { hostId: string; tenantId: string }): Promise<{ claimed: boolean }>
+
   // Agents (AAP-aligned, runtime actors under a Tenant)
   registerAgent(input: AgentRegistrationInput): Promise<{ success: boolean; agent?: Agent; error?: string }>
   getAgent(id: string): Promise<Agent | null>

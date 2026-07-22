@@ -105,6 +105,7 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
   // checkRateLimit()       → this.keyService.rateLimit         (Phase 5)
   // registerAgent / getAgent / listAgents / updateAgentStatus / revokeAgent
   //   reactivateAgent / touchAgent → this.agentService              (id-ax7)
+  // claimHostRegistration() → DO storage directly (cross-isolate CAS, ax-p18)
   // claim()                → direct (Phase 8)
   // getSession()           → this.sessionService              (Phase 6)
   // listSessions()         → this.sessionService              (Phase 6)
@@ -475,6 +476,44 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     throw new Error(`Unknown storage operation: ${op.op}`)
+  }
+
+  // ─── AAP Host Registration Claim (RPC) — ax-p18 ───────────────────────
+  //
+  // POST /agent/host/register (worker/routes/aap.ts) previously did a
+  // check-existing-then-put against KV with NO atomicity: two concurrent
+  // registrations of the SAME brand-new host_id (by two DIFFERENT tenants)
+  // could both observe "not registered yet" and both write — last write
+  // wins, silently handing the host_id to whichever request happened to
+  // finish last. That is a race ONLY on a never-before-registered host_id;
+  // an ALREADY-registered host_id is unaffected (that path is a hard 409,
+  // decided by comparing to a value that's already durably stored).
+  //
+  // The fix: route the claim through a Durable Object instance DEDICATED to
+  // this one host_id (the caller uses a shard key derived ONLY from
+  // host_id — see aapHostClaimShardKey in worker/routes/aap.ts — never the
+  // tenant, so both racing requests land on the SAME DO instance). Durable
+  // Objects serialize access to a single instance via automatic input/output
+  // gates around storage operations: as long as this method never calls
+  // `allowConcurrency`, the runtime will not start a second invocation's
+  // JS until the first invocation's storage.get/put has settled. That makes
+  // the read-then-write below atomic with respect to ANY other concurrent
+  // call naming the same host_id — the same pattern used elsewhere in this
+  // codebase (e.g. a scheduler DO singleton) purely for cross-isolate
+  // atomicity, not for its storage contents.
+  async claimHostRegistration(input: { hostId: string; tenantId: string }): Promise<{ claimed: boolean }> {
+    const key = `aap-host-claim:${input.hostId}`
+    const existing = await this.ctx.storage.get<{ tenantId: string; claimedAt: number }>(key)
+    if (existing && existing.tenantId !== input.tenantId) {
+      // Someone else (a different tenant) already holds this host_id — either
+      // a genuine prior registration, or the winner of a concurrent race.
+      // Either way, this caller loses: the route MUST turn this into a 409.
+      return { claimed: false }
+    }
+    // Absent (brand-new host_id — this call wins the race), or already
+    // claimed by the SAME tenant (idempotent re-registration/update).
+    await this.ctx.storage.put(key, { tenantId: input.tenantId, claimedAt: Date.now() })
+    return { claimed: true }
   }
 
   // ─── Agents (RPC) ────────────────────────────────────────────────────

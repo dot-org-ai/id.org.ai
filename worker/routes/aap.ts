@@ -183,6 +183,14 @@ interface HostRegistration {
 const hostRegistrationKey = (hostId: string) => `aap:host:${hostId}`
 const hostRegistrationByIssKey = (iss: string) => `aap:host-iss:${iss}`
 
+// ax-p18: shard key for the atomic host_id claim. Derived ONLY from host_id
+// (never the tenant) so that two DIFFERENT tenants racing to register the
+// SAME brand-new host_id both resolve to the SAME Durable Object instance —
+// that instance's input-gate serialization is what closes the race (see
+// IdentityDO#claimHostRegistration). This is a dedicated shard purely for
+// cross-isolate atomicity; it stores nothing but the claim itself.
+const aapHostClaimShardKey = (hostId: string) => `aap-host-claim-shard:${hostId}`
+
 async function lookupHostRegistrationById(env: Env, hostId: string): Promise<HostRegistration | null> {
   const raw = await env.SESSIONS.get(hostRegistrationKey(hostId))
   if (!raw) return null
@@ -391,15 +399,26 @@ app.post('/agent/host/register', async (c) => {
   const iss = issUrl.toString().replace(/\/$/, '')
   const jwksUri = jwksUrl.toString()
 
-  // Prevent hijacking an ALREADY-registered host_id/iss owned by a DIFFERENT
-  // tenant — re-registration is only an update for the OWNING tenant.
-  const existingById = await lookupHostRegistrationById(c.env, hostId)
-  if (existingById && existingById.tenantId !== tenant.tenantId) {
-    return errorResponse(c, 409, ErrorCode.Forbidden, 'host_id is already registered to a different tenant')
-  }
+  // Prevent hijacking an ALREADY-registered iss owned by a DIFFERENT tenant.
+  // (This is a plain KV read — the iss-collision race across DIFFERENT
+  // host_ids is not the race ax-p18 closes; that race is scoped to the
+  // host_id keyspace, see below.)
   const existingByIss = await lookupHostRegistrationByIss(c.env, iss)
   if (existingByIss && existingByIss.tenantId !== tenant.tenantId) {
     return errorResponse(c, 409, ErrorCode.Forbidden, 'iss is already registered to a different tenant')
+  }
+
+  // ax-p18: the host_id existence-check + claim MUST be atomic — a
+  // concurrent race on a BRAND-NEW (never-registered) host_id must not be
+  // last-write-wins between two different tenants. Route the claim through a
+  // Durable Object instance dedicated to THIS host_id (see
+  // aapHostClaimShardKey above); the DO's input-gate serialization decides
+  // the race, not this handler's own read+write. An ALREADY-registered
+  // host_id owned by a different tenant is unaffected — still a hard 409.
+  const claimStub = getStubForIdentity(c.env, aapHostClaimShardKey(hostId))
+  const claim = await claimStub.claimHostRegistration({ hostId, tenantId: tenant.tenantId })
+  if (!claim.claimed) {
+    return errorResponse(c, 409, ErrorCode.Forbidden, 'host_id is already registered to a different tenant')
   }
 
   const record: HostRegistration = { hostId, tenantId: tenant.tenantId, iss, jwksUri, registeredAt: Date.now() }
@@ -715,7 +734,11 @@ app.post('/agent/identity', async (c) => {
 // registered issuer — NEVER a caller-supplied JWKS) before any action; a
 // verified-but-third-party SET may ONLY revoke subjects (sessions/agents)
 // that belong to the ISSUER'S OWN registered tenant — a cross-tenant subject
-// is rejected (403), never silently accepted.
+// is rejected (403), never silently accepted. A self-issued SET is held to
+// the SAME ownership standard (ax-19o): it may only revoke a subject whose
+// ownership resolves to a tenant the SET's own claims name — a self-issued
+// SET with no resolvable tenant claim can establish ownership of nothing and
+// is a safe no-op, never a revocation.
 
 const SET_ERR = (c: any, err: string, description: string, status: 400 | 401 | 403 = 400) =>
   c.json({ err, description }, status)
@@ -819,14 +842,30 @@ app.post('/agent/events', async (c) => {
   }
 
   if (sessionToken) {
-    if (registeredTenantId) {
+    // ax-19o: ownership MUST be established and match the SET's authorized
+    // tenant (`actingTenantId`) before ANY revocation — for BOTH a
+    // registered third-party issuer AND a self-issued SET. Previously this
+    // check only ran `if (registeredTenantId)`, so a genuinely SELF-ISSUED
+    // SET (real id.org.ai signature) carrying NO tenant/host_id claim
+    // skipped ownership entirely and deleted the named session
+    // unconditionally. That requires possessing id.org.ai's own signing key
+    // (not externally exploitable today), but is closed here as
+    // future-proofing for when self-issuance of SETs exists: a self-issued
+    // SET with no resolvable tenant claim cannot establish ownership of ANY
+    // subject and MUST be a safe no-op — never delete a session whose
+    // ownership can't be verified against the SET's authority.
+    if (actingTenantId) {
       const owner = await c.env.SESSIONS.get(`session:${sessionToken}`).catch(() => null)
-      if (owner && owner !== registeredTenantId) {
+      if (owner && owner !== actingTenantId) {
         return SET_ERR(c, 'invalid_target', "SET subject session is not owned by the issuer's tenant", 403)
       }
+      // Revoke the session by deleting its KV binding (idempotent no-op if
+      // the session is already gone/unknown).
+      await c.env.SESSIONS?.delete?.(`session:${sessionToken}`).catch(() => {})
     }
-    // Revoke the session by deleting its KV binding.
-    await c.env.SESSIONS?.delete?.(`session:${sessionToken}`).catch(() => {})
+    // actingTenantId undefined => a self-issued SET with no resolvable
+    // tenant/host_id claim. Ownership cannot be established — safe no-op,
+    // the session is NEVER deleted on this path.
   }
 
   // RFC 8935 push delivery: 202 Accepted, empty body, on a validated SET.

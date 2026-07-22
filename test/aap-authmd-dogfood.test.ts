@@ -29,7 +29,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { SELF, fetchMock } from 'cloudflare:test'
+import { SELF, fetchMock, env } from 'cloudflare:test'
+import { getSigningKeyManager } from '../worker/middleware/tenant'
 
 const BASE = 'https://id.org.ai'
 const ORIGIN = 'https://id.org.ai'
@@ -120,6 +121,21 @@ let registeredTenantId: string
 let registeredSessionToken: string
 
 beforeAll(async () => {
+  // Prime id.org.ai's own signing-key manager (a module-level singleton, see
+  // getSigningKeyManager in worker/middleware/tenant.ts) with a REAL request
+  // as the FIRST thing this file does. This must happen before ANY other
+  // request that constructs-but-doesn't-load the manager (e.g. GET
+  // /.well-known/oauth-authorization-server via getOAuthProvider) — the
+  // vitest-pool-workers test runtime enforces per-request I/O isolation, so
+  // if the manager's OWN key-load were deferred to a later, DIFFERENT
+  // request than the one that first constructed it, that later load would
+  // reuse a DO stub captured by an earlier, already-completed request and
+  // crash ("Cannot perform I/O on behalf of a different request"). Loading
+  // it fully here, once, keeps every later read (getCurrentKey/getJWKS) a
+  // pure in-memory hit — safe to call from ANY later request or even
+  // directly from test code (see ax-19o below).
+  await SELF.fetch(`${BASE}/.well-known/jwks.json`)
+
   hostKey = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair
   hostJwkPub = await crypto.subtle.exportKey('jwk', hostKey.publicKey)
   hostJwkPub.kid = 'host-ed25519-1'
@@ -358,6 +374,56 @@ describe('dogfood: POST /agent/host/register onboards a trust anchor', () => {
       jwks_uri: JWKS_URL,
     })
     expect(res.status).toBe(409)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3b. ax-p18 — POST /agent/host/register is atomic under a concurrent race
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ax-p18: POST /agent/host/register closes the brand-new host_id race', () => {
+  it('two concurrent registrations of the SAME brand-new host_id -> exactly one 201, one 409 (never two 201s)', async () => {
+    const [provA, provB] = await Promise.all([provision(), provision()])
+    const hostId = `race-host-${crypto.randomUUID()}`
+
+    // Fire both registrations concurrently — different tenants, different
+    // iss (so the iss-uniqueness check can't be what decides this), racing
+    // for the SAME brand-new host_id.
+    const [resA, resB] = await Promise.all([
+      registerHost(provA.sessionToken, { host_id: hostId, iss: 'https://race-a.example', jwks_uri: JWKS_URL }),
+      registerHost(provB.sessionToken, { host_id: hostId, iss: 'https://race-b.example', jwks_uri: JWKS_URL }),
+    ])
+
+    const statuses = [resA.status, resB.status].sort((x, y) => x - y)
+    // Exactly one winner (201) and one loser (409) — never 201/201 (the
+    // pre-fix last-write-wins race) and never 409/409 (both should never be
+    // rejected for a host_id that was never previously registered).
+    expect(statuses).toEqual([201, 409])
+
+    // The loser's iss must NOT have clobbered the winner's registration: the
+    // registered host_id resolves to exactly one iss/tenant afterward.
+    const winner = resA.status === 201 ? await resA.json() : await resB.json()
+    const w = winner as { host_id: string; tenant_id: string; iss: string }
+    expect(w.host_id).toBe(hostId)
+    expect([provA.identityId, provB.identityId]).toContain(w.tenant_id)
+  })
+
+  it('already-registered by a different tenant is still 409 after the CAS refactor (unchanged)', async () => {
+    const otherProv = await provision()
+    const res = await registerHost(otherProv.sessionToken, {
+      host_id: REGISTERED_HOST_ID, // registered to `registeredTenantId` in beforeAll
+      iss: 'https://yet-another-hijack-attempt.example',
+      jwks_uri: JWKS_URL,
+    })
+    expect(res.status).toBe(409)
+  })
+
+  it('the SAME tenant re-registering its OWN host_id is idempotent (still succeeds, not 409)', async () => {
+    const res = await registerHost(registeredSessionToken, {
+      host_id: REGISTERED_HOST_ID,
+      iss: ISSUER,
+      jwks_uri: JWKS_URL,
+    })
+    expect(res.status).toBe(201)
   })
 })
 
@@ -689,5 +755,102 @@ describe('dogfood: /agent/events accepts a SET only from a trust anchor, tenant-
     })
     const status = (await statusRes.json()) as { status: string }
     expect(status.status).toBe('revoked')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. ax-19o — self-issued SET session ownership enforcement
+// ─────────────────────────────────────────────────────────────────────────────
+describe('ax-19o: a self-issued SET must resolve ownership before revoking a session', () => {
+  /**
+   * Mints a GENUINELY self-issued SET — signed with id.org.ai's OWN
+   * production signing key. `getSigningKeyManager` is a module-level
+   * singleton cache (worker/middleware/tenant.ts) that this SUITE's
+   * top-of-file `beforeAll` already fully warmed via a real request (see the
+   * comment there for why priming must happen exactly once, first). Calling
+   * it directly here (SELF and the test share one isolate) returns the EXACT
+   * SAME SigningKeyManager instance the worker's `selectLocalKey()` verifies
+   * self-issued tokens against — a pure in-memory read at this point, and
+   * exercises the REAL `selfIssued` branch of POST /agent/events
+   * verification — the one that, pre-fix, skipped session ownership
+   * entirely.
+   */
+  async function getSelfIssuedKey() {
+    const manager = getSigningKeyManager(env as any)
+    return manager.getCurrentKey()
+  }
+
+  async function mintSelfIssuedSet(overrides: Record<string, unknown> = {}) {
+    const key = await getSelfIssuedKey()
+    return signJwt({
+      privateKey: key.privateKey,
+      alg: 'RS256',
+      kid: key.kid,
+      typ: SET_TYP,
+      payload: {
+        iss: ORIGIN,
+        aud: ORIGIN,
+        iat: now(),
+        jti: `self-set-${Math.random().toString(36).slice(2)}`,
+        events: { 'https://id.org.ai/secevent/session-revoked': { reason: 'test' } },
+        ...overrides,
+      },
+    })
+  }
+
+  const postSet = (set: string) =>
+    SELF.fetch(`${BASE}/agent/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/secevent+jwt' },
+      body: set,
+    })
+
+  it('a self-issued SET carrying a MATCHING tenant claim CAN revoke a session it genuinely owns (202, session deleted)', async () => {
+    const prov = await provision()
+    const before = await env.SESSIONS.get(`session:${prov.sessionToken}`)
+    expect(before).toBe(prov.identityId)
+
+    const set = await mintSelfIssuedSet({
+      tenant: prov.identityId,
+      sub_id: { format: 'complex', session: prov.sessionToken },
+    })
+    const res = await postSet(set)
+    expect(res.status).toBe(202)
+
+    const after = await env.SESSIONS.get(`session:${prov.sessionToken}`)
+    expect(after).toBeNull()
+  })
+
+  it('BYPASS CLOSED: a self-issued SET with NO resolvable tenant claim cannot establish ownership — safe no-op, session is NEVER deleted', async () => {
+    const prov = await provision()
+    const before = await env.SESSIONS.get(`session:${prov.sessionToken}`)
+    expect(before).toBe(prov.identityId)
+
+    // Genuinely self-issued (real id.org.ai signature) but NO tenant/host_id
+    // claim at all — exactly the pre-fix gap: ownership of the named session
+    // cannot be resolved, so this MUST be a no-op, never a deletion.
+    const set = await mintSelfIssuedSet({
+      sub_id: { format: 'complex', session: prov.sessionToken },
+    })
+    const res = await postSet(set)
+    expect(res.status).toBe(202) // the SET itself is still validly signed and accepted
+
+    const after = await env.SESSIONS.get(`session:${prov.sessionToken}`)
+    expect(after).toBe(prov.identityId) // session UNCHANGED — never deleted
+  })
+
+  it('a self-issued SET with a MISMATCHED tenant claim is rejected (403), session is NEVER deleted', async () => {
+    const provA = await provision()
+    const provB = await provision()
+
+    const set = await mintSelfIssuedSet({
+      tenant: provB.identityId, // does NOT own provA's session
+      sub_id: { format: 'complex', session: provA.sessionToken },
+    })
+    const res = await postSet(set)
+    expect(res.status).toBe(403)
+
+    const after = await env.SESSIONS.get(`session:${provA.sessionToken}`)
+    expect(after).toBe(provA.identityId) // session UNCHANGED
   })
 })
