@@ -72,7 +72,7 @@ describe('SPIKE: anon-provision -> agent-attest -> durable handoff (real routes)
     expect(prov.identityId).toBeTruthy()
     expect(prov.level).toBe(1)
     expect(prov.limits.ttlHours).toBe(24) // ses_ session lifetime (86_400_000 ms in DO)
-    expect(prov.upgrade.action).toBe('claim') // clm_ is the L2 durability gate (30-day KV TTL)
+    expect(prov.upgrade.action).toBe('claim') // clm_ is the L1->L2 trust/GitHub-link upgrade, NOT a durability gate; the 30d figure is only the clm_ KV token's own redemption window
 
     // ── HOP 2 — Ed25519 keypair (Web Crypto) ─────────────────────────────
     const { publicKeyRawB64, publicKeyBytes } = await generateEd25519()

@@ -10,7 +10,7 @@
 
 **A cold-anonymous caller can create a durable, attested, active agent record in TWO network hops — `POST /api/provision` then `POST /agent/register` — using only the `ses_` session token from provision. The `ses_` token DOES satisfy `requireTenant`; a provisioned-but-unclaimed principal already IS a level-1 tenant.**
 
-The `clm_` claim token is **not** a request credential (presenting it as a bearer 401s). It is the **durability gate**: the L1 tenant (and the agent inside it) is ephemeral — a 24h session and a freeze-with-30-day-preservation window — until the `clm_` is redeemed via claim-by-commit (GitHub OIDC -> level 2). **Registration is cheap and open; durable retention is what's gated.**
+The `clm_` claim token is **not** a request credential (presenting it as a bearer 401s). It is **not a durability gate either** — verified against the code (see "Durability model" below): the agent record written by `/agent/register` is **permanent DO storage from the moment of registration**, with no TTL and no reaper. `clm_` redemption only raises identity level 1->2 and links a GitHub account — a trust/capability upgrade, not a retention control. **Registration is cheap, open, AND already durable; nothing further gates retention today.**
 
 ## Actual minimal hop sequence (observed, real routes)
 
@@ -22,7 +22,7 @@ COLD ANON (no credentials)
      │                identityId  = 5e552e3a-76bf-497c-b3f1-1939e8b7772b   (UUID; DO shard key)
      │                tenantId    = anon_xxxxxxxx                          (display name)
      │                sessionToken= ses_…   ← the request credential        (lifetime 24h)
-     │                claimToken  = clm_…   ← the durability gate           (lifetime 30d)
+     │                claimToken  = clm_…   ← trust upgrade (L1->L2 + GitHub link), NOT a durability gate (lifetime 30d)
      │                level = 1, limits {maxEntities:1000, ttlHours:24, maxRequestsPerMinute:100}
      │                upgrade {nextLevel:2, action:"claim", url:/claim/clm_…}
      ▼
@@ -54,12 +54,25 @@ COLD ANON (no credentials)
 | --- | --- | --- | --- |
 | Session token | `ses_` | **24h** (`86_400_000 ms`) | `IdentityDO.provisionAnonymous` -> `sessionService.create(id, 1, 86_400_000)`; KV `session:<ses_>` TTL `86_400 s` |
 | Claim token | `clm_` | **30d** (`2_592_000 s`) | KV `claim:<clm_>` TTL in `worker/routes/claim.ts` |
-| Frozen-tenant data preservation | — | **30d** after freeze | `IdentityDO.freezeIdentity` -> `frozenAt + 30d` |
+| Frozen-tenant data preservation | — | **30d** after freeze | `IdentityDO.freezeIdentity` -> `frozenAt + 30d`. **Freeze itself is never automatic** — its only caller is the auth-gated `POST /api/freeze` (reason `'user-initiated'`). No scheduled job, alarm, or expiry path ever triggers it. |
 | Agent `sessionTtlMs` (default) | — | 24h | `agents/types.ts DEFAULT_SESSION_TTL_MS` |
 | Agent `maxLifetimeMs` (default) | — | 30d | `DEFAULT_MAX_LIFETIME_MS` |
 | Agent `absoluteLifetimeMs` (default) | — | 365d | `DEFAULT_ABSOLUTE_LIFETIME_MS` |
 
 The HTTP seam only directly exposes `limits.ttlHours = 24` and `upgrade.action = "claim"`; the exact ms lifetimes are the DO/service constants above.
+
+## Durability model (verified in code — corrects an earlier draft of this doc)
+
+**An agent record is durable from `/agent/register`, full stop. `clm_` redemption does not gate retention — no such gate exists today.** Verified directly against the code:
+
+- **No reaper exists.** The only `scheduled()` handler (`worker/index.ts` ~L845) does signing-key rotation on a 90-day cadence. It does nothing else — no sweep of unclaimed tenants/agents.
+- **`freezeIdentity` is never automatic.** Its only caller is the auth-gated `POST /api/freeze` (`worker/routes/claim.ts` ~L235, 401s without a session), which calls `identityService.freeze(id, 'user-initiated')` (`Identity.ts` ~L355). Nothing invokes it on a timer, on expiry, or on session end.
+- **No alarms are set.** `grep -rn setAlarm src/ worker/` (excluding `.d.ts`) returns zero matches. `IdentityDO` never arms a Durable Object alarm, so there is no DO-native expiry mechanism either.
+- **`registerAgent` writes permanent storage with no TTL.** `agents/service.ts` `register()` (~L142-172) writes three keys with plain `storage.put` and no expiration: `agent:<id>` (the record), `agent-by-pubkey:<key>` (auth index), and `agent-by-tenant:<tenantId>` (an appended array, also unbounded). The `sessionTtlMs` / `maxLifetimeMs` / `absoluteLifetimeMs` fields stored on the agent record are informational — nothing reads or enforces them automatically; the only place `absoluteLifetimeMs` is even checked is inside the *manual* `reactivate()` call path, and even that never deletes storage, only flips `status`.
+- **Only the `ses_` session credential and its KV mappings actually expire.** `session:<ses_>` and `claim:<clm_>` are KV entries with `expirationTtl` (24h and 30d respectively, `claim.ts` ~L57-59) — that TTL governs the *credential*, not the underlying DO-stored identity, agent row, or pubkey index, all of which persist indefinitely regardless of whether `clm_` is ever redeemed.
+- **`clm_` redemption changes trust, not retention.** `Identity.ts` claim handling (~L258-279) raises `level` 1->2 and calls `linkAccount` for the GitHub identity. It does not touch storage TTL, does not delete anything, and has no interaction with the agent record's lifetime.
+
+**Net effect:** the moment `POST /agent/register` returns `201`, the agent row + its two index entries are permanent DO storage — claimed or not. There is currently no code path that ever removes them.
 
 ## Error shapes (observed)
 
@@ -77,29 +90,35 @@ The HTTP seam only directly exposes `limits.ttlHours = 24` and `upgrade.action =
 **Overall friction is LOW: 2 calls, no human, no WorkOS, no GitHub — to a live attested agent.** The friction is not in *reaching* an agent; it's in three non-obvious semantics:
 
 1. **`ses_` is the credential; `clm_` is not.** Provision hands back two tokens. The obvious-looking "claim" token 401s if used as a request bearer. A caller must know to authenticate with `ses_` and treat `clm_` purely as a redemption artifact. **Non-obvious; the single biggest confusion risk.**
-2. **Registration success ≠ durability.** `/agent/register` returns `201 status:"active"` for a tenant whose session expires in 24h and whose data freezes thereafter. Nothing at the register seam signals "this agent is ephemeral until you redeem `clm_`." A consumer (page.ax) that wants *durable* retention can get a green 201 and still lose the agent after the freeze/reap window. **Non-obvious; the correctness trap.**
+2. **~~Registration success ≠ durability~~ — CORRECTED: registration success = durability, and that's the actual risk.** (An earlier draft of this doc claimed the opposite — that `201` was ephemeral until `clm_` redemption. That was fabricated; see "Durability model" above.) `/agent/register` returns `201 status:"active"` and that record is **permanent DO storage immediately**, with no TTL and no reaper, whether or not `clm_` is ever redeemed. Nothing at the register seam signals this either — a consumer (page.ax) that wants durable retention gets exactly that, unconditionally, which is good for page.ax's ergonomics but means there is currently no lever to make retention conditional on claim/payment. **Non-obvious; the actual trap is the opposite of what was previously written here — silent unconditional durability, not silent ephemerality.**
 3. **`mode` gates immediate usability.** `autonomous` -> `active` at once; `delegated` -> `pending` (awaits approval). A self-attesting cold-anon agent must register `autonomous` to be usable without an approver. **Non-obvious.**
 
-There is **no 401 wall on the durable path at registration** — the wall (a proof-of-control gate) is deliberately at *durability* (claim-by-commit), not at *creation*.
+There is **no 401 wall on the durable path at registration, and — contrary to an earlier draft of this doc — there is no wall anywhere else either.** `clm_`/claim-by-commit is a proof-of-control gate on *trust level* (L1 -> L2 + GitHub link), not on *durability*. Durability is granted unconditionally at `/agent/register`.
 
 ## Recommendation for ax-e6b.17.1
 
-**Yes — a single anonymous `/agent/register-with-provision` endpoint is warranted, as an ergonomic wrapper, provided it is gated as below. It must not grant anything the existing two-hop path doesn't already grant.**
+**⚠️ REVISED — an earlier draft of this section relied on a durability gate (`clm_` redemption / freeze-and-reap) that does not exist in the code. The recommendation below is grounded in the actual, verified behavior: registration is durable, unconditionally, today.**
 
-Rationale: the two-hop path already lets an unauthenticated caller create an attested autonomous agent, so a combined endpoint **opens no new capability** — it removes one round-trip and eliminates the `ses_`-vs-`clm_` confusion (friction #1) and the "success ≠ durable" trap (friction #2, by letting the endpoint document/return the durability posture in one place). page.ax's cold-anon durable-retention flow is exactly the caller that wants this.
+**A single anonymous `/agent/register-with-provision` endpoint is still reasonable ergonomics** — the existing two-hop path already lets an unauthenticated caller create a durable, attested, active agent, so a combined endpoint opens **no new capability**; it just removes a round-trip and fixes the `ses_`-vs-`clm_` confusion (friction #1). But because durability is *not* gated today, **the abuse mitigations below are REQUIRED to ship alongside it, not optional hardening**:
 
-**It is security-sound only if all of the following hold:**
-
-1. **Keep `clm_` redemption as the durability gate — do NOT make anonymous registration durable.** An anon-provisioned agent stays **L1 / ephemeral** (24h session, 30-day freeze) until the `clm_` is redeemed via claim-by-commit (verifiable GitHub identity -> L2). This is the anti-abuse economics: spam agents evaporate on freeze/reap; only claimed ones persist. The expensive, durable resource stays behind a proof-of-control gate; the cheap, ephemeral one is open. **Removing this gate as a "shortcut" is the one thing not to do.**
-2. **Rate-limit the unauthenticated mint by IP.** The real abuse surface is **provision spam**: each `POST /api/provision` mints a new DO shard, and a combined endpoint would *also* write an agent row + a `agent-by-pubkey:` index entry per call — write-amplified, unauthenticated resource creation. The primary control is per-IP rate-limiting on the unauthenticated endpoint(s). (See "Bug candidate" below — provision currently appears unthrottled.)
-3. **Bind the Ed25519 public key at creation and derive the tenant from the freshly-provisioned shard.** The endpoint must NOT accept a caller-supplied `identityId`/`tenantId` (that would be a cross-tenant agent-injection vector) — it derives the tenant from the shard it just minted, and it must attest the supplied `public_key`.
+1. **Per-IP rate-limit on the unauthenticated mint — currently missing.** `/api/provision` (and by extension any combined register-with-provision endpoint) has no per-IP throttle. This is a real gap today, independent of any new endpoint — see bug candidate (i) below.
+2. **A genuine retention control must exist before "claim = durability" can be treated as the security model — it currently doesn't.** Pick one and build it explicitly, don't assume it:
+   - **Option A — add a reaper/TTL for unclaimed agents/tenants.** Arm a DO alarm (or an actual `scheduled()` sweep) that reaps `agent:`/`agent-by-pubkey:`/`agent-by-tenant:` entries and the identity record for tenants that never redeem `clm_` within a bounded window. This is what would make the "ephemeral until claimed" model real — today it is aspirational only.
+   - **Option B — explicitly accept that anon-registered agents are permanent**, and instead bound abuse purely by mint rate (hard per-IP limits, possibly CAPTCHA/PoW at `/api/provision`) plus operational cleanup tooling. If this option is chosen, say so explicitly in any downstream design (page.ax) rather than implying a claim-gated retention model that isn't there.
+3. **Bind the Ed25519 public key at creation and derive the tenant from the freshly-provisioned shard.** The endpoint must NOT accept a caller-supplied `identityId`/`tenantId` (cross-tenant agent-injection vector) — it derives the tenant from the shard it just minted, and it must attest the supplied `public_key`.
 4. **No privilege escalation over the two-hop path.** Same L1 level, same `autonomous -> active` semantics, same capability defaults. A convenience wrapper, not a new trust level.
 
-**Security tradeoff, stated plainly:** letting an anon-provisioned principal register an agent does **not** widen the abuse surface beyond what `/api/provision` already exposes, *because durability is separately gated by `clm_`*. The residual risk is write-amplified provision spam (unbounded DO shards + agent rows + pubkey-index entries) from an unauthenticated endpoint. Mitigate with (a) per-IP rate-limiting on the unauthenticated mint and (b) keeping freeze/reap for unclaimed tenants so ephemeral spam self-collects. Do not weaken the `clm_` durability gate to save a step.
+**Flag clearly for page.ax:** if page.ax's design wants "durable retention gated by claim/payment," **that gating must be built — it does not exist today.** Registration alone is durable right now; `clm_` redemption only changes trust level (L1->L2) and links GitHub, it does not change what gets retained or for how long. Any page.ax design that assumes unclaimed agents "expire" or "get reaped" is assuming a mechanism that is not present in this codebase as of this spike.
 
-## Bug candidate to RECORD for ax-e6b.17.1 (NOT fixed in this spike)
+**Security tradeoff, stated plainly — corrected:** because there is no reaper and no per-IP rate-limit, **every unauthenticated `POST /api/provision` + `POST /agent/register` call creates permanent storage (a new DO shard + agent row + two index keys) that is never reclaimed.** This is unbounded permanent-storage amplification from an anonymous endpoint — a real, currently-unmitigated abuse surface, not a self-collecting one. A combined register-with-provision endpoint doesn't make this worse in kind (the two-hop path already has the same exposure), but it does make it one call cheaper, which raises the urgency of closing bug candidates (i) and (ii) below before shipping it.
 
-`POST /api/provision` (`worker/routes/claim.ts`) has **no per-IP rate-limit guard** — `cf-connecting-ip` is read only to *log* an audit event, not to throttle. The `limits.maxRequestsPerMinute: 100` in the response is a *post-provision, per-tenant* limit, not a guard on the unauthenticated mint itself. This is the abuse vector any anon-register work must close first. **Recorded here only — deliberately not patched in this spike (do-not-touch-production-auth-routes constraint).**
+## Bug candidates to RECORD for ax-e6b.17.1 (NOT fixed in this spike)
+
+(i) `POST /api/provision` (`worker/routes/claim.ts`) has **no per-IP rate-limit guard** — `cf-connecting-ip` is read only to *log* an audit event, not to throttle. The `limits.maxRequestsPerMinute: 100` in the response is a *post-provision, per-tenant* limit, not a guard on the unauthenticated mint itself.
+
+(ii) **No reaper/TTL exists for unclaimed agent records**, which — combined with (i) — means unbounded permanent storage (DO shards + `agent:`/`agent-by-pubkey:`/`agent-by-tenant:` entries) can be created from a single anonymous endpoint with no cleanup path. This is the abuse vector any anon-register work must close first.
+
+**Recorded here only — deliberately not patched in this spike (do-not-touch-production-auth-routes constraint).**
 
 ## Verification
 
