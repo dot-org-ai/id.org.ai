@@ -854,9 +854,36 @@ app.all('*', async (c) => {
 // are invalidated mid-flight.
 const SIGNING_KEY_ROTATION_MS = 90 * 24 * 3600 * 1000
 
+// Synthetic auth self-check (monitored since 2026-07-23). The "*/5 * * * *"
+// cron probes the public auth surface; any non-200 (or fetch failure) emits a
+// structured console.error line with the stable AUTH_SYNTHETIC_FAIL_PREFIX so
+// Cloudflare observability alerts can filter on it.
+const AUTH_SYNTHETIC_FAIL_PREFIX = '[AUTH-SYNTHETIC-FAIL]'
+const AUTH_SYNTHETIC_CRON = '*/5 * * * *'
+const AUTH_SYNTHETIC_URLS = ['https://id.org.ai/.well-known/jwks.json', 'https://id.org.ai/login'] as const
+
+async function runSyntheticAuthCheck(): Promise<void> {
+  for (const url of AUTH_SYNTHETIC_URLS) {
+    try {
+      const res = await fetch(url, { redirect: 'manual' })
+      if (res.status !== 200) {
+        console.error(`${AUTH_SYNTHETIC_FAIL_PREFIX} ${JSON.stringify({ url, status: res.status, at: new Date().toISOString() })}`)
+      }
+    } catch (err) {
+      console.error(`${AUTH_SYNTHETIC_FAIL_PREFIX} ${JSON.stringify({ url, error: errorMessage(err), at: new Date().toISOString() })}`)
+    }
+  }
+}
+
 export default {
   fetch: app.fetch.bind(app),
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Every-5-minutes cron: synthetic auth self-check only.
+    if (event.cron === AUTH_SYNTHETIC_CRON) {
+      ctx.waitUntil(runSyntheticAuthCheck())
+      return
+    }
+    // Daily cron: signing-key rotation check.
     ctx.waitUntil(
       (async () => {
         try {

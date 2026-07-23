@@ -76,10 +76,19 @@
 
   "tail_consumers": [{ "service": "tail" }],
 
-  // Daily cron fires the scheduled() handler, which rotates the signing key
-  // if it's older than 90 days. See worker/index.ts SIGNING_KEY_ROTATION_MS.
+  // Daily cron (0 3 * * *) fires the scheduled() handler, which rotates the
+  // signing key if it's older than 90 days (worker/index.ts SIGNING_KEY_ROTATION_MS).
+  // Every-5-minutes cron (*/5 * * * *) runs the synthetic auth self-check:
+  // probes https://id.org.ai/.well-known/jwks.json and /login, logging
+  // [AUTH-SYNTHETIC-FAIL] on any non-200 (worker/index.ts runSyntheticAuthCheck).
   "triggers": {
-    "crons": ["0 3 * * *"],
+    "crons": ["0 3 * * *", "*/5 * * * *"],
+  },
+
+  // Persist worker logs (incl. [AUTH-SYNTHETIC-FAIL] lines) in Cloudflare
+  // Workers Logs so alerts/queries can filter on them.
+  "observability": {
+    "enabled": true,
   },
 
   // Secrets (set via wrangler secret):
