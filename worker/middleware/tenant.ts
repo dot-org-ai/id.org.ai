@@ -25,16 +25,29 @@ export function getStubForIdentity(env: Env, identityId: string): IdentityStub {
 /**
  * Module-level cache for the SigningKeyManager.
  *
- * Workers run one env per isolate, so a single manager is safe to reuse across
- * requests. This avoids rebuilding the manager (and re-hitting the DO for keys)
- * on every JWT verify / JWKS read / token sign.
+ * The manager itself is safe to cache across requests — its state is plain
+ * data + CryptoKeys. The Durable Object STUB is not: DO stubs are
+ * request-scoped I/O objects in the Workers runtime, and a stub captured in
+ * one request's context throws
+ *   "Cannot perform I/O on behalf of a different request (I/O type: OutgoingFactory)"
+ * when any later request calls through it. Caching the stub in the storageOp
+ * closure broke every signing/JWKS operation after the first request in an
+ * isolate (500 on /api/callback login completion, /.well-known/jwks.json,
+ * /oauth/token issuance, …).
+ *
+ * So: cache the manager (preserving the in-memory key cache that avoids
+ * re-hitting the DO on every sign/verify), but create a FRESH stub from the
+ * current request's env for each storage op. `signingKeyManagerEnv` is
+ * re-pointed at the caller's env on every call so the closure never uses a
+ * stale request's bindings.
  */
 let cachedSigningKeyManager: SigningKeyManager | null = null
+let signingKeyManagerEnv: Env | null = null
 
 export function getSigningKeyManager(env: Env): SigningKeyManager {
+  signingKeyManagerEnv = env
   if (!cachedSigningKeyManager) {
-    const oauthStub = getStubForIdentity(env, 'oauth')
-    cachedSigningKeyManager = new SigningKeyManager((op) => oauthStub.oauthStorageOp(op))
+    cachedSigningKeyManager = new SigningKeyManager((op) => getStubForIdentity(signingKeyManagerEnv!, 'oauth').oauthStorageOp(op))
   }
   return cachedSigningKeyManager
 }

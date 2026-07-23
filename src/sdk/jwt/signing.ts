@@ -313,7 +313,10 @@ const SIGNING_KEYS_STORAGE_KEY = 'signing-keys'
  * Manages signing keys with DO storage persistence.
  *
  * Usage:
- *   const manager = new SigningKeyManager(oauthStub.oauthStorageOp)
+ *   // IMPORTANT: create a fresh DO stub per storage op — DO stubs are
+ *   // request-scoped I/O objects; a stub captured once and reused across
+ *   // requests throws "Cannot perform I/O on behalf of a different request".
+ *   const manager = new SigningKeyManager((op) => getStubForIdentity(env, 'oauth').oauthStorageOp(op))
  *   const jwks = await manager.getJWKS()
  *   const jwt = await manager.sign(claims, { issuer: 'https://id.org.ai' })
  */
