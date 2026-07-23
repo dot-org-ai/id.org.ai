@@ -855,17 +855,23 @@ app.all('*', async (c) => {
 const SIGNING_KEY_ROTATION_MS = 90 * 24 * 3600 * 1000
 
 // Synthetic auth self-check (monitored since 2026-07-23). The "*/5 * * * *"
-// cron probes the public auth surface; any non-200 (or fetch failure) emits a
+// cron probes the auth surface; any non-200 (or handler failure) emits a
 // structured console.error line with the stable AUTH_SYNTHETIC_FAIL_PREFIX so
 // Cloudflare observability alerts can filter on it.
+//
+// The probe runs in-process via app.fetch rather than a network fetch:
+// Cloudflare same-zone subrequests bypass the worker's own route and hit the
+// (nonexistent) origin — observed as constant 522 false positives in
+// production on 2026-07-23. In-process still exercises the real handlers,
+// including the IdentityDO signing-key path behind /.well-known/jwks.json.
 const AUTH_SYNTHETIC_FAIL_PREFIX = '[AUTH-SYNTHETIC-FAIL]'
 const AUTH_SYNTHETIC_CRON = '*/5 * * * *'
 const AUTH_SYNTHETIC_URLS = ['https://id.org.ai/.well-known/jwks.json', 'https://id.org.ai/login'] as const
 
-async function runSyntheticAuthCheck(): Promise<void> {
+async function runSyntheticAuthCheck(env: Env, ctx: ExecutionContext): Promise<void> {
   for (const url of AUTH_SYNTHETIC_URLS) {
     try {
-      const res = await fetch(url, { redirect: 'manual' })
+      const res = await app.fetch(new Request(url), env, ctx)
       if (res.status !== 200) {
         console.error(`${AUTH_SYNTHETIC_FAIL_PREFIX} ${JSON.stringify({ url, status: res.status, at: new Date().toISOString() })}`)
       }
@@ -880,7 +886,7 @@ export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Every-5-minutes cron: synthetic auth self-check only.
     if (event.cron === AUTH_SYNTHETIC_CRON) {
-      ctx.waitUntil(runSyntheticAuthCheck())
+      ctx.waitUntil(runSyntheticAuthCheck(env, ctx))
       return
     }
     // Daily cron: signing-key rotation check.
