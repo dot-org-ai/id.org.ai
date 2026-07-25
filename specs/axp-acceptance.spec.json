@@ -1,0 +1,590 @@
+{
+  "$type": "PinnedSpec",
+  "name": "id-org-ai-axp-acceptance",
+  "version": "1",
+  "description": "The acceptance contract for id.org.ai: the AXP conformance surface (Tier 0 discovery + Tier 1 honest contract) plus the credential-verification API of org.ai ADR 0016 C5. This document is pinned by sha256 and held outside the implementing fleet's write access — the fleet implements against it and cannot change what passing means. Group A = AXP Tier 0 (discovery), B = AXP Tier 1 (honest machine contract, structured 402, linkset), C = credential verification (verify/registry/liveness/gates/enforcement). C pins BEHAVIOR and RESPONSE SHAPE only, never type names, so it survives the pending Credential -> Licensure/Qualification rename (ADR 0016 M-d). Run: npx api.qa verify https://id.org.ai --spec specs/axp-acceptance.spec.json --expect-digest <pin>",
+  "requirements": [
+    {
+      "id": "A-ax-floor",
+      "kind": "ax-floor",
+      "minScore": 9
+    },
+    {
+      "id": "A-llms-txt-surface",
+      "kind": "surface",
+      "surface": "llms.txt",
+      "must": "valid"
+    },
+    {
+      "id": "A-llms-txt-agent-actionable",
+      "kind": "check",
+      "check": "llms-txt",
+      "must": "pass"
+    },
+    {
+      "id": "A-agents-json-surface",
+      "kind": "surface",
+      "surface": "agents.json",
+      "must": "valid"
+    },
+    {
+      "id": "A-agents-json-parses",
+      "kind": "check",
+      "check": "agents-json",
+      "must": "pass"
+    },
+    {
+      "id": "A-icp-json-surface",
+      "kind": "surface",
+      "surface": "icp.json",
+      "must": "valid"
+    },
+    {
+      "id": "A-icp-json-self-classification",
+      "kind": "check",
+      "check": "icp-json",
+      "must": "pass"
+    },
+    {
+      "id": "A-content-negotiation",
+      "kind": "check",
+      "check": "content-negotiation",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-declared",
+      "kind": "check",
+      "check": "mcp-declared",
+      "must": "pass"
+    },
+    {
+      "id": "A-attestation-ladder",
+      "kind": "check",
+      "check": "attestation",
+      "must": "pass"
+    },
+    {
+      "id": "A-aap-discovery",
+      "kind": "check",
+      "check": "aap-discovery",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-oauth-protected-resource",
+      "kind": "check",
+      "check": "mcp-oauth-protected-resource",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-oauth-as-metadata",
+      "kind": "check",
+      "check": "mcp-oauth-as-metadata",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-pkce",
+      "kind": "check",
+      "check": "mcp-pkce",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-oauth-dcr",
+      "kind": "check",
+      "check": "mcp-oauth-dcr",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-oauth-resource-indicators",
+      "kind": "check",
+      "check": "mcp-oauth-resource-indicators",
+      "must": "pass"
+    },
+    {
+      "id": "A-mcp-www-authenticate",
+      "kind": "check",
+      "check": "mcp-www-authenticate",
+      "must": "pass"
+    },
+    {
+      "id": "A-agents-json-declares-mcp-and-ladder",
+      "kind": "endpoint",
+      "method": "GET",
+      "path": "/.well-known/agents.json",
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "interfaces", "attestationLadder"],
+          "properties": {
+            "name": { "type": "string" },
+            "interfaces": {
+              "type": "object",
+              "required": ["mcp"],
+              "properties": {
+                "mcp": {
+                  "type": "object",
+                  "required": ["transport", "url", "tools"],
+                  "properties": {
+                    "transport": { "type": "string" },
+                    "url": { "type": "string" },
+                    "tools": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            },
+            "attestationLadder": { "type": ["object", "array"] }
+          }
+        },
+        "paths": [
+          { "path": "interfaces.mcp.url", "exists": true },
+          { "path": "interfaces.mcp.tools.0", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "interfaces.mcp.tools.1", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "interfaces.mcp.tools.2", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "interfaces.mcp.tools.3", "exists": false },
+          { "path": "attestationLadder", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "A-icp-json-declares-ladder",
+      "kind": "endpoint",
+      "method": "GET",
+      "path": "/icp.json",
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["agent_classes"],
+          "properties": { "agent_classes": { "type": ["array", "object"] } }
+        },
+        "paths": [{ "path": "agent_classes", "exists": true }]
+      }
+    },
+    {
+      "id": "A-mcp-keyless-tools-list",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/mcp",
+      "body": { "jsonrpc": "2.0", "id": 1, "method": "tools/list" },
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["result"],
+          "properties": {
+            "result": {
+              "type": "object",
+              "required": ["tools", "_meta"],
+              "properties": {
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "description", "inputSchema"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "description": { "type": "string" },
+                      "inputSchema": { "type": "object" }
+                    }
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "required": ["auth", "rateLimit", "upgrade"],
+                  "properties": {
+                    "auth": {
+                      "type": "object",
+                      "required": ["level", "authenticated", "scopes"],
+                      "properties": {
+                        "level": { "type": "integer" },
+                        "authenticated": { "type": "boolean" },
+                        "scopes": { "type": "array", "items": { "type": "string" } }
+                      }
+                    },
+                    "rateLimit": {
+                      "type": "object",
+                      "required": ["limit", "remaining", "resetAt"],
+                      "properties": {
+                        "limit": { "type": "integer" },
+                        "remaining": { "type": "integer" },
+                        "resetAt": { "type": "string" }
+                      }
+                    },
+                    "upgrade": {
+                      "type": "object",
+                      "required": ["nextLevel", "action", "url"],
+                      "properties": {
+                        "nextLevel": { "type": "integer" },
+                        "action": { "type": "string" },
+                        "url": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "paths": [
+          { "path": "result.tools.0.name", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "result.tools.1.name", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "result.tools.2.name", "oneOf": ["explore", "search", "fetch"] },
+          { "path": "result.tools.3", "exists": false },
+          { "path": "result._meta.auth.level", "equals": 0 },
+          { "path": "result._meta.auth.authenticated", "equals": false },
+          { "path": "result._meta.rateLimit.limit", "gte": 1 },
+          { "path": "result._meta.upgrade.nextLevel", "gte": 1 }
+        ]
+      }
+    },
+    {
+      "id": "B-openapi-31-honest",
+      "kind": "surface",
+      "surface": "openapi",
+      "must": "valid",
+      "versionPrefix": "3.1",
+      "minOperations": 20
+    },
+    {
+      "id": "B-openapi-published",
+      "kind": "check",
+      "check": "openapi",
+      "must": "pass"
+    },
+    {
+      "id": "B-schema-conformance",
+      "kind": "check",
+      "check": "schema-conformance",
+      "must": "pass"
+    },
+    {
+      "id": "B-claims-honesty",
+      "kind": "check",
+      "check": "claims-honesty",
+      "must": "pass"
+    },
+    {
+      "id": "B-contract-diff-clean",
+      "kind": "check",
+      "check": "contract-diff",
+      "must": "pass"
+    },
+    {
+      "id": "B-linkset",
+      "kind": "check",
+      "check": "linkset",
+      "must": "pass"
+    },
+    {
+      "id": "B-offers-402",
+      "kind": "check",
+      "check": "offers-402",
+      "must": "pass"
+    },
+    {
+      "id": "B-structured-402-offer",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {
+        "credential": { "type": "uspto-registered", "registrationNumber": "999999" },
+        "principal": { "id": "conformance-unknown-principal", "workerType": "human" },
+        "effectClass": "act",
+        "mode": "psv"
+      },
+      "expect": {
+        "status": 402,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["id", "title", "price", "alternatives"],
+          "properties": {
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "price": { "type": ["object", "number", "string"] },
+            "alternatives": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["mode"],
+                "properties": { "mode": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "paths": [
+          { "path": "id", "exists": true },
+          { "path": "alternatives.0.mode", "equals": "registry" }
+        ]
+      }
+    },
+    {
+      "id": "C-verify-registry-lookup-shape",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {
+        "credential": { "type": "uspto-registered", "registrationNumber": "999999" },
+        "principal": { "id": "conformance-unknown-principal", "workerType": "human" },
+        "effectClass": "act"
+      },
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["live", "goodStanding", "holder", "reps", "source", "freshness", "checkedAt"],
+          "properties": {
+            "live": { "type": "boolean" },
+            "goodStanding": { "type": "boolean" },
+            "holder": { "type": ["object", "null"] },
+            "reps": { "type": "array" },
+            "source": {
+              "type": "object",
+              "required": ["mode"],
+              "properties": { "mode": { "type": "string" }, "registry": { "type": "string" } }
+            },
+            "freshness": {
+              "type": "object",
+              "required": ["cached"],
+              "properties": { "cached": { "type": "boolean" }, "maxAgeSeconds": { "type": "number" } }
+            },
+            "checkedAt": { "type": "string" }
+          }
+        },
+        "paths": [
+          { "path": "live", "equals": false },
+          { "path": "goodStanding", "equals": false },
+          { "path": "source.mode", "equals": "registry" },
+          { "path": "source.registry", "equals": "uspto-oed" }
+        ]
+      }
+    },
+    {
+      "id": "C-liveness-act-is-fresh",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {
+        "credential": { "type": "uspto-registered", "registrationNumber": "999999" },
+        "principal": { "id": "conformance-unknown-principal", "workerType": "human" },
+        "effectClass": "act"
+      },
+      "expect": {
+        "status": 200,
+        "paths": [
+          { "path": "freshness.cached", "equals": false },
+          { "path": "checkedAt", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-liveness-read-discloses-ttl",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {
+        "credential": { "type": "uspto-registered", "registrationNumber": "999999" },
+        "principal": { "id": "conformance-unknown-principal", "workerType": "human" },
+        "effectClass": "read"
+      },
+      "expect": {
+        "status": 200,
+        "paths": [
+          { "path": "freshness.cached", "exists": true },
+          { "path": "freshness.maxAgeSeconds", "gte": 0 },
+          { "path": "source.mode", "equals": "registry" }
+        ]
+      }
+    },
+    {
+      "id": "C-registry-roster-is-ingested",
+      "kind": "endpoint",
+      "method": "GET",
+      "path": "/credentials/registries/uspto-oed",
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["id", "mode", "issuer", "practitionerCount", "refreshedAt"],
+          "properties": {
+            "id": { "type": "string" },
+            "mode": { "type": "string" },
+            "issuer": { "type": "string" },
+            "practitionerCount": { "type": "integer" },
+            "refreshedAt": { "type": "string" }
+          }
+        },
+        "paths": [
+          { "path": "id", "equals": "uspto-oed" },
+          { "path": "mode", "equals": "registry" },
+          { "path": "practitionerCount", "gte": 40000 },
+          { "path": "issuer", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-supply-gate-is-a-ref-not-a-bool",
+      "kind": "endpoint",
+      "method": "GET",
+      "path": "/credentials/gates/act/file.patent",
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["act", "requiresSigner"],
+          "properties": {
+            "act": { "type": "string" },
+            "requiresSigner": {
+              "type": "object",
+              "required": ["jurisdiction"],
+              "properties": { "jurisdiction": { "type": "string" } }
+            }
+          }
+        },
+        "paths": [
+          { "path": "act", "equals": "file.patent" },
+          { "path": "requiresSigner.jurisdiction", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-demand-gate-is-a-ref-not-a-bool",
+      "kind": "endpoint",
+      "method": "GET",
+      "path": "/credentials/gates/upstream/cm-ecf",
+      "expect": {
+        "status": 200,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["upstream", "requiresAccess"],
+          "properties": {
+            "upstream": { "type": "string" },
+            "requiresAccess": {
+              "type": "object",
+              "required": ["jurisdiction"],
+              "properties": { "jurisdiction": { "type": "string" } }
+            }
+          }
+        },
+        "paths": [
+          { "path": "upstream", "equals": "cm-ecf" },
+          { "path": "requiresAccess.jurisdiction", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-enforce-human-gate-runs-first",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/enforce",
+      "body": {
+        "act": "file.patent",
+        "signer": { "id": "conformance-agent", "workerType": "agent" }
+      },
+      "expect": {
+        "status": 403,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["denied", "gate"],
+          "properties": { "denied": { "type": "boolean" }, "gate": { "type": "string" } }
+        },
+        "paths": [
+          { "path": "denied", "equals": true },
+          { "path": "gate", "equals": "humanSigner" }
+        ]
+      }
+    },
+    {
+      "id": "C-enforce-supply-gate-denies-uncredentialed-human",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/enforce",
+      "body": {
+        "act": "file.patent",
+        "signer": { "id": "conformance-uncredentialed-human", "workerType": "human" }
+      },
+      "expect": {
+        "status": 403,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["denied", "gate", "required"],
+          "properties": {
+            "denied": { "type": "boolean" },
+            "gate": { "type": "string" },
+            "required": {
+              "type": "object",
+              "required": ["jurisdiction"],
+              "properties": { "jurisdiction": { "type": "string" } }
+            }
+          }
+        },
+        "paths": [
+          { "path": "denied", "equals": true },
+          { "path": "gate", "equals": "requiresSigner" },
+          { "path": "required.jurisdiction", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-enforce-demand-gate-denies-unentitled-principal",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/enforce",
+      "body": {
+        "upstream": "cm-ecf",
+        "principal": { "id": "conformance-unentitled-human", "workerType": "human" }
+      },
+      "expect": {
+        "status": 403,
+        "contentTypeIncludes": "json",
+        "schema": {
+          "type": "object",
+          "required": ["denied", "gate", "required"],
+          "properties": {
+            "denied": { "type": "boolean" },
+            "gate": { "type": "string" },
+            "required": {
+              "type": "object",
+              "required": ["jurisdiction"],
+              "properties": { "jurisdiction": { "type": "string" } }
+            }
+          }
+        },
+        "paths": [
+          { "path": "denied", "equals": true },
+          { "path": "gate", "equals": "requiresAccess" },
+          { "path": "required.jurisdiction", "exists": true }
+        ]
+      }
+    },
+    {
+      "id": "C-verify-rejects-empty-request",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {},
+      "expect": { "status": [400, 422] }
+    },
+    {
+      "id": "C-verify-rejects-unknown-effect-class",
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/credentials/verify",
+      "body": {
+        "credential": { "type": "uspto-registered", "registrationNumber": "999999" },
+        "principal": { "id": "conformance-unknown-principal", "workerType": "human" },
+        "effectClass": "teleport"
+      },
+      "expect": { "status": [400, 422] }
+    }
+  ]
+}
