@@ -35,6 +35,8 @@ import { KeyServiceImpl } from '../services/keys'
 import { SessionServiceImpl } from '../services/auth/service'
 import { AgentServiceImpl } from '../services/agents'
 import type { AgentService, Agent, AgentInfo, AgentMode, AgentStatus, RegisterAgentInput } from '../services/agents'
+import { CredentialFactServiceImpl } from '../services/credential'
+import type { CredentialFactService, CredentialVerificationEvent, HeldCredentialFact } from '../services/credential'
 import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
@@ -182,6 +184,15 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       })
     }
     return this._agentService
+  }
+
+  private _credentialFacts?: CredentialFactService
+
+  private get credentialFacts(): CredentialFactService {
+    if (!this._credentialFacts) {
+      this._credentialFacts = new CredentialFactServiceImpl({ storage: this.storageAdapter })
+    }
+    return this._credentialFacts
   }
 
   // ─── Identity Management ──────────────────────────────────────────────
@@ -570,6 +581,47 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   async queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; total: number; cursor?: string; hasMore: boolean }> {
     return this.auditService.query(options)
+  }
+
+  // ─── Held-credential facts (id-j0k, ADR 0016 C6) ─────────────────────
+  // Per-principal facts on THIS identity's DO — never a dimension node.
+
+  async putHeldCredential(
+    fact: Omit<HeldCredentialFact, 'recordedAt'> & { recordedAt?: string },
+  ): Promise<{ success: boolean; fact?: HeldCredentialFact; error?: string }> {
+    const result = await this.credentialFacts.putFact(fact)
+    if (result.success) {
+      await this.auditService.logFireAndForget({
+        event: 'credential.fact.recorded',
+        actor: fact.principalId,
+        metadata: { credentialType: fact.credentialType, ref: fact.ref },
+      })
+      return { success: true, fact: result.data }
+    }
+    return { success: false, error: result.error.message }
+  }
+
+  async getHeldCredential(principalId: string, credentialType: string, ref: string): Promise<HeldCredentialFact | null> {
+    const result = await this.credentialFacts.getFact(principalId, credentialType, ref)
+    return result.success ? result.data : null
+  }
+
+  async listHeldCredentials(principalId: string, credentialType?: string): Promise<HeldCredentialFact[]> {
+    return this.credentialFacts.listFacts(principalId, credentialType ? { credentialType } : {})
+  }
+
+  async deleteHeldCredential(principalId: string, credentialType: string, ref: string): Promise<{ deleted: boolean }> {
+    const result = await this.credentialFacts.deleteFact(principalId, credentialType, ref)
+    return result.success ? result.data : { deleted: false }
+  }
+
+  /** Insert-only verification journal — never mutated, never a cached flag. */
+  async recordCredentialVerification(event: CredentialVerificationEvent): Promise<void> {
+    await this.credentialFacts.recordVerification(event)
+  }
+
+  async listCredentialVerifications(principalId: string, limit?: number): Promise<CredentialVerificationEvent[]> {
+    return this.credentialFacts.listVerifications(principalId, limit !== undefined ? { limit } : {})
   }
 
   // ─── MCP Do (RPC) ──────────────────────────────────────────────────

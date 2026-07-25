@@ -51,6 +51,7 @@ import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
 import { githubRoutes } from './routes/github'
 import { aapRoutes } from './routes/aap'
+import { credentialRoutes } from './routes/credentials'
 
 export { IdentityDO }
 
@@ -811,6 +812,7 @@ app.route('', apiKeyRoutes)
 app.route('', workosRoutes)
 app.route('', githubRoutes)
 app.route('', aapRoutes)
+app.route('', credentialRoutes)
 
 // ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
 

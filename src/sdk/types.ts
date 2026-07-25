@@ -218,6 +218,17 @@ export interface IdentityStub {
   auditEvent(event: Omit<AuditEvent, 'timestamp'> & { timestamp?: string }): Promise<void>
   queryAuditLog(options: AuditQueryOptions): Promise<{ events: StoredAuditEvent[]; cursor?: string; hasMore: boolean }>
 
+  // Held-credential facts (id-j0k, ADR 0016 C6) — per-principal, on the
+  // principal's own identity DO; verification events are insert-only.
+  putHeldCredential(
+    fact: Omit<import('../server/services/credential').HeldCredentialFact, 'recordedAt'> & { recordedAt?: string },
+  ): Promise<{ success: boolean; fact?: import('../server/services/credential').HeldCredentialFact; error?: string }>
+  getHeldCredential(principalId: string, credentialType: string, ref: string): Promise<import('../server/services/credential').HeldCredentialFact | null>
+  listHeldCredentials(principalId: string, credentialType?: string): Promise<import('../server/services/credential').HeldCredentialFact[]>
+  deleteHeldCredential(principalId: string, credentialType: string, ref: string): Promise<{ deleted: boolean }>
+  recordCredentialVerification(event: import('../server/services/credential').CredentialVerificationEvent): Promise<void>
+  listCredentialVerifications(principalId: string, limit?: number): Promise<import('../server/services/credential').CredentialVerificationEvent[]>
+
   // WorkOS widget token support
   storeWorkOSRefreshToken(token: string): Promise<void>
   refreshWorkOSToken(credentials: { clientId: string; apiKey: string }, organizationId?: string): Promise<string>

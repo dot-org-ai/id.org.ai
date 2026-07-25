@@ -11,6 +11,15 @@ export * from './jwt'
 export * from './workos'
 export * from './csrf'
 export * from './audit'
+// Credential verification (ADR 0016 C5 / ADR 0018). `verify` is re-exported
+// as `verifyCredential` here because ./crypto already exports a `verify`;
+// import { verify } from './credential' directly for the module-local name.
+export * from './credential/types'
+export * from './credential/freshness'
+export * from './credential/gates'
+export * from './credential/sources'
+export { verify as verifyCredential } from './credential/verify'
+export type { VerifyOptions } from './credential/verify'
 export * from './errors'
 export * from './payment'
 
