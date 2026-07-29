@@ -50,6 +50,8 @@ export interface Identity {
   // canonical definition; this server-side copy stays in sync.
   did?: string
   scopes?: string[]
+  /** Upstream federation provenance. See src/sdk/federation/types.ts. */
+  federation?: import('../../../sdk/federation/types').FederationProvenance
   paymentInstruments?: import('../../../sdk/payment/types').PaymentInstrument[]
   contacts?: import('../../../sdk/payment/types').ContactChannel[]
 }
@@ -80,6 +82,11 @@ export interface CreateIdentityInput {
   ownerId?: string
   level?: CapabilityLevel
   id?: string
+  /** Upstream federation provenance, when the identity arrives via an IdP. */
+  federation?: import('../../../sdk/federation/types').FederationProvenance
+  /** Whether the email was verified at creation time. */
+  verified?: boolean
+  claimStatus?: ClaimStatus
 }
 
 export interface CreateIdentityResult {
@@ -120,6 +127,8 @@ export interface UpdateIdentityInput {
   claimStatus?: ClaimStatus
   githubUserId?: string
   githubUsername?: string
+  /** Re-stamped on each successful upstream re-authentication. */
+  federation?: import('../../../sdk/federation/types').FederationProvenance
 }
 
 export interface LinkAccountInput {

@@ -31,6 +31,7 @@ import type { CapabilityLevel, Identity, IdentityStub } from '../types'
 import type { AuthBroker, AuthDecision, AuthDenialReason, AuthRequirement } from './broker'
 import { scopeSatisfies } from './scope'
 import type { Scope } from './scope'
+import { assuranceSatisfies, levelCeilingForAssurance } from '../federation/types'
 
 // ── Anonymous L0 identity ─────────────────────────────────────────────────
 
@@ -161,6 +162,7 @@ function statusForReason(reason: AuthDenialReason): number {
       return 429
     case 'frozen':
     case 'insufficient-level':
+    case 'insufficient-assurance':
     case 'missing-scope':
     case 'missing-role':
     case 'forbidden':
@@ -177,6 +179,7 @@ function errorCodeForReason(reason: AuthDenialReason): string {
       return ErrorCode.InsufficientLevel
     case 'missing-scope':
     case 'missing-role':
+    case 'insufficient-assurance':
       return ErrorCode.Forbidden
     case 'frozen':
       return ErrorCode.AccessDenied
@@ -198,6 +201,8 @@ function descriptionForReason(reason: AuthDenialReason): string {
       return 'Missing required scope'
     case 'missing-role':
       return 'Missing required role'
+    case 'insufficient-assurance':
+      return 'Stronger authentication required for this resource'
     case 'frozen':
       return 'Identity is frozen'
     case 'rate-limited':
@@ -206,6 +211,30 @@ function descriptionForReason(reason: AuthDenialReason): string {
     default:
       return 'Forbidden'
   }
+}
+
+// ── Assurance clamping ────────────────────────────────────────────────────
+
+/**
+ * Return the identity with `level` clamped to what its federation assurance
+ * can support.
+ *
+ * A **no-op for every non-federated identity** — API keys, agents, WorkOS
+ * humans and the anonymous principal have no `federation` field and are
+ * returned untouched (identity, not a copy). Only principals that arrived
+ * through `src/sdk/federation` are affected, and only downward.
+ *
+ * Returns the same object reference when nothing changes so callers can rely
+ * on cheap identity comparisons and the hot path allocates nothing.
+ */
+function clampToAssurance(identity: Identity): Identity {
+  const assurance = identity.federation?.assurance
+  if (!assurance) return identity
+
+  const ceiling = levelCeilingForAssurance(assurance)
+  if (identity.level <= ceiling) return identity
+
+  return { ...identity, level: ceiling as CapabilityLevel }
 }
 
 // ── Implementation ────────────────────────────────────────────────────────
@@ -227,12 +256,26 @@ export class AuthBrokerImpl implements AuthBroker {
       return { ok: false, identity, reason: 'frozen' }
     }
 
+    // Federated principals are evaluated at their ASSURANCE ceiling, not the
+    // level written on the row. A row can only ever have its level raised
+    // (IdentityService enforces monotonicity), so a viewer who first arrived
+    // through Entra at L2 and later returns through the email-code fallback
+    // would otherwise keep L2 forever on strictly weaker evidence. Clamping at
+    // read time is the only place that stays honest.
+    const effective = clampToAssurance(identity)
+
     // Bare-number shorthand: just a level gate.
     if (typeof need === 'number') {
-      if (identity.level < need) {
-        return { ok: false, identity, reason: 'insufficient-level' }
+      if (effective.level < need) {
+        return { ok: false, identity: effective, reason: 'insufficient-level' }
       }
-      return { ok: true, identity }
+      return { ok: true, identity: effective }
+    }
+
+    identity = effective
+
+    if (need.minAssurance && !assuranceSatisfies(identity.federation?.assurance, need.minAssurance)) {
+      return { ok: false, identity, reason: 'insufficient-assurance' }
     }
 
     if (need.minLevel != null && identity.level < need.minLevel) {
@@ -447,12 +490,16 @@ export class AuthBrokerImpl implements AuthBroker {
       // Prefer the credential-derived level (an API key may scope-down a
       // higher-level identity); always carry credential scopes. The structured
       // Scope is a property of the *key*, so it always comes from the overlay.
-      return {
+      //
+      // `clampToAssurance` runs LAST and therefore beats the Math.max: a
+      // credential cannot lift a federated principal above what its upstream
+      // assurance supports.
+      return clampToAssurance({
         ...stored,
         level: Math.max(stored.level, overlay.level) as CapabilityLevel,
         scopes: overlay.scopes ?? stored.scopes,
         scope: overlay.scope ?? stored.scope,
-      }
+      })
     }
 
     return {

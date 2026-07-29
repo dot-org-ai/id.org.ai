@@ -31,6 +31,27 @@ export interface Env {
   APP_NAME?: string
   APP_TAGLINE?: string
   REDIRECT_URI?: string
+  // ── Upstream Microsoft federation (worker/routes/federation.ts) ──────────
+  // MICROSOFT_CLIENT_ID is a public value (a var); MICROSOFT_CLIENT_SECRET is
+  // a wrangler secret and is OPTIONAL — omit it for a public-client app
+  // registration, where PKCE alone authenticates the code exchange.
+  MICROSOFT_CLIENT_ID?: string
+  MICROSOFT_CLIENT_SECRET?: string
+  /** Authority tenant segment. Default `organizations` (work/school only). */
+  MICROSOFT_TENANT?: string
+  /**
+   * Optional comma-separated allow-list of Entra tenant GUIDs. Empty = any
+   * tenant, which is the point of a multi-tenant app. Set it to lock a
+   * surface to named customers.
+   */
+  MICROSOFT_ALLOWED_TENANTS?: string
+  /**
+   * Comma-separated extra hostnames a federated sign-in may redirect to when
+   * finished (`pitch.visibility.cloud`). `*.org.ai` is always allowed;
+   * everything else falls back to `/`. See `safeContinue` in
+   * worker/routes/federation.ts.
+   */
+  FEDERATION_CONTINUE_HOSTS?: string
   // Trusted-account OAuth (ADR-0007). Comma-separated list of bare hostnames
   // (e.g. "startup.games,foo.example") whose redirect_uri is accepted under
   // the canonical shared client_id `cid_trusted_account_v1` without per-app DCR.

@@ -66,6 +66,19 @@ export interface Identity {
    */
   scope?: import('./auth/scope').Scope
 
+  /**
+   * Upstream federation provenance — set when this principal arrived through
+   * an upstream IdP (Microsoft Entra) or the email-code fallback.
+   *
+   * NOTE the two different tenants: `federation.tenantId` is the UPSTREAM
+   * directory tenant (Entra `tid`); `Identity.tenantId` above is id.org.ai's
+   * own parent Tenant. They never hold each other's values.
+   *
+   * AuthBroker clamps `level` to `federation.assurance` — a row claiming L2
+   * with `assurance: 'email-code'` resolves at L1.
+   */
+  federation?: import('./federation/types').FederationProvenance
+
   /** Bound payment instruments. Consumed by PaymentBroker for rail selection. */
   paymentInstruments?: import('./payment/types').PaymentInstrument[]
 

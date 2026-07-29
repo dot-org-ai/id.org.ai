@@ -53,6 +53,20 @@ export type AuthRequirement =
         /** Amount the request would consume — tested against a grant's ceiling. */
         amount?: Measure
       }
+      /**
+       * Minimum upstream-federation assurance the caller demands.
+       *
+       * `'federated-idp'` means an upstream IdP (Microsoft Entra) signed an
+       * id_token we verified; `'email-code'` means only mailbox custody was
+       * proven. A requirement of `'federated-idp'` REJECTS an email-code
+       * principal — that is the whole point of recording assurance instead of
+       * flattening everything to a level number.
+       *
+       * Omitted = no assurance requirement (unchanged behaviour for every
+       * existing call site, including non-federated principals).
+       */
+      minAssurance?: import('../federation/types').AssuranceLevel
+
       /** WorkOS / org roles. */
       roles?: string[]
       /** Optional resource — enables per-resource (FGA-shaped) checks. */
@@ -70,6 +84,14 @@ export type AuthDenialReason =
   | 'insufficient-level'
   | 'missing-scope'
   | 'missing-role'
+  /**
+   * The principal is authenticated, but not to the strength the resource
+   * demands — e.g. an email-code viewer reaching a `federated-idp`-only
+   * surface. Distinct from `insufficient-level` because the cure is different:
+   * the viewer must re-authenticate through the stronger path, not be granted
+   * more capability.
+   */
+  | 'insufficient-assurance'
   | 'frozen'
   | 'rate-limited'
   | 'forbidden'

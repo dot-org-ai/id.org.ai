@@ -15,6 +15,7 @@ export default defineConfig({
     'src/sdk/claim/index.ts',
     'src/sdk/jwt/index.ts',
     'src/sdk/workos/index.ts',
+    'src/sdk/federation/index.ts',
     'src/server/index.ts',    // server barrel
   ],
   format: ['esm'],
