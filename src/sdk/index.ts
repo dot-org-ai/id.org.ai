@@ -11,6 +11,9 @@ export * from './jwt'
 export * from './workos'
 export * from './csrf'
 export * from './audit'
+// Upstream federation (Microsoft Entra + email-code fallback). `verifyToken`
+// is NOT re-exported from here — ./auth already owns that name.
+export * from './federation'
 // Credential verification (ADR 0016 C5 / ADR 0018). `verify` is re-exported
 // as `verifyCredential` here because ./crypto already exports a `verify`;
 // import { verify } from './credential' directly for the module-local name.

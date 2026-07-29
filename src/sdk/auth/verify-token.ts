@@ -50,6 +50,32 @@ export interface VerifiedIdentity {
   name?: string
   roles?: string[]
   permissions?: string[]
+  /**
+   * How strongly the human behind this token was proven, when the token came
+   * from an upstream federation flow (`src/sdk/federation`).
+   *
+   *   `federated-idp` — Microsoft Entra signed an id_token we verified.
+   *   `email-code`    — mailbox custody only.
+   *
+   * Absent for tokens minted by the WorkOS/AuthKit path and for machine
+   * credentials. A resource that requires a work identity MUST check this
+   * rather than inferring from `email` — an email claim alone says nothing
+   * about how it was established.
+   */
+  assurance?: import('../federation/types').AssuranceLevel
+  /**
+   * Verified email domain (`zebra.com`), present on federated tokens. Derived
+   * from the verified email at issuance — never from client input, so a
+   * domain-scoped gate can key on it directly.
+   */
+  emailDomain?: string
+  /**
+   * Upstream directory tenant the principal authenticated against (Entra
+   * `tid`). NOT `tenant` above, which is the id.org.ai/WorkOS organisation.
+   */
+  federationTenantId?: string
+  /** Which upstream produced this token (`microsoft`, `email-code`). */
+  federationProvider?: string
   /** Issuer that minted the token (validated to equal the expected issuer). */
   issuer?: string
   /** Audience the token was minted for, if any. */
@@ -225,9 +251,39 @@ function projectIdentity(payload: JWTPayload, issuer: string): VerifiedIdentity 
     ...(typeof payload.name === 'string' && { name: payload.name as string }),
     ...(Array.isArray(payload.roles) && { roles: payload.roles as string[] }),
     ...(Array.isArray(payload.permissions) && { permissions: payload.permissions as string[] }),
+    ...projectFederation(payload),
     issuer: (payload.iss as string | undefined) ?? issuer,
     ...(payload.aud !== undefined && { audience: payload.aud }),
     claims: payload,
+  }
+}
+
+/**
+ * Lift the `fed` claim (written by the federation callbacks) onto first-class
+ * VerifiedIdentity fields. Absent claim → empty object, so every existing
+ * token shape projects exactly as before.
+ *
+ * Only recognised assurance strings are surfaced: an unrecognised value is
+ * dropped rather than passed through, so a consumer can never be handed an
+ * assurance level this build does not understand and treat it as sufficient.
+ */
+function projectFederation(payload: JWTPayload): Partial<VerifiedIdentity> {
+  const fed = payload.fed as
+    | { provider?: unknown; assurance?: unknown; tenantId?: unknown; emailDomain?: unknown }
+    | undefined
+  if (!fed || typeof fed !== 'object') return {}
+
+  const KNOWN: ReadonlyArray<string> = ['federated-idp', 'email-code', 'unverified']
+  const assurance =
+    typeof fed.assurance === 'string' && KNOWN.includes(fed.assurance)
+      ? (fed.assurance as VerifiedIdentity['assurance'])
+      : undefined
+
+  return {
+    ...(assurance !== undefined && { assurance }),
+    ...(typeof fed.emailDomain === 'string' && { emailDomain: fed.emailDomain }),
+    ...(typeof fed.tenantId === 'string' && { federationTenantId: fed.tenantId }),
+    ...(typeof fed.provider === 'string' && { federationProvider: fed.provider }),
   }
 }
 

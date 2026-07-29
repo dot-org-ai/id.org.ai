@@ -63,7 +63,9 @@ app.get('/login', async (c) => {
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    return renderProviderPicker(continueUrl)
+    // When our own Entra app is configured, the Microsoft button points at
+    // /federation/microsoft/start instead of AuthKit — see routes/federation.ts.
+    return renderProviderPicker(continueUrl, { microsoftFederation: !!c.env.MICROSOFT_CLIENT_ID })
   }
 
   const csrf = crypto.randomUUID()

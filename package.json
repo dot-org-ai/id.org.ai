@@ -42,6 +42,10 @@
       "types": "./dist/sdk/workos/index.d.ts",
       "import": "./dist/sdk/workos/index.js"
     },
+    "./federation": {
+      "types": "./dist/sdk/federation/index.d.ts",
+      "import": "./dist/sdk/federation/index.js"
+    },
     "./cli/device": {
       "types": "./dist/sdk/cli/device.d.ts",
       "import": "./dist/sdk/cli/device.js"

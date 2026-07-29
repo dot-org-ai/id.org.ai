@@ -44,6 +44,24 @@
     // shared client_id `cid_trusted_account_v1` without per-app DCR.
     // Trust comes from the domain being in the same Cloudflare account.
     "TRUSTED_ACCOUNT_DOMAINS": "startup.games",
+
+    // ── Upstream Microsoft federation (worker/routes/federation.ts) ─────────
+    // Multi-tenant Entra app registration. The client ID is public by design
+    // (it appears in every authorization URL) so it lives here, not in secrets.
+    //
+    // NOT YET SET — the app registration is an owner action; see
+    // docs/upstream-microsoft-federation.md. Until MICROSOFT_CLIENT_ID exists,
+    // /federation/microsoft/start redirects to the email-code fallback and
+    // /federation/status reports microsoft.configured=false. Nothing 500s.
+    //   "MICROSOFT_CLIENT_ID": "<application (client) id GUID>",
+    //
+    // `organizations` = work/school accounts in any Entra tenant; personal
+    // Microsoft accounts excluded. Change to `common` only to admit consumer
+    // MSAs, which for a corporate gate is noise rather than reach.
+    "MICROSOFT_TENANT": "organizations",
+    // Optional comma-separated Entra tenant GUID allow-list. Empty = any
+    // tenant (the point of a multi-tenant app). Set to lock to named customers.
+    // "MICROSOFT_ALLOWED_TENANTS": "",
   },
 
   "routes": [
@@ -100,4 +118,7 @@
   // GITHUB_APP_ID               — GitHub App ID (claim-by-commit)
   // GITHUB_APP_PRIVATE_KEY      — GitHub App private key
   // GITHUB_WEBHOOK_SECRET       — GitHub webhook signature secret
+  // MICROSOFT_CLIENT_SECRET     — Entra client secret. OPTIONAL: omit it for a
+  //                               public-client app registration, where PKCE
+  //                               alone authenticates the code exchange.
 }

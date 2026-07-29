@@ -124,10 +124,11 @@ export class IdentityServiceImpl implements IdentityWriter {
       handle: input.handle,
       capabilities: input.capabilities,
       ownerId: input.ownerId,
-      verified: false,
+      verified: input.verified ?? false,
       level,
-      claimStatus: 'unclaimed',
+      claimStatus: input.claimStatus ?? 'unclaimed',
       claimToken,
+      federation: input.federation,
       frozen: false,
       createdAt: now,
       updatedAt: now,
@@ -316,6 +317,7 @@ export class IdentityServiceImpl implements IdentityWriter {
       ...(input.claimStatus !== undefined ? { claimStatus: input.claimStatus } : {}),
       ...(input.githubUserId !== undefined ? { githubUserId: input.githubUserId } : {}),
       ...(input.githubUsername !== undefined ? { githubUsername: input.githubUsername } : {}),
+      ...(input.federation !== undefined ? { federation: input.federation } : {}),
       updatedAt: now,
     }
 
@@ -474,6 +476,9 @@ export class IdentityServiceImpl implements IdentityWriter {
       frozenAt: raw['frozenAt'] as number | undefined,
       githubUserId: raw['githubUserId'] as string | undefined,
       githubUsername: raw['githubUsername'] as string | undefined,
+      // Upstream federation provenance — carried through so AuthBroker can
+      // clamp capability level to the assurance actually achieved.
+      federation: raw['federation'] as Identity['federation'],
       createdAt: (raw['createdAt'] as number | undefined) ?? now,
       updatedAt: (raw['updatedAt'] as number | undefined) ?? now,
     }

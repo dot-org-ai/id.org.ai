@@ -46,6 +46,7 @@ import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
+import { federationRoutes } from './routes/federation'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -775,6 +776,11 @@ app.route('', authVerifyRoutes)
 app.route('', authRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
+
+// ── Upstream Federation (Microsoft Entra + email-code fallback) ──────────────
+// Also mounted before authenticateRequest — these routes ESTABLISH auth, so
+// they cannot require it. See worker/routes/federation.ts.
+app.route('', federationRoutes)
 
 // ── Validate API Key Endpoint ────────────────────────────────────────────────
 // Validates WorkOS API keys (sk_*) — mirrors oauth.do's POST /validate-api-key
