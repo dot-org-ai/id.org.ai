@@ -37,6 +37,10 @@ import { AgentServiceImpl } from '../services/agents'
 import type { AgentService, Agent, AgentInfo, AgentMode, AgentStatus, RegisterAgentInput } from '../services/agents'
 import { CredentialFactServiceImpl } from '../services/credential'
 import type { CredentialFactService, CredentialVerificationEvent, HeldCredentialFact } from '../services/credential'
+import { AuthorityServiceImpl } from '../services/authority/service'
+import { CaptureActionSink } from '../services/authority/capture-sink'
+import type { AuthorityError, AuthorityRpcResult, AuthorityService } from '../services/authority/types'
+import type { Result } from '../../sdk/foundation'
 import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
@@ -72,6 +76,18 @@ export interface IdentityEnv {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
+
+  // ── Authority (Domain 11) ───────────────────────────────────────────────
+  /**
+   * The one public write door every authority Action emits through. Unset →
+   * every settlement's artifact is `unconfirmed`, which is the honest state and
+   * not a failure: the decision is recorded here, its witness is not yet
+   * confirmed. Never stub this to make a receipt look complete.
+   */
+  EPCIS_CAPTURE_URL?: string
+  EPCIS_CAPTURE_TOKEN?: string
+  /** Origin the seatless revoke address and the claim URL are rooted at. */
+  AUTHORITY_ORIGIN?: string
 }
 
 // ============================================================================
@@ -193,6 +209,80 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       this._credentialFacts = new CredentialFactServiceImpl({ storage: this.storageAdapter })
     }
     return this._credentialFacts
+  }
+
+  private _authorityService?: AuthorityService
+
+  /**
+   * Domain 11 — Authority. `grant · introspect · revoke · refuse`.
+   *
+   * The Action sink is the public capture door, injected. This DO never writes
+   * an authority event of its own: two ingest paths mean two canonicalizations
+   * and the binding between a grant and its witnessed event stops being
+   * testable. When the door is unset the emit is `unconfirmed` — see
+   * `capture-sink.ts` for why that is the honest failure and not a soft one.
+   */
+  private get authorityService(): AuthorityService {
+    if (!this._authorityService) {
+      this._authorityService = new AuthorityServiceImpl({
+        storage: this.storageAdapter,
+        actions: new CaptureActionSink({
+          captureUrl: this.env.EPCIS_CAPTURE_URL,
+          token: this.env.EPCIS_CAPTURE_TOKEN,
+        }),
+        origin: this.env.AUTHORITY_ORIGIN,
+      })
+    }
+    return this._authorityService
+  }
+
+  // ─── Authority (RPC) ──────────────────────────────────────────────────
+  //
+  // A `Result<T, AuthorityError>` does not survive structured clone with its
+  // behaviour: `AuthorityError` carries `status` and `retryable` as prototype
+  // getters, and a getter is not cloned. So every authority RPC flattens to a
+  // plain, fully-serialisable envelope before it leaves the DO, and the HTTP
+  // layer renders that into RFC 9457. Returning the class across the boundary
+  // would silently strip the two fields the error response is built from.
+
+  private flatten<T>(r: Result<T, AuthorityError>): AuthorityRpcResult<T> {
+    if (r.success) return { ok: true, data: r.data }
+    return {
+      ok: false,
+      slug: r.error.slug,
+      message: r.error.message,
+      status: r.error.status,
+      retryable: r.error.retryable,
+      detail: r.error.detail,
+    }
+  }
+
+  async authorityRecordAsk(input: Parameters<AuthorityService['recordAsk']>[0]) {
+    return this.flatten(await this.authorityService.recordAsk(input))
+  }
+  async authorityGrant(input: Parameters<AuthorityService['grant']>[0]) {
+    return this.flatten(await this.authorityService.grant(input))
+  }
+  async authorityClaim(input: Parameters<AuthorityService['claim']>[0]) {
+    return this.flatten(await this.authorityService.claim(input))
+  }
+  async authorityIntrospect(input: Parameters<AuthorityService['introspect']>[0]) {
+    return this.flatten(await this.authorityService.introspect(input))
+  }
+  async authorityRevoke(input: Parameters<AuthorityService['revoke']>[0]) {
+    return this.flatten(await this.authorityService.revoke(input))
+  }
+  async authorityRefuse(input: Parameters<AuthorityService['refuse']>[0]) {
+    return this.flatten(await this.authorityService.refuse(input))
+  }
+  async authoritySettlement(input: Parameters<AuthorityService['settlement']>[0]) {
+    return this.flatten(await this.authorityService.settlement(input))
+  }
+  async authorityListGrants(input: Parameters<AuthorityService['listGrants']>[0]) {
+    return this.flatten(await this.authorityService.listGrants(input))
+  }
+  async authorityAuthorize(input: Parameters<AuthorityService['authorize']>[0]) {
+    return this.flatten(await this.authorityService.authorize(input))
   }
 
   // ─── Identity Management ──────────────────────────────────────────────

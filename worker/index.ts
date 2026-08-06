@@ -52,6 +52,7 @@ import { workosRoutes } from './routes/workos'
 import { githubRoutes } from './routes/github'
 import { aapRoutes } from './routes/aap'
 import { credentialRoutes } from './routes/credentials'
+import { createAuthorityRoutes, durableObjectResolver, type AuthorityStub } from './routes/authority'
 
 export { IdentityDO }
 
@@ -813,6 +814,39 @@ app.route('', workosRoutes)
 app.route('', githubRoutes)
 app.route('', aapRoutes)
 app.route('', credentialRoutes)
+
+// ── Authority (Domain 11) — grant · introspect · revoke · refuse ────────────
+//
+// Authentication is applied BY NAMING THE PATHS, not by a wildcard, so the two
+// exemptions are visible here rather than buried in the handler:
+//
+//   /authority/revoke/*  is SEATLESS. REQ-7: you pay to govern at scale, never
+//                        to stop an agent, and a revocation behind a login is a
+//                        paywall on stopping one. Its credential is the grant's
+//                        own revoke secret, good for exactly one act on exactly
+//                        one grant.
+//   /authority/claim     is KEYLESS. REQ-9: the subject has never resolved, so
+//                        there is by construction no session to present. The
+//                        single-use claim token is the credential.
+//
+// Adding `app.use('/authority/*', authenticateRequest)` would silently break
+// both requirements while looking tidier. Do not.
+app.use('/authority/ask', authenticateRequest)
+app.use('/authority/grant', authenticateRequest)
+app.use('/authority/refuse', authenticateRequest)
+app.use('/authority/authorize', authenticateRequest)
+app.use('/authority/introspect', authenticateRequest)
+app.use('/authority/grants', authenticateRequest)
+app.use('/authority/settlement/*', authenticateRequest)
+// The seated revoke path only. `app.use` with an exact path does not match
+// `/authority/revoke/:tenantId/:grantId`, which is what keeps that one seatless.
+app.use('/authority/revoke', authenticateRequest)
+app.route(
+  '',
+  createAuthorityRoutes(
+    durableObjectResolver((env, identityId) => getStubForIdentity(env, identityId) as unknown as AuthorityStub),
+  ),
+)
 
 // ── Fallback: serve @mdxui/auth SPA or 404 ───────────────────────────────
 
