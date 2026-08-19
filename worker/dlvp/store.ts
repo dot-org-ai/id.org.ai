@@ -50,6 +50,11 @@ export class DlvpStore {
     return receipt
   }
 
+  /** Number of receipts persisted (test-facing; atomic-or-nothing assertions). */
+  size(): number {
+    return this.receipts.size
+  }
+
   /** Current status of a receipt's grant. */
   statusOf(grai: string): 'valid' | 'revoked' | 'unknown' {
     const st = this.status.get(grai)
