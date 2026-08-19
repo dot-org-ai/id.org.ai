@@ -45,6 +45,20 @@ describe('GET /vin/{vin}', () => {
     expect(link).toContain('application/ld+json')
   })
 
+  it('anonymous response is publicly cacheable but Vary keys on credential headers (no cross-user leak)', async () => {
+    const res = await SELF.fetch(`${BASE}/vin/${VALID_VIN}`, { headers: { accept: 'application/ld+json' } })
+    expect(res.status).toBe(200)
+    // Anonymous (keyless-first-value) doc carries no Who and is safe to share-cache.
+    expect((await res.json() as Record<string, unknown>).who).toBeUndefined()
+    expect(res.headers.get('cache-control')).toContain('public')
+    // A shared cache MUST key on the credential headers so an authenticated request
+    // can never be served this anonymous entry (and vice-versa). Guards the leak the
+    // personalized branch closes with private,no-store.
+    const vary = res.headers.get('vary') ?? ''
+    expect(vary).toContain('Authorization')
+    expect(vary).toContain('Cookie')
+  })
+
   it('bad VIN check digit → 400 typed CHECKSUM_FAIL', async () => {
     const res = await SELF.fetch(`${BASE}/vin/${BAD_CHECK_VIN}`)
     expect(res.status).toBe(400)
@@ -67,7 +81,7 @@ describe('GET /vin/{vin}', () => {
     })
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('application/ld+json')
-    expect(res.headers.get('x-resolver-fallback')).toContain('html→jsonld')
+    expect(res.headers.get('x-resolver-fallback')).toContain('html->jsonld')
   })
 
   it('default client (bare, no Accept) → 200 JSON-LD', async () => {

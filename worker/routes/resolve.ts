@@ -62,7 +62,10 @@ const STAGE1_AVAILABLE: Face[] = ['html', 'jsonld', 'json']
 // Sibling faces advertised via Link rel="alternate" (the two real body faces).
 const ADVERTISED_FACES: Face[] = ['jsonld', 'json']
 
-const VARY = 'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest, User-Agent'
+// Vary includes the credential-bearing headers so a shared cache never keys an
+// anonymous response to an authenticated request (or vice-versa). Cache-Control
+// below is the primary guard; this is defense in depth.
+const VARY = 'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest, User-Agent, Authorization, Cookie'
 
 /**
  * A no-op stub satisfying the IdentityStub contract, for the broker's WorkOS
@@ -121,18 +124,21 @@ function whoBlock(identity: Identity): WhoBlock {
  * the jsonld/json faces resolve to a JSON-LD body — html falls back with an
  * extra header noting the deferred 303. Never 406.
  */
-function emitFace(c: ResolveContext, neg: NegotiateResult, canonical: string, doc: unknown) {
+function emitFace(c: ResolveContext, neg: NegotiateResult, canonical: string, doc: unknown, personalized: boolean) {
   // Faces that carry a JSON-LD body in stage 1: jsonld, json, and the html
   // fallback (303 target store deferred).
   const bodyFace: Face = neg.face === 'html' ? 'jsonld' : neg.face
   c.header('Content-Type', FACE_CONTENT_TYPE[bodyFace])
   c.header('Vary', VARY)
   c.header('Link', `<${canonical}>; rel="canonical", ${alternatesHeader(canonical, ADVERTISED_FACES)}`)
-  c.header('Cache-Control', 'public, max-age=3600')
+  // A who-bearing (personalized) response MUST NOT be shared-cached — else a CDN
+  // could serve one user's identity-stamped document to another. Only the
+  // anonymous keyless-first-value document is safe to cache publicly.
+  c.header('Cache-Control', personalized ? 'private, no-store' : 'public, max-age=3600')
   if (neg.face === 'html') {
-    // Declared narrowing: no defaultLink store yet → serve the identity face
+    // Declared narrowing: no defaultLink store yet -> serve the identity face
     // instead of a 303-to-nothing. Advertise the deferral for observability.
-    c.header('X-Resolver-Fallback', 'html→jsonld (defaultLink 303 store deferred, ADR 0001 D2)')
+    c.header('X-Resolver-Fallback', 'html->jsonld (defaultLink 303 store deferred, ADR 0001 D2)')
   }
   return c.body(JSON.stringify(doc, null, 2), 200)
 }
@@ -170,7 +176,7 @@ export function createResolveApp() {
     const doc = buildVinDoc(vin, who ? whoBlock(who) : undefined)
     // Conservative capture stamp — no-op sink, never a G5 write.
     stampResolve(canonical, who ? who.id : 'anon')
-    return emitFace(c, neg, canonical, doc)
+    return emitFace(c, neg, canonical, doc, who !== null)
   })
 
   // ── GET /01/{gtin} and GET /01/{gtin}/21/{serial} ────────────────────────
@@ -204,7 +210,7 @@ export function createResolveApp() {
     const who = await resolveWho(c)
     const doc = buildGtinDoc(parsed.gtin, parsed.serial, who ? whoBlock(who) : undefined)
     stampResolve(canonical, who ? who.id : 'anon')
-    return emitFace(c, neg, canonical, doc)
+    return emitFace(c, neg, canonical, doc, who !== null)
   }
 
   app.get('/01/:gtin', gtinHandler)
