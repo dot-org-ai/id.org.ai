@@ -151,6 +151,24 @@ describe('POST /dlvp/settle — the atomic symmetric co-settle', () => {
     expect(store.size()).toBe(1)
   })
 
+  it('rejects a REPLAYED co-presentation — the resolution nonce is single-use', async () => {
+    const { app, store, session, nonce } = await openSession()
+    const p = await bothPresentations(nonce)
+    const body = JSON.stringify({ session, consumerPresentation: p.consumer, brandPresentation: p.brand })
+    const opts = { method: 'POST' as const, headers: { 'content-type': 'application/json' }, body }
+
+    const first = await app.request(`${ORIGIN}/dlvp/settle`, opts)
+    expect(first.status).toBe(200)
+    expect(store.size()).toBe(1)
+
+    // Same session + same presentations, submitted again inside the session TTL.
+    const replay = await app.request(`${ORIGIN}/dlvp/settle`, opts)
+    expect(replay.status).toBe(409)
+    expect(((await replay.json()) as { error: { code: string } }).error.code).toBe('NONCE_REPLAY')
+    // Atomic: the replay minted nothing new.
+    expect(store.size()).toBe(1)
+  })
+
   it('the receipt is fetchable and revocable through its own Digital Link address', async () => {
     const { app, session, nonce } = await openSession()
     const p = await bothPresentations(nonce)
