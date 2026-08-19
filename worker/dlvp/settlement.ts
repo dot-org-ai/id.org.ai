@@ -121,13 +121,22 @@ export interface MockSettlementOptions {
  * already in the presentation) — recorded only. Both-legs-or-neither: commit
  * returns BOTH leg records or a single rejection, never a partial.
  */
-export function mockSettlementPort(opts: MockSettlementOptions = {}): SettlementPort & {
+export interface MockSettlementPort extends SettlementPort {
+  /** The live call log (same reference — mutated in place as phases run). */
   readonly calls: ReadonlyArray<{ phase: 'prepare' | 'commit' | 'void'; handle?: string }>
+  /** How many commits SUCCEEDED (money-moved count). */
   readonly committedCount: number
-} {
+}
+
+export function mockSettlementPort(opts: MockSettlementOptions = {}): MockSettlementPort {
   const calls: Array<{ phase: 'prepare' | 'commit' | 'void'; handle?: string }> = []
-  let committed = 0
-  const port: SettlementPort = {
+  const counters = { committed: 0 }
+  const port: MockSettlementPort = {
+    // `calls` is the live array reference; `committedCount` is a live getter.
+    calls,
+    get committedCount() {
+      return counters.committed
+    },
     async prepare(intent) {
       calls.push({ phase: 'prepare' })
       if (opts.failAt === 'prepare') {
@@ -144,7 +153,7 @@ export function mockSettlementPort(opts: MockSettlementOptions = {}): Settlement
       if (opts.failAt === 'commit') {
         return { ok: false, reason: opts.failReason ?? 'declined', detail: 'mock: forced commit failure' }
       }
-      committed++
+      counters.committed++
       return {
         ok: true,
         txRef: `mocktx_${prepared.handle}`,
@@ -156,14 +165,7 @@ export function mockSettlementPort(opts: MockSettlementOptions = {}): Settlement
       calls.push({ phase: 'void', handle: prepared.handle })
     },
   }
-  return Object.assign(port, {
-    get calls() {
-      return calls
-    },
-    get committedCount() {
-      return committed
-    },
-  })
+  return port
 }
 
 /**
