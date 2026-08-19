@@ -302,6 +302,25 @@ describe('replay + backward-compat', () => {
     expect(store.size()).toBe(1)
   })
 
+  it('value does NOT clear on holder-attestation when the registry is empty (counter-verified required)', async () => {
+    // The exact hole the C5 gate closes: counterVerify grants rung 3 to a scope-asserting
+    // VC even with NO registry record (verdict holder-attested) — in production the
+    // registry is empty, so EVERY presentation would otherwise reach rung 3. Value must
+    // require the registry-counter-verified verdict, not mere holder-attestation.
+    const store = new DlvpStore()
+    const port = mockSettlementPort()
+    const { session, nonce } = await openSession(offerFor(3), { store, settlement: port })
+    const p = await bothPresentations(nonce)
+    // Settle against an app whose registry has NO record for the key.
+    const emptyApp = createDlvpApp({ registry: new MemoryRegistryPort(), signer, trust, store, settlement: port })
+    const res = await settleOffer(emptyApp, session, p)
+    expect(res.status).toBe(402)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('CONFIDENCE_NOT_COUNTERVERIFIED')
+    expect(store.size()).toBe(0) // nothing minted
+    expect(port.committedCount).toBe(0) // no value captured
+    expect(port.calls.some((x) => x.phase === 'prepare')).toBe(false) // blocked BEFORE any value hold
+  })
+
   it('a signer failure at receipt-mint voids the hold and records NOTHING (atomic)', async () => {
     const store = new DlvpStore()
     const port = mockSettlementPort()

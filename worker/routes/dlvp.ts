@@ -403,6 +403,12 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
       return dlvpError(c, 'NONCE_REPLAY', 'this resolution nonce has already been settled or is in-flight', 'start a fresh /dlvp/session — each co-presentation is single-use', 409)
     }
 
+    // Defense in depth: once the value rail has COMMITTED, a later throw must NOT
+    // release the nonce (releasing would allow a re-lock → re-commit → double-charge).
+    // Post-commit steps are pure/in-memory so this is unreachable in v1, but the guard
+    // keeps the money path safe by construction. Reversal/refund is id.org.ai-kzj.
+    let committed = false
+
     try {
       // (g) counter-verify the consumer possession rung (C3/C5 input).
       const cv = await counterVerify({ presentation: consumer, identifier: key, grain, registry })
@@ -491,6 +497,8 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
         return dlvpError(c, 'SETTLEMENT_FAILED', `value capture failed: ${reason}`, 'the disclosure was NOT revealed and NOTHING was recorded', 402)
       }
 
+      committed = true // the value rail captured — the nonce must never be released now
+
       // (m) COMMIT the disclosure side (non-fallible, in-memory). Both legs cleared
       // → persist the receipt, burn the nonce, record the value in the receipt,
       // stamp the paired EPCIS events, mint the revocation capability.
@@ -554,8 +562,10 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
         200,
       )
     } catch (e) {
-      // Any unexpected throw: fail-closed, release the lock, record nothing.
-      store.releaseNonce(r)
+      // Any unexpected throw: fail-closed, record nothing. Release the lock ONLY if
+      // the value rail did not already commit (a committed nonce stays locked, never
+      // re-committable) — see the `committed` guard above.
+      if (!committed) store.releaseNonce(r)
       return dlvpError(c, 'SETTLEMENT_FAILED', 'settlement aborted', String(e), 402)
     }
   })

@@ -257,7 +257,9 @@ export interface DlvpError {
       | 'OFFER_MISSING'
       | 'OFFER_INVALID'
       | 'OFFER_EXPIRED'
+      | 'OFFER_REQUIRES_SETTLE_OFFER'
       | 'CONFIDENCE_TOO_LOW'
+      | 'CONFIDENCE_NOT_COUNTERVERIFIED'
       | 'SETTLEMENT_FAILED'
     /** Which side failed, when applicable. */
     side?: 'consumer' | 'brand'
