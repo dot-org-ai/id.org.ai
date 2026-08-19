@@ -5,8 +5,8 @@
  * flips the bit. v1 serves this IN-MEMORY (per-isolate), injectable so tests get
  * a fresh instance and production shares one module singleton.
  *
- * DEFERRED + TICKETED (bd model-gap): the PERSISTENT Token-Status-List store +
- * durable revocation + the receipt GRAI registry write — those need a provisioned
+ * DEFERRED + TICKETED (bd model-gap id.org.ai-56v): the PERSISTENT Token-Status-
+ * List store + durable revocation + the receipt GRAI registry write — need a provisioned
  * binding (RAILS forbids one this increment). v1 revocation is session-scoped:
  * it flips an in-memory bit and stamps a BizStep-revoking event; a restart clears
  * it. The GDPR "erasure = revoke transition" semantics are honored in-shape.

@@ -13,7 +13,7 @@
  * │ provisional constants under our draft-superset namespace. The vocab rows   │
  * │ themselves must be authored in the sibling standards repo.                 │
  * │ TICKET: standards.org.ai — author BizStep-consenting/disclosing/revoking.  │
- * │ Tracked as a bd model-gap on this repo. NEVER claim ratified GS1.          │
+ * │ bd model-gap id.org.ai-qmp (this repo). NEVER claim ratified GS1.          │
  * └────────────────────────────────────────────────────────────────────────────┘
  */
 

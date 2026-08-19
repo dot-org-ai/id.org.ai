@@ -21,7 +21,8 @@
  * │ — it does NOT compute the compounding longitudinal posterior, and it does  │
  * │ NOT reach rung 4 (cryptographic-presence) or rung 5 (signed ownership      │
  * │ chain): those need the deferred secure-element / transfer-credential verify.│
- * │ Declared scope narrowing — bd model-gap.                                    │
+ * │ Declared scope narrowing — bd model-gap id.org.ai-67g (+ registry graded    │
+ * │ confidence id.org.ai-x3u).                                                   │
  * └────────────────────────────────────────────────────────────────────────────┘
  */
 

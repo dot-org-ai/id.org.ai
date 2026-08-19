@@ -21,10 +21,11 @@
  *
  * ┌─ DEFERRED + TICKETED (bd model-gap) ──────────────────────────────────────┐
  * │ • The async single-sided /dlvp/present with server-held half-session state │
- * │   — needs a binding; v1 ships the synchronous atomic /dlvp/settle instead.  │
+ * │   — needs a binding; v1 ships synchronous atomic /dlvp/settle. id.org.ai-2s1.│
  * │ • A real issuer trust list — production trust map is empty (session-        │
- * │   injected in tests). • Robust identifier→(key,grain) parsing reuses        │
- * │   parseDlPath/parseDlKey later; v1 uses a lightweight split.                │
+ * │   injected in tests). id.org.ai-e9a. • Atomic disclosure↔VALUE settlement +  │
+ * │   the C5 rungs: id.org.ai-67g. • Robust identifier→(key,grain) parsing       │
+ * │   reuses parseDlPath/parseDlKey later; v1 uses a lightweight split.          │
  * └────────────────────────────────────────────────────────────────────────────┘
  */
 

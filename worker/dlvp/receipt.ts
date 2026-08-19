@@ -15,10 +15,10 @@
  * ┌─ DEFERRED + TICKETED (bd model-gap) ──────────────────────────────────────┐
  * │ • The receipt as a cnf-bound, TRADEABLE instrument with full Token-Status- │
  * │   List revocation semantics + metered/decaying grants — v1 is single-grant │
- * │   + revocable (in-memory status), not metered.                             │
+ * │   + revocable (in-memory status), not metered. id.org.ai-ac3 / id.org.ai-56v.│
  * │ • The GRAI registry WRITE so /8003/{grai} returns the RECEIPT itself       │
  * │   (v1: the GRAI resolves through the door to the generic key doc; the      │
- * │   receipt VC is fetched via GET /dlvp/receipt/:grai). Needs a binding.     │
+ * │   receipt VC is fetched via GET /dlvp/receipt/:grai). id.org.ai-56v.        │
  * │ • Real jurisdiction/law mapping — v1 stamps a provisional jurisdiction.    │
  * └────────────────────────────────────────────────────────────────────────────┘
  */

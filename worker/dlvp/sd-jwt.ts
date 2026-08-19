@@ -21,13 +21,14 @@
  * ┌─ DEFERRED + TICKETED (bd model-gap) ──────────────────────────────────────┐
  * │ • Real issuer TRUST LIST (GS1-rooted did:web / ID-JAG registry) — v1 uses  │
  * │   a session-injected iss→JWK trust map (test fixtures self-generate keys). │
+ * │   id.org.ai-e9a.                                                            │
  * │ • The full OIDC4VP wallet-issuance flow (authorization request/response,   │
  * │   presentation_definition / DCQL, wallet invocation, OpenID4VCI) — v1      │
- * │   VERIFIES presentations; it does not run the wallet flow.                 │
+ * │   VERIFIES presentations; it does not run the wallet flow. id.org.ai-06t.  │
  * │ • Nested `_sd` inside disclosed objects / recursive disclosures, array     │
  * │   element `...` digests, and `_sd_alg` other than sha-256 — v1 handles     │
  * │   top-level object-property disclosures with sha-256.                      │
- * │ • BBS+ / mDL / ZK — SYNTHESIS D2, separate primitives entirely.            │
+ * │ • BBS+ / mDL / ZK — SYNTHESIS D2, separate primitives. id.org.ai-ac3.      │
  * └────────────────────────────────────────────────────────────────────────────┘
  */
 
