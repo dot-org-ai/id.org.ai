@@ -98,12 +98,8 @@ export function buildIso27560(params: {
   }
 }
 
-/**
- * Mint the MutualDisclosureReceipt: build the ISO 27560 payload, reserve a status
- * bit, sign the receipt VC, and persist it in the store. Returns the full
- * addressable, revocable receipt.
- */
-export async function mintReceipt(params: {
+/** Params common to buildReceipt / mintReceipt. */
+export interface MintReceiptParams {
   signer: DlvpSigner
   store: DlvpStore
   brandController: string
@@ -117,7 +113,24 @@ export async function mintReceipt(params: {
   brandPresentationDigest: string
   resolverOrigin?: string
   expiresIn?: number
-}): Promise<MutualDisclosureReceipt> {
+  /**
+   * Phase-6: optional bizStep override (BizStep-clearing when the receipt records
+   * an atomic disclosure↔value settlement rather than a bare consent grant).
+   */
+  bizStep?: string
+  /** Phase-6: optional non-PII value-exchange summary recorded in the DLVP binding. */
+  valueExchanged?: DlvpBinding['valueExchanged']
+}
+
+/**
+ * BUILD (do NOT persist) the MutualDisclosureReceipt: reserve a status bit, build
+ * the ISO 27560 payload, and SIGN the receipt VC. This is the FALLIBLE local step
+ * (signing) — in the Phase-6 atomic settle path it runs BEFORE value capture so a
+ * failure here can void the value hold with nothing recorded. The status bit it
+ * reserves is released via `store.releaseStatus(grai)` if the receipt is never
+ * persisted. Call `persistReceipt` to commit it.
+ */
+export async function buildReceipt(params: MintReceiptParams): Promise<MutualDisclosureReceipt> {
   const origin = params.resolverOrigin ?? RESOLVER_ORIGIN
   const grai = mintGrai()
   const digitalLink = `${origin}/8003/${grai}`
@@ -136,7 +149,8 @@ export async function mintReceipt(params: {
     epcisEventId: params.epcisEventId,
     consumerPresentationDigest: params.consumerPresentationDigest,
     brandPresentationDigest: params.brandPresentationDigest,
-    bizStep: BIZSTEP_CONSENTING,
+    bizStep: params.bizStep ?? BIZSTEP_CONSENTING,
+    ...(params.valueExchanged ? { valueExchanged: params.valueExchanged } : {}),
   }
 
   // The receipt VC claims (signed by the resolver's issuer key).
@@ -148,16 +162,31 @@ export async function mintReceipt(params: {
     iso27560,
     dlvp,
   }
-  const vcJwt = await params.signer.sign(vcClaims, { expiresIn: params.expiresIn ?? 60 * 60 * 24 * 365 })
-
-  const receipt: MutualDisclosureReceipt = {
-    grai,
-    digitalLink,
-    vcJwt,
-    iso27560,
-    dlvp,
-    status: statusRef,
+  // Signing is the fallible step. If it throws, release the status bit we reserved so
+  // a failed mint leaves no orphan index (the atomic settle path also voids the value
+  // hold + releases the nonce in its catch).
+  let vcJwt: string
+  try {
+    vcJwt = await params.signer.sign(vcClaims, { expiresIn: params.expiresIn ?? 60 * 60 * 24 * 365 })
+  } catch (e) {
+    params.store.releaseStatus(grai)
+    throw e
   }
-  params.store.put(receipt)
+
+  return { grai, digitalLink, vcJwt, iso27560, dlvp, status: statusRef }
+}
+
+/** COMMIT a built receipt to the store (in-memory, non-fallible). */
+export function persistReceipt(store: DlvpStore, receipt: MutualDisclosureReceipt): MutualDisclosureReceipt {
+  store.put(receipt)
   return receipt
+}
+
+/**
+ * Mint the MutualDisclosureReceipt: build + persist in one step (the P5 back-
+ * compat wrapper — the existing /dlvp/settle path is byte-for-byte unchanged).
+ */
+export async function mintReceipt(params: MintReceiptParams): Promise<MutualDisclosureReceipt> {
+  const receipt = await buildReceipt(params)
+  return persistReceipt(params.store, receipt)
 }
