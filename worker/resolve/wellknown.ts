@@ -14,6 +14,7 @@
 
 import { SUPPORTED_PRIMARY_KEYS } from './identifiers'
 import { ID_LINKTYPES } from './linkset'
+import { DLVP_BIZSTEPS } from '../dlvp/bizsteps'
 
 /**
  * The gs1:* linkTypes surfaced by this resolver (ratified GS1 relations). They appear
@@ -36,6 +37,19 @@ export interface Gs1ResolverDescription {
   /** OUR draft-superset linkTypes, called out separately (no GS1 ratification claimed). */
   draftSupersetLinkType: readonly string[]
   supportsCompression: false
+  /**
+   * The Phase-5 DLVP symmetric-consent handshake surface, advertised in-band
+   * (SYNTHESIS C6 — machine-discoverable). Draft superset; the provisional
+   * bizSteps are NOT ratified GS1 CBV (standards.org.ai vocab ticketed).
+   */
+  dlvp: {
+    profile: 'DLVP/1'
+    sessionEndpoint: string
+    settleEndpoint: string
+    receiptEndpoint: string
+    provisionalBizSteps: readonly string[]
+    draftSuperset: true
+  }
   generatedAt: string
 }
 
@@ -48,6 +62,14 @@ export function buildResolverDescription(resolverRoot = 'https://id.org.ai'): Gs
     supportedLinkType: [...SUPPORTED_GS1_LINKTYPES, ...ID_LINKTYPES],
     draftSupersetLinkType: ID_LINKTYPES,
     supportsCompression: false,
+    dlvp: {
+      profile: 'DLVP/1',
+      sessionEndpoint: `${resolverRoot}/dlvp/session`,
+      settleEndpoint: `${resolverRoot}/dlvp/settle`,
+      receiptEndpoint: `${resolverRoot}/dlvp/receipt/{grai}`,
+      provisionalBizSteps: DLVP_BIZSTEPS,
+      draftSuperset: true,
+    },
     generatedAt: new Date().toISOString(),
   }
 }
