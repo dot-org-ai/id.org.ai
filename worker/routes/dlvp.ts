@@ -202,6 +202,14 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
       }
       return dlvpError(c, 'SESSION_INVALID', 'the session request-object did not verify', 're-open /dlvp/session')
     }
+    // An OFFER-bearing session is a PAID handshake — it MUST clear atomically with
+    // value via /dlvp/settle-offer. Redeeming it here (the free path, no value leg)
+    // would hand the discloser's claims over without payment and burn the nonce so
+    // the paid path can never run. The OFFER lives inside the signed session, so it
+    // cannot be stripped. Refuse. (Closes the disclosure-without-value bypass.)
+    if ((sess as Record<string, unknown>).offer) {
+      return dlvpError(c, 'OFFER_REQUIRES_SETTLE_OFFER', 'this session carries an OFFER and must be settled atomically with value', 'POST the co-presentation to /dlvp/settle-offer instead', 400)
+    }
     const r = String(sess.nonce)
     const epcisEventId = String(sess.epcisEventId)
     const identifier = String(sess.sub)
@@ -412,6 +420,17 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
         return dlvpError(c, 'CONFIDENCE_TOO_LOW', 'the proven possession confidence does not meet the OFFER minConfidence', hint, 402)
       }
 
+      // (h2) REGISTRY-BACKED CONFIDENCE ONLY — rung 3 is "registry / purchase binding".
+      // counterVerify grants rung 3 to a holder-attested VC (scope present) even when
+      // the registry is empty/absent (verdict 'holder-attested'), which in production
+      // is EVERY presentation. Value must NOT move on a rung that was not actually
+      // counter-verified against the registry of record. Fail-closed: any settleable
+      // (rung ≥ 3) tier requires the counter-verified verdict.
+      if (reachedRung >= 3 && cv.verdict !== 'holder-presented-vc-counterverified') {
+        store.releaseNonce(r)
+        return dlvpError(c, 'CONFIDENCE_NOT_COUNTERVERIFIED', 'settlement requires registry-counter-verified possession, not holder-attestation', `the possession claim is ${cv.verdict}; a registry counter-match is required to clear value at rung ${reachedRung}`, 402)
+      }
+
       // (i) build the dual-leg settlement intent from the OFFER (amounts) + the
       // verified disclosure (attribute digests — never raw PII).
       const brandLeg = await toSettlementLeg(legFor(offer, 'brand'), consumer, brand)
@@ -475,7 +494,14 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
       // (m) COMMIT the disclosure side (non-fallible, in-memory). Both legs cleared
       // → persist the receipt, burn the nonce, record the value in the receipt,
       // stamp the paired EPCIS events, mint the revocation capability.
+      // NOTE: the receipt VC (receipt.vcJwt) was SIGNED at step (k), before the value
+      // was captured, so this valueExchanged block is NOT covered by that signature —
+      // it is ADVISORY. The AUTHORITATIVE record of the value transfer is the signed
+      // settlement EPCIS event below (buildSettlementEvent: txRef + legDigests +
+      // achievedConfidence). A signed-after-commit attestation is deferred (id.org.ai-kzj).
       receipt.dlvp.valueExchanged = {
+        attestation: 'advisory',
+        authoritativeRecord: 'epcis-settlement-event',
         txRef: settled.txRef,
         achievedConfidence: reachedRung,
         legs: settled.legs.map((l) => ({ valueType: l.valueType, from: l.from, to: l.to, ...(l.amountMicros !== undefined ? { amountMicros: l.amountMicros } : {}) })),

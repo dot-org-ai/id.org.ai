@@ -184,6 +184,11 @@ export interface DlvpBinding {
    * receipt records an atomic settlement (BizStep-clearing).
    */
   valueExchanged?: {
+    // ADVISORY: added to the receipt object AFTER the VC is signed, so NOT covered by
+    // receipt.vcJwt. The authoritative record of the transfer is the signed settlement
+    // EPCIS event (buildSettlementEvent). A signed-after-commit attestation is deferred.
+    attestation?: 'advisory'
+    authoritativeRecord?: 'epcis-settlement-event'
     txRef: string
     achievedConfidence: number
     legs: Array<{ valueType: string; from: 'brand' | 'consumer'; to: 'brand' | 'consumer'; amountMicros?: number }>

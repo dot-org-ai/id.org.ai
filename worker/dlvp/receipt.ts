@@ -162,7 +162,16 @@ export async function buildReceipt(params: MintReceiptParams): Promise<MutualDis
     iso27560,
     dlvp,
   }
-  const vcJwt = await params.signer.sign(vcClaims, { expiresIn: params.expiresIn ?? 60 * 60 * 24 * 365 })
+  // Signing is the fallible step. If it throws, release the status bit we reserved so
+  // a failed mint leaves no orphan index (the atomic settle path also voids the value
+  // hold + releases the nonce in its catch).
+  let vcJwt: string
+  try {
+    vcJwt = await params.signer.sign(vcClaims, { expiresIn: params.expiresIn ?? 60 * 60 * 24 * 365 })
+  } catch (e) {
+    params.store.releaseStatus(grai)
+    throw e
+  }
 
   return { grai, digitalLink, vcJwt, iso27560, dlvp, status: statusRef }
 }

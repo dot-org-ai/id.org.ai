@@ -275,7 +275,9 @@ describe('replay + backward-compat', () => {
     expect(port.calls).toHaveLength(0)
   })
 
-  it('the P5 /dlvp/settle path still works when the session carries an offer (additive, ignores it)', async () => {
+  it('an OFFER-bearing session CANNOT be redeemed on the free P5 /dlvp/settle path (no disclosure-without-value)', async () => {
+    // Closes the bypass: the same co-presentation minted for a paid settle must not
+    // hand over the disclosure on the value-free path (which would also burn the nonce).
     const store = new DlvpStore()
     const { app, session, nonce } = await openSession(offerFor(3), { store })
     const p = await bothPresentations(nonce)
@@ -283,8 +285,43 @@ describe('replay + backward-compat', () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session, consumerPresentation: p.consumer, brandPresentation: p.brand }),
     })
-    expect(res.status).toBe(200) // consent-only P5 settle, offer ignored
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('OFFER_REQUIRES_SETTLE_OFFER')
+    expect(store.size()).toBe(0) // nothing disclosed, nothing minted
+  })
+
+  it('a plain (offer-free) P5 session still settles normally on /dlvp/settle', async () => {
+    const store = new DlvpStore()
+    const { app, session, nonce } = await openSession(undefined, { store })
+    const p = await bothPresentations(nonce)
+    const res = await app.request(`${ORIGIN}/dlvp/settle`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session, consumerPresentation: p.consumer, brandPresentation: p.brand }),
+    })
+    expect(res.status).toBe(200)
     expect(store.size()).toBe(1)
+  })
+
+  it('a signer failure at receipt-mint voids the hold and records NOTHING (atomic)', async () => {
+    const store = new DlvpStore()
+    const port = mockSettlementPort()
+    const { session, nonce } = await openSession(offerFor(3), { store, settlement: port })
+    const p = await bothPresentations(nonce)
+    // A second app over the SAME store whose signer.sign() throws at receipt-mint;
+    // verify still delegates, so the session + presentations verify and the value
+    // hold prepares — then minting fails.
+    const failSigner: DlvpSigner = {
+      sign: async () => { throw new Error('signer unavailable') },
+      verify: (t: string) => signer.verify(t),
+    }
+    const failApp = createDlvpApp({ registry: seededRegistry(), signer: failSigner, trust, store, settlement: port })
+    const res = await settleOffer(failApp, session, p)
+    expect(res.status).toBe(402)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('SETTLEMENT_FAILED')
+    expect(store.size()).toBe(0) // nothing minted, nothing disclosed
+    expect(port.committedCount).toBe(0) // no value captured
+    expect(port.calls.some((x) => x.phase === 'void')).toBe(true) // the hold was voided
+    expect(port.calls.some((x) => x.phase === 'commit')).toBe(false) // never committed
   })
 
   it('production default settlement port is FAIL-CLOSED (no rail wired -> SETTLEMENT_FAILED, no money)', async () => {
