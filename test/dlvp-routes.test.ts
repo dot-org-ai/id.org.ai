@@ -158,13 +158,21 @@ describe('POST /dlvp/settle — the atomic symmetric co-settle', () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session, consumerPresentation: p.consumer, brandPresentation: p.brand }),
     })
-    const grai = ((await settle.json()) as { receipt: { grai: string } }).receipt.grai
+    const settled = (await settle.json()) as { receipt: { grai: string; revocationToken: string } }
+    const grai = settled.receipt.grai
+    const revocationToken = settled.receipt.revocationToken
 
     const get = await app.request(`${ORIGIN}/dlvp/receipt/${grai}`)
     expect(get.status).toBe(200)
     expect(((await get.json()) as { statusState: string }).statusState).toBe('valid')
 
-    const revoke = await app.request(`${ORIGIN}/dlvp/receipt/${grai}/revoke`, { method: 'POST' })
+    // Revoke without the capability is refused; with it, it succeeds.
+    const unauth = await app.request(`${ORIGIN}/dlvp/receipt/${grai}/revoke`, { method: 'POST' })
+    expect(unauth.status).toBe(403)
+    const wrong = await app.request(`${ORIGIN}/dlvp/receipt/${grai}/revoke`, { method: 'POST', headers: { 'x-revocation-token': 'not-the-token' } })
+    expect(wrong.status).toBe(403)
+
+    const revoke = await app.request(`${ORIGIN}/dlvp/receipt/${grai}/revoke`, { method: 'POST', headers: { 'x-revocation-token': revocationToken } })
     expect(revoke.status).toBe(200)
     const rbody = (await revoke.json()) as { revoked: boolean; statusState: string; epcis: unknown[] }
     expect(rbody.revoked).toBe(true)

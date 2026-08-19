@@ -211,6 +211,14 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
       return dlvpError(c, 'NONCE_MISMATCH', 'the four-place nonce binding does not hold', 'each KB-JWT nonce must equal r', 400)
     }
 
+    // (b2) REPLAY GUARD: a co-presentation nonce is single-use. Burn it BEFORE minting
+    // so a captured settle body cannot be replayed within the ~120s session TTL.
+    // (v1 in-memory/per-isolate; the durable cross-isolate guard is id.org.ai-56v.)
+    if (store.isNonceSpent(r)) {
+      return dlvpError(c, 'NONCE_REPLAY', 'this resolution nonce has already been settled', 'start a fresh /dlvp/session — each co-presentation is single-use', 409)
+    }
+    store.spendNonce(r)
+
     // (c) COUNTER-VERIFY the consumer VC against the registry of record (C3).
     const cv = await counterVerify({ presentation: consumer, identifier: key, grain, registry })
 
@@ -259,6 +267,11 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
     stampDlvp(brandDisclosure, sink)
     stampDlvp(receiptConsent, sink)
 
+    // (f) mint the revocation CAPABILITY — returned once, to the settling parties only.
+    // Revoke requires it, so a bystander who learns the public GRAI cannot revoke.
+    const revocationToken = mintNonce()
+    store.setRevocationToken(receipt.grai, revocationToken)
+
     return c.json(
       {
         verdict: cv.verdict,
@@ -270,6 +283,7 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
           digitalLink: receipt.digitalLink,
           vcJwt: receipt.vcJwt,
           statusListRef: receipt.status,
+          revocationToken,
         },
         epcis: [consumerDisclosure, brandDisclosure, receiptConsent],
       },
@@ -299,11 +313,17 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
   })
 
   // ── POST /dlvp/receipt/:grai/revoke — flip the status bit + stamp revoking ───
-  app.post('/dlvp/receipt/:grai/revoke', (c) => {
+  app.post('/dlvp/receipt/:grai/revoke', async (c) => {
     const grai = c.req.param('grai')
     const receipt = store.get(grai)
     if (!receipt) {
       return dlvpError(c, 'RECEIPT_NOT_FOUND', `no consent receipt for GRAI ${grai}`, 'mint one via /dlvp/settle', 404)
+    }
+    // AUTHORIZE: only a holder of the revocation capability (minted to the parties at
+    // settle) may revoke — a public GRAI alone must not let a bystander grief the grant.
+    const token = c.req.header('x-revocation-token') ?? (await c.req.json().catch(() => ({})))?.revocationToken
+    if (!store.checkRevocationToken(grai, token)) {
+      return dlvpError(c, 'REVOKE_UNAUTHORIZED', 'a valid revocationToken is required to revoke this receipt', 'present the revocationToken returned at /dlvp/settle', 403)
     }
     store.revoke(grai)
     const revokeEvent = buildRevokeEvent({
