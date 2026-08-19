@@ -39,8 +39,21 @@ export function isEffectClass(v: unknown): v is EffectClass {
  *   - `unverifiable-by-registry` — no sanctioned channel exists (or the
  *     source is not yet connected/ingested). Carries a typed cure — the
  *     access application itself. Never fabricated liveness.
+ *   - `holder-presented-vc-counterverified` — (Phase-5 / DLVP, SYNTHESIS C3)
+ *     the holder presented a verifiable credential AND id.org.ai cross-checked
+ *     it against the registry of record in the SAME round. Strictly stronger
+ *     than either `holder-attested` (VC shape only) or `registry-verified`
+ *     (registry only) alone — no wallet, issuer, or registry mints it
+ *     independently. Produced by worker/dlvp/counter-verify.ts, never by
+ *     verify() itself (which targets the license SourcePort, not the identifier
+ *     RegistryPort). Added additively: the pinned acceptance spec pins response
+ *     SHAPE, not type names (see the module header + ADR 0016 M-d).
  */
-export type VerificationVerdict = 'registry-verified' | 'holder-attested' | 'unverifiable-by-registry'
+export type VerificationVerdict =
+  | 'registry-verified'
+  | 'holder-attested'
+  | 'unverifiable-by-registry'
+  | 'holder-presented-vc-counterverified'
 
 // ── Source classification ──────────────────────────────────────────────────
 
