@@ -1,30 +1,37 @@
 /**
  * resolve.ts — the public, anonymous-first GS1 Digital Link resolver door
- * (ADR 0001 stage 1).
+ * (ADR 0001 stage 1 + Phase-4 registry expansion).
  *
  * Additive to the shipped `oauth` worker: mounted BEFORE `authenticateRequest`
  * so it is keyless-first-value. Owns:
  *   GET /vin/{vin}
- *   GET /01/{gtin}
- *   GET /01/{gtin}/21/{serial}
+ *   GET /01/{gtin}[/21/{serial}]
+ *   GET /00/{sscc}  /414/{gln}  /8004/{giai}  /8003/{grai}  /253/{gdti}   (Phase-4)
+ *   GET /.well-known/gs1resolver                                          (Phase-4)
  *
  * Flow per request:
  *   parse + validate identifier  → typed 400 on bad grammar / check digit
- *   content-negotiate (ported)   → 200 JSON-LD identity doc for
- *                                   application/ld+json | application/json,
- *                                   303 → defaultLink for browser/text-html*
+ *   registry lookup (PORT)       → a ResolvedManifest joins owner/linkset/policy;
+ *                                   a miss (or the unprovisioned default) keeps
+ *                                   the existence-neutral self-derived doc
+ *   linkType dispatch            → ?linkType=linkset|all or
+ *                                   Accept: application/linkset+json → 200 RFC 9264
+ *                                   linkset (no redirect); ?linkType=id:* → typed stub
+ *   content-negotiate (ported)   → 200 JSON-LD identity doc; browser/text-html →
+ *                                   303 See Other to the resolved defaultLink when
+ *                                   a manifest carries one, else the documented
+ *                                   html→jsonld fallback
  *   Who                          → broker.identify(req); attach only when a
  *                                   credential resolves (L0 anonymous omits it)
  *   capture                      → conservative stamp, no-op sink (never G5)
  *
- * *STAGE-1 NARROWING (declared): there is NO registry / defaultLink store in
- * this repo yet, so the ADR D2 `text/html → 303 to gs1:defaultLink` cannot
- * resolve a real target. A 303-to-nothing is impossible, so the browser/html
- * face FALLS BACK to the 200 JSON-LD identity face. The 303 + defaultLink store
- * is deferred + ticketed (bd model-gap).
+ * PHASE-4: the resolver reads owner/linkset/defaultLink THROUGH the RegistryPort
+ * (injected; the production singleton keeps the honest `emptyRegistryPort` until
+ * the live binding is provisioned — RAILS). When the registry is unprovisioned
+ * the door behaves EXACTLY as stage-1 (the shipped resolve.test.ts is green).
  *
- * The response never 406s. Every face carries Content-Type, a Vary over the
- * conneg inputs, and a Link rel="alternate" advertising sibling faces.
+ * The response never 406s. Every JSON face carries Content-Type, a Vary over the
+ * conneg inputs + credential headers, and a Link rel="alternate".
  */
 import { Hono } from 'hono'
 import type { Context } from 'hono'
@@ -38,15 +45,29 @@ import {
   type Face,
   type NegotiateResult,
 } from '../resolve/conneg'
-import { isVinShape, vinVerify, mod10Verify, parseDlPath } from '../resolve/identifiers'
-import { buildVinDoc, buildGtinDoc, vinCanonicalUri, dlCanonicalUri, type WhoBlock } from '../resolve/jsonld'
+import {
+  isVinShape,
+  vinVerify,
+  mod10Verify,
+  parseDlPath,
+  parseDlKey,
+  type Grain,
+} from '../resolve/identifiers'
+import {
+  buildVinDoc,
+  buildGtinDoc,
+  buildKeyDoc,
+  keyCanonicalUri,
+  vinCanonicalUri,
+  dlCanonicalUri,
+  type WhoBlock,
+} from '../resolve/jsonld'
 import { stampResolve } from '../resolve/capture'
+import { buildLinkset, buildLinkTypeStub, isIdLinkType } from '../resolve/linkset'
+import { buildResolverDescription } from '../resolve/wellknown'
+import { emptyRegistryPort, type RegistryPort, type ResolvedManifest } from '../registry/port'
 
 // ── Typed resolver error surface (contract-specified nested shape) ─────────
-// The resolver uses a domain-specific typed error {error:{code,message,hint}},
-// distinct from the OAuth flat {error, error_description} shape, because the
-// contract pins CONFORMANCE / CHECKSUM_FAIL as the machine codes a Digital Link
-// client switches on.
 type ResolverErrorCode = 'CONFORMANCE' | 'CHECKSUM_FAIL'
 
 type ResolveContext = Context<{ Bindings: Env; Variables: Variables }>
@@ -55,24 +76,14 @@ function resolverError(c: ResolveContext, code: ResolverErrorCode, message: stri
   return c.json({ error: { code, message, hint } }, 400)
 }
 
-// ── Conneg availability for stage 1 ────────────────────────────────────────
-// html is a legal outcome (→ 303 today falls back to jsonld) but not a body
-// face here; linkset + md are deferred.
-const STAGE1_AVAILABLE: Face[] = ['html', 'jsonld', 'json']
-// Sibling faces advertised via Link rel="alternate" (the two real body faces).
-const ADVERTISED_FACES: Face[] = ['jsonld', 'json']
+// ── Conneg availability ─────────────────────────────────────────────────────
+// html is a legal outcome (→ 303 when a manifest carries a defaultLink, else the
+// documented jsonld fallback). Phase-4 enables the linkset face.
+const STAGE1_AVAILABLE: Face[] = ['html', 'jsonld', 'json', 'linkset']
+const ADVERTISED_FACES: Face[] = ['jsonld', 'json', 'linkset']
 
-// Vary includes the credential-bearing headers so a shared cache never keys an
-// anonymous response to an authenticated request (or vice-versa). Cache-Control
-// below is the primary guard; this is defense in depth.
 const VARY = 'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest, User-Agent, Authorization, Cookie'
 
-/**
- * A no-op stub satisfying the IdentityStub contract, for the broker's WorkOS
- * sk_* fallback path when tenant resolution produced no id.org.ai stub. Every
- * lookup reports "not found"; the broker then resolves anonymous (no WorkOS key
- * wired into the resolver door) — existence-neutral by construction.
- */
 const NO_STUB = {
   validateApiKey: async () => ({ valid: false }),
   getSession: async () => ({ valid: false }),
@@ -82,16 +93,6 @@ const NO_STUB = {
   checkRateLimit: async () => ({ allowed: true, remaining: 0, resetAt: 0 }),
 } as unknown as IdentityStub
 
-/**
- * Resolve the optional Who for a GET. Anonymous-first: returns null when no
- * credential resolves (L0), a full Identity otherwise. Never throws — a read
- * must succeed regardless of credential state.
- *
- * Constructs AuthBrokerImpl mirroring worker/middleware/auth.ts: `stubFor`
- * returns the identityStub the identityStubMiddleware already staged (or a
- * no-op), `verifyJwt` trusts the already-resolved identityId. No new identity
- * mechanism — this is exactly the ADR D3 Who wiring.
- */
 async function resolveWho(c: ResolveContext): Promise<Identity | null> {
   try {
     const stub = c.get('identityStub') as IdentityStub | undefined
@@ -103,12 +104,10 @@ async function resolveWho(c: ResolveContext): Promise<Identity | null> {
     const identity = await broker.identify(c.req.raw)
     return identity.id === 'anon' ? null : identity
   } catch {
-    // Existence-neutral: any resolution failure yields anonymous (no Who).
     return null
   }
 }
 
-/** Map an Identity to the existence-neutral Who block attached to the doc. */
 function whoBlock(identity: Identity): WhoBlock {
   const $type: WhoBlock['$type'] =
     identity.type === 'human'
@@ -120,38 +119,118 @@ function whoBlock(identity: Identity): WhoBlock {
 }
 
 /**
- * Emit the negotiated face. In stage 1 both the html (redirect) fallback and
- * the jsonld/json faces resolve to a JSON-LD body — html falls back with an
- * extra header noting the deferred 303. Never 406.
+ * The resolved 303 target for a manifest's defaultLink: the href of the link
+ * whose relation matches `defaultLink`. Returns null when no target resolves
+ * (then the html face keeps the documented jsonld fallback).
  */
-function emitFace(c: ResolveContext, neg: NegotiateResult, canonical: string, doc: unknown, personalized: boolean) {
-  // Faces that carry a JSON-LD body in stage 1: jsonld, json, and the html
-  // fallback (303 target store deferred).
-  const bodyFace: Face = neg.face === 'html' ? 'jsonld' : neg.face
+function resolveDefaultTarget(manifest: ResolvedManifest): string | null {
+  const want = manifest.defaultLink
+  const hit = manifest.linkset.links.find((l) => l.linkType === want)
+  return hit ? hit.href : null
+}
+
+function baseHeaders(c: ResolveContext, canonical: string, personalized: boolean, bodyFace: Face) {
   c.header('Content-Type', FACE_CONTENT_TYPE[bodyFace])
   c.header('Vary', VARY)
   c.header('Link', `<${canonical}>; rel="canonical", ${alternatesHeader(canonical, ADVERTISED_FACES)}`)
-  // A who-bearing (personalized) response MUST NOT be shared-cached — else a CDN
-  // could serve one user's identity-stamped document to another. Only the
-  // anonymous keyless-first-value document is safe to cache publicly.
+  // A who-bearing response MUST NOT be shared-cached; the anonymous
+  // keyless-first-value document is safe to cache publicly.
   c.header('Cache-Control', personalized ? 'private, no-store' : 'public, max-age=3600')
+}
+
+/**
+ * Emit the negotiated identity face. When html is negotiated AND a manifest
+ * carries a resolvable defaultLink, emit a real 303 See Other to that target
+ * (closing the stage-1 html→jsonld fallback for provisioned records). Otherwise
+ * html falls back to the jsonld body, as documented. Never 406.
+ */
+function emitFace(
+  c: ResolveContext,
+  neg: NegotiateResult,
+  canonical: string,
+  doc: unknown,
+  personalized: boolean,
+  manifest?: ResolvedManifest,
+) {
   if (neg.face === 'html') {
-    // Declared narrowing: no defaultLink store yet -> serve the identity face
-    // instead of a 303-to-nothing. Advertise the deferral for observability.
-    c.header('X-Resolver-Fallback', 'html->jsonld (defaultLink 303 store deferred, ADR 0001 D2)')
+    const target = manifest ? resolveDefaultTarget(manifest) : null
+    if (target) {
+      // The abstract identifier is not the page — 303 See Other to gs1:defaultLink.
+      c.header('Vary', VARY)
+      c.header('Cache-Control', personalized ? 'private, no-store' : 'public, max-age=3600')
+      return c.redirect(target, 303)
+    }
+    // Declared narrowing: no defaultLink target -> serve the identity face.
+    baseHeaders(c, canonical, personalized, 'jsonld')
+    c.header('X-Resolver-Fallback', 'html->jsonld (no registry defaultLink target, ADR 0001 D2)')
+    return c.body(JSON.stringify(doc, null, 2), 200)
   }
+  const bodyFace: Face = neg.face
+  baseHeaders(c, canonical, personalized, bodyFace)
   return c.body(JSON.stringify(doc, null, 2), 200)
 }
 
-export function createResolveApp() {
+/**
+ * The shared finisher for every resolved identifier. Reads the manifest through
+ * the injected registry, dispatches the ?linkType / linkset faces, resolves Who,
+ * builds the doc via `docFor`, stamps the capture, and emits.
+ */
+async function finish(
+  c: ResolveContext,
+  registry: RegistryPort,
+  key: string,
+  grain: Grain,
+  canonical: string,
+  routePath: string,
+  docFor: (who: WhoBlock | undefined, manifest: ResolvedManifest | undefined) => unknown,
+) {
+  const lookup = await registry.lookup(key, grain)
+  const manifest = lookup.found ? lookup.manifest : undefined
+
+  // ?linkType dispatch (independent of Accept): linkset / all / id:* faces.
+  const linkType = new URL(c.req.url).searchParams.get('linkType')
+  const neg = negotiate(c.req.raw, routePath, { available: STAGE1_AVAILABLE })
+
+  const who = await resolveWho(c)
+  const personalized = who !== null
+  stampResolve(canonical, who ? who.id : 'anon')
+
+  // Linkset face — ?linkType=linkset|all OR Accept: application/linkset+json.
+  if (linkType === 'linkset' || linkType === 'all' || neg.face === 'linkset') {
+    const body = buildLinkset(canonical, manifest)
+    c.header('Content-Type', FACE_CONTENT_TYPE.linkset)
+    c.header('Vary', VARY)
+    c.header('Cache-Control', personalized ? 'private, no-store' : 'public, max-age=3600')
+    return c.body(JSON.stringify(body, null, 2), 200)
+  }
+
+  // Extended id:* typed stub faces — each an addressable draft-superset envelope.
+  if (linkType && isIdLinkType(linkType)) {
+    const stub = buildLinkTypeStub(linkType, canonical, manifest)
+    c.header('Content-Type', FACE_CONTENT_TYPE.json)
+    c.header('Vary', VARY)
+    c.header('Cache-Control', personalized ? 'private, no-store' : 'public, max-age=3600')
+    return c.body(JSON.stringify(stub, null, 2), 200)
+  }
+
+  const doc = docFor(who ? whoBlock(who) : undefined, manifest)
+  return emitFace(c, neg, canonical, doc, personalized, manifest)
+}
+
+export function createResolveApp(deps: { registry?: RegistryPort } = {}) {
+  const registry = deps.registry ?? emptyRegistryPort()
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+  // ── /.well-known/gs1resolver — the resolver description doc ──────────────
+  app.get('/.well-known/gs1resolver', (c) => {
+    const desc = buildResolverDescription()
+    return c.json(desc, 200, { 'Cache-Control': 'public, max-age=3600' })
+  })
 
   // ── GET /vin/{vin} ──────────────────────────────────────────────────────
   app.get('/vin/:vin', async (c) => {
     const raw = c.req.param('vin')
     const vin = raw.toUpperCase()
-
-    // Grammar (CONFORMANCE) before check digit (CHECKSUM_FAIL).
     if (!isVinShape(vin)) {
       return resolverError(
         c,
@@ -169,30 +248,20 @@ export function createResolveApp() {
         `ISO 3779 / 49 CFR 565.15 transliteration+weights (${check.algorithm})`,
       )
     }
-
-    const neg = negotiate(c.req.raw, `/vin/${vin}`, { available: STAGE1_AVAILABLE })
-    const who = await resolveWho(c)
     const canonical = vinCanonicalUri(vin)
-    const doc = buildVinDoc(vin, who ? whoBlock(who) : undefined)
-    // Conservative capture stamp — no-op sink, never a G5 write.
-    stampResolve(canonical, who ? who.id : 'anon')
-    return emitFace(c, neg, canonical, doc, who !== null)
+    return finish(c, registry, `vin/${vin}`, 'instance', canonical, `/vin/${vin}`, (who, manifest) =>
+      buildVinDoc(vin, who, manifest),
+    )
   })
 
-  // ── GET /01/{gtin} and GET /01/{gtin}/21/{serial} ────────────────────────
-  // One handler over the DL path form: parse the leftmost primary key and the
-  // optional /21 qualifier from the raw pathname (tolerating unknown trailing
-  // AIs), so both routes flow through the same grammar + check-digit gate.
+  // ── GET /01/{gtin}[/21/{serial}] ─────────────────────────────────────────
   const gtinHandler = async (c: ResolveContext) => {
     const { pathname } = new URL(c.req.url)
     const segs = pathname.split('/').filter(Boolean)
-    // segs starts at the primary key AI '01'.
     const parsed = parseDlPath(segs)
     if ('error' in parsed) {
       return resolverError(c, parsed.error, parsed.message, parsed.hint)
     }
-
-    // GTIN shape is re-checked in parseDlPath; run the mod-10 check digit.
     const check = mod10Verify(parsed.gtin)
     if (!check.pass) {
       return resolverError(
@@ -202,22 +271,50 @@ export function createResolveApp() {
         `GS1 mod-10 (${check.algorithm})`,
       )
     }
-
     const canonical = dlCanonicalUri(parsed.gtin, parsed.serial)
-    const neg = negotiate(c.req.raw, `/01/${parsed.gtin}${parsed.serial ? `/21/${parsed.serial}` : ''}`, {
-      available: STAGE1_AVAILABLE,
-    })
-    const who = await resolveWho(c)
-    const doc = buildGtinDoc(parsed.gtin, parsed.serial, who ? whoBlock(who) : undefined)
-    stampResolve(canonical, who ? who.id : 'anon')
-    return emitFace(c, neg, canonical, doc, who !== null)
+    const key = parsed.serial ? `01/${parsed.gtin}/21/${parsed.serial}` : `01/${parsed.gtin}`
+    const grain: Grain = parsed.serial ? 'instance' : 'class'
+    const routePath = `/01/${parsed.gtin}${parsed.serial ? `/21/${parsed.serial}` : ''}`
+    return finish(c, registry, key, grain, canonical, routePath, (who, manifest) =>
+      buildGtinDoc(parsed.gtin, parsed.serial, who, manifest),
+    )
   }
-
   app.get('/01/:gtin', gtinHandler)
   app.get('/01/:gtin/21/:serial', gtinHandler)
+
+  // ── GET Phase-4 generalised keys: /00 /414 /8004 /8003 /253 ──────────────
+  const keyHandler = async (c: ResolveContext) => {
+    const { pathname } = new URL(c.req.url)
+    const segs = pathname.split('/').filter(Boolean)
+    const parsed = parseDlKey(segs)
+    if ('error' in parsed) {
+      return resolverError(c, parsed.error, parsed.message, parsed.hint)
+    }
+    if (parsed.checkDigit && parsed.numericCore) {
+      const check = mod10Verify(parsed.numericCore)
+      if (!check.pass) {
+        return resolverError(
+          c,
+          'CHECKSUM_FAIL',
+          `${parsed.name} check digit is ${check.got}, expected ${check.expected}`,
+          `GS1 mod-10 (${check.algorithm})`,
+        )
+      }
+    }
+    const canonical = keyCanonicalUri(parsed.keyAi, parsed.primaryValue)
+    const key = `${parsed.keyAi}/${parsed.primaryValue}`
+    return finish(c, registry, key, parsed.grain, canonical, `/${parsed.keyAi}/${parsed.primaryValue}`, (who, manifest) =>
+      buildKeyDoc(parsed.keyAi, parsed.primaryValue, parsed.grain, parsed.serial, who, manifest),
+    )
+  }
+  app.get('/00/:sscc', keyHandler)
+  app.get('/414/:gln', keyHandler)
+  app.get('/8004/:giai', keyHandler)
+  app.get('/8003/:grai', keyHandler)
+  app.get('/253/:gdti', keyHandler)
 
   return app
 }
 
-/** Production mount used by worker/index.ts. */
+/** Production mount used by worker/index.ts. Empty registry until the live binding is provisioned. */
 export const resolveRoutes = createResolveApp()

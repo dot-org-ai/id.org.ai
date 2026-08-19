@@ -12,13 +12,32 @@
  * DRIFT: no automated gate against upstream check.js/dl.js (unlike axp-faces'
  * `vendor --check`). Tracked as a bd model-gap issue.
  *
- * STAGE-1 SCOPE: handles only the /01 (GTIN) primary key with an optional /21
- * (serial) qualifier, plus the bare 17-char VIN. LGTIN(01+10), SSCC(00),
- * GIAI(8004), GRAI(8003), compressed DL, and the full qualifier taxonomy are
- * deferred + ticketed (ADR 0001 D1).
+ * STAGE-1 SCOPE (unchanged, preserved for the shipped tests): `parseDlPath`
+ * handles only the /01 (GTIN) primary key with an optional /21 (serial)
+ * qualifier, plus the bare 17-char VIN.
+ *
+ * PHASE-4 EXPANSION (additive): `parseDlKey` generalises the leftmost-primary-key
+ * parse to a KEY GRAMMAR TABLE covering 00 SSCC / 414 GLN / 8004 GIAI / 8003 GRAI
+ * / 253 GDTI / 01 GTIN, each with its declared grain, value grammar (all-digit
+ * or CSET-82), and check-digit rule. Path qualifiers (10 lot, 21 serial) sort in
+ * canonical order (22 CPV → 10 → 21; we implement 10 → 21, 22 deferred); the 17
+ * expiry AI is NOT a path qualifier — it is a DATA ATTRIBUTE that degrades to a
+ * sorted query parameter (GS1 DL URI Syntax), so we validate its date grammar but
+ * never treat it as a path segment that changes grain.
+ *
+ * DEFERRED + TICKETED (bd model-gap): compressed DL 1.1.4, the remaining primary
+ * keys (255 GCN, 8010/8011 CPID, 8017/8018 GSRN, 417, 8006/8026 ITIP, 254 GLN
+ * extension as a data attribute), 22 CPV, element-string↔DL conversion, and the
+ * hand-port drift gate against upstream check.js/dl.js.
  *
  * Zero-dependency, Workers-safe.
  */
+
+/**
+ * The declared grain of an identifier. Mirrors `registry/port.ts` Grain (kept as
+ * a local copy so this pure module stays dependency-free of the registry).
+ */
+export type Grain = 'class' | 'lot' | 'instance' | 'place' | 'asset' | 'document'
 
 // ── GS1 mod-10 (GenSpecs §7.9) ────────────────────────────────────────────
 
@@ -179,4 +198,204 @@ export function parseDlPath(segs: string[]): DlPath | DlParseError {
   }
 
   return { keyAi: '01', gtin, qualifiers, serial, toleratedExtra }
+}
+
+// ── CSET-82 (GS1 AI encodable character set 82, GenSpecs §7.11) ─────────────
+
+/**
+ * GS1 CSET 82: the 82 characters an alphanumeric AI value may carry —
+ * A–Z a–z 0–9 and the 20 symbols `! " % & ' ( ) * + , - . / : ; < = > ? _`.
+ * `-` is placed last in the class so it is literal.
+ */
+const CSET82 = /^[A-Za-z0-9!"%&'()*+,./:;<=>?_-]+$/
+
+/** True iff every character of `value` is in CSET-82 and the length is in range. */
+export function isCset82(value: string, min = 1, max = Infinity): boolean {
+  return value.length >= min && value.length <= max && CSET82.test(value)
+}
+
+/** All-digit fixed-length grammar (SSCC/GLN and the numeric cores of GRAI/GDTI). */
+function isNumericLen(value: string, len: number): boolean {
+  return value.length === len && /^[0-9]+$/.test(value)
+}
+
+/**
+ * GS1 expiry (AI 17) date grammar YYMMDD. MM is 01–12; DD is 00–31, where GS1
+ * uses DD='00' to mean "end of month". This is a DATA ATTRIBUTE, never a path
+ * qualifier — validated for grammar only.
+ */
+export function isExpiryDate(value: string): boolean {
+  if (!/^[0-9]{6}$/.test(value)) return false
+  const mm = Number(value.slice(2, 4))
+  const dd = Number(value.slice(4, 6))
+  return mm >= 1 && mm <= 12 && dd >= 0 && dd <= 31
+}
+
+// ── Phase-4 key grammar table ───────────────────────────────────────────────
+
+/** One primary-key grammar row. */
+interface KeyGrammar {
+  ai: string
+  name: string
+  /** Base grain; a GRAI/GDTI with a serial upgrades to `serialGrain`. */
+  grain: Grain
+  /**
+   * How the primary value is shaped:
+   *   'numeric-fixed'         all-digits, exactly `len`, with a mod-10 check.
+   *   'cset82'                1..`max` CSET-82 chars, NO check digit.
+   *   'numeric-core+serial'   `coreLen` all-digit core (mod-10 check) + optional
+   *                           trailing serial (CSET-82, ≤`serialMax`).
+   */
+  kind: 'numeric-fixed' | 'cset82' | 'numeric-core+serial'
+  len?: number
+  max?: number
+  coreLen?: number
+  serialMax?: number
+  serialGrain?: Grain
+  /** Whether the numeric core carries a mod-10 check digit to verify. */
+  checkDigit: boolean
+}
+
+/**
+ * The defensible Phase-4 primary-key set. 01 GTIN keeps its dedicated
+ * `parseDlPath`/route; the rows below are the additive keys `parseDlKey` serves.
+ */
+export const KEY_GRAMMAR: Readonly<Record<string, KeyGrammar>> = Object.freeze({
+  '00': { ai: '00', name: 'SSCC', grain: 'instance', kind: 'numeric-fixed', len: 18, checkDigit: true },
+  '414': { ai: '414', name: 'GLN', grain: 'place', kind: 'numeric-fixed', len: 13, checkDigit: true },
+  // GIAI carries NO check digit — a real grain fact (GenSpecs), not a narrowing.
+  '8004': { ai: '8004', name: 'GIAI', grain: 'asset', kind: 'cset82', max: 30, checkDigit: false },
+  // GRAI: leading '0' + 13-digit core (14 total, mod-10) + optional serial ≤16.
+  '8003': {
+    ai: '8003', name: 'GRAI', grain: 'asset', kind: 'numeric-core+serial',
+    coreLen: 14, serialMax: 16, serialGrain: 'instance', checkDigit: true,
+  },
+  // GDTI: 13-digit core (mod-10) + optional serial ≤17.
+  '253': {
+    ai: '253', name: 'GDTI', grain: 'document', kind: 'numeric-core+serial',
+    coreLen: 13, serialMax: 17, serialGrain: 'instance', checkDigit: true,
+  },
+})
+
+/** The primary keys `parseDlKey` accepts, plus 01 (served by the dedicated path). */
+export const SUPPORTED_PRIMARY_KEYS = Object.freeze(['01', '00', '414', '8004', '8003', '253'])
+
+/**
+ * The generalised parse of a DL path over the Phase-4 key grammar table.
+ * `segs` starts at the primary-key AI, e.g. ['8003','0...serial'] or
+ * ['00','106141411234567891']. 01 is routed through `parseDlPath` instead.
+ *
+ * Returns the parsed key or a typed CONFORMANCE error. Does NOT run the mod-10
+ * check (the route runs it so it can emit CHECKSUM_FAIL distinctly); it DOES
+ * report the numeric core to check via `numericCore` and whether a check applies
+ * via `checkDigit`.
+ */
+export interface DlKey {
+  keyAi: string
+  name: string
+  grain: Grain
+  /** The full primary value as it appeared (core + serial for GRAI/GDTI). */
+  primaryValue: string
+  /** The numeric string the route runs mod-10 over (undefined for check-less keys). */
+  numericCore?: string
+  checkDigit: boolean
+  /** Ordered recognised qualifiers (stage-4: 10 lot, 21 serial for future 01 use). */
+  qualifiers: Array<{ ai: string; value: string }>
+  serial?: string
+  lot?: string
+  toleratedExtra: boolean
+}
+
+export type DlKeyError = { error: 'CONFORMANCE'; message: string; hint: string }
+
+export function parseDlKey(segs: string[]): DlKey | DlKeyError {
+  if (segs.length < 2) {
+    return {
+      error: 'CONFORMANCE',
+      message: `expected a Digital Link primary key /{ai}/{value}; got /${segs.join('/')}`,
+      hint: `stage-4 keys: ${SUPPORTED_PRIMARY_KEYS.join(', ')}`,
+    }
+  }
+  const [ai, value] = segs
+  const g = KEY_GRAMMAR[ai]
+  if (!g) {
+    return {
+      error: 'CONFORMANCE',
+      message: `unsupported primary key AI "${ai}"`,
+      hint: `parseDlKey serves ${Object.keys(KEY_GRAMMAR).join(', ')}; /01 uses the GTIN path`,
+    }
+  }
+
+  let grain: Grain = g.grain
+  let serial: string | undefined
+  let numericCore: string | undefined
+
+  if (g.kind === 'numeric-fixed') {
+    if (!isNumericLen(value, g.len!)) {
+      return {
+        error: 'CONFORMANCE',
+        message: `${g.name} value "${value}" is not ${g.len} digits`,
+        hint: `${g.name} (AI ${ai}) is exactly ${g.len} all-numeric digits`,
+      }
+    }
+    numericCore = value
+  } else if (g.kind === 'cset82') {
+    if (!isCset82(value, 1, g.max!)) {
+      return {
+        error: 'CONFORMANCE',
+        message: `${g.name} value "${value}" is not 1..${g.max} CSET-82 characters`,
+        hint: `${g.name} (AI ${ai}) is CSET-82, max ${g.max}, and carries no check digit`,
+      }
+    }
+    // no numericCore — GIAI has no check digit.
+  } else {
+    // numeric-core + optional serial (GRAI/GDTI)
+    const core = value.slice(0, g.coreLen!)
+    const rest = value.slice(g.coreLen!)
+    if (!isNumericLen(core, g.coreLen!)) {
+      return {
+        error: 'CONFORMANCE',
+        message: `${g.name} numeric core "${core}" is not ${g.coreLen} digits`,
+        hint: `${g.name} (AI ${ai}) is a ${g.coreLen}-digit numeric core, optionally followed by a serial`,
+      }
+    }
+    numericCore = core
+    if (rest.length > 0) {
+      if (!isCset82(rest, 1, g.serialMax!)) {
+        return {
+          error: 'CONFORMANCE',
+          message: `${g.name} serial "${rest}" is not 1..${g.serialMax} CSET-82 characters`,
+          hint: `${g.name} serial is CSET-82, max ${g.serialMax}`,
+        }
+      }
+      serial = rest
+      grain = g.serialGrain!
+    }
+  }
+
+  // Walk any trailing AI/value pairs. Stage-4 recognises no path qualifiers for
+  // these keys (their serial is carried IN the primary value, GS1 DL syntax);
+  // anything trailing is tolerated-not-rejected (grain unchanged).
+  const rest = segs.slice(2)
+  let toleratedExtra = false
+  if (rest.length % 2 !== 0) {
+    return {
+      error: 'CONFORMANCE',
+      message: `dangling Digital Link segment after /${ai}/${value}: /${rest.join('/')}`,
+      hint: 'Digital Link path AIs ride as /{ai}/{value} pairs',
+    }
+  }
+  if (rest.length > 0) toleratedExtra = true
+
+  return {
+    keyAi: ai,
+    name: g.name,
+    grain,
+    primaryValue: value,
+    numericCore,
+    checkDigit: g.checkDigit,
+    qualifiers: [],
+    serial,
+    toleratedExtra,
+  }
 }
