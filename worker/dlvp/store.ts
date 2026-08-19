@@ -32,6 +32,10 @@ export class DlvpStore {
   // production replay-defense + revocation authority need the same provisioned binding.
   private spentNonces = new Set<string>()
   private revTokens = new Map<string, string>()
+  // Phase-6: an in-flight LOCK on a nonce while a value settlement is being
+  // attempted. Distinct from `spent`: a lock is released on settlement FAILURE
+  // (so a legitimate retry is possible) but promoted to `spent` on success.
+  private lockedNonces = new Set<string>()
 
   /** True once a resolution nonce has been settled — a co-presentation is single-use. */
   isNonceSpent(nonce: string): boolean {
@@ -41,6 +45,26 @@ export class DlvpStore {
   /** Burn a resolution nonce so a captured co-presentation cannot be replayed. */
   spendNonce(nonce: string): void {
     this.spentNonces.add(nonce)
+    // A spent nonce is no longer merely locked.
+    this.lockedNonces.delete(nonce)
+  }
+
+  /**
+   * Phase-6 atomic reserve (check-and-set). Returns false if the nonce is already
+   * spent OR already locked in-flight; otherwise locks it and returns true. This
+   * runs SYNCHRONOUSLY (no await between check and set) so within one isolate two
+   * concurrent settle-offer attempts on the same nonce cannot both acquire — the
+   * value replay guard. Durable cross-isolate locking is deferred (id.org.ai-56v).
+   */
+  tryLockNonce(nonce: string): boolean {
+    if (this.spentNonces.has(nonce) || this.lockedNonces.has(nonce)) return false
+    this.lockedNonces.add(nonce)
+    return true
+  }
+
+  /** Release an in-flight lock (settlement failed — allow a legitimate retry). */
+  releaseNonce(nonce: string): void {
+    this.lockedNonces.delete(nonce)
   }
 
   /** Bind a revocation capability token to a receipt (returned to the parties at settle). */
@@ -65,6 +89,16 @@ export class DlvpStore {
     const idx = this.nextIdx++
     this.status.set(grai, { idx, revoked: false })
     return { uri: STATUS_LIST_URI, idx, status: 'valid' }
+  }
+
+  /**
+   * Release a reserved-but-never-persisted status bit (Phase-6 atomic rollback:
+   * a receipt was built + a bit reserved, but settlement failed before commit, so
+   * no receipt is persisted). The monotonic idx is not reclaimed (gaps in a status
+   * list are fine); this only drops the orphan status entry so statusOf is honest.
+   */
+  releaseStatus(grai: string): void {
+    if (!this.receipts.has(grai)) this.status.delete(grai)
   }
 
   /** Persist (in-memory) a minted receipt. */

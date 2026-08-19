@@ -30,6 +30,7 @@ import {
 } from '../../src/sdk/jwt/signing'
 import { verifyJWT } from '../../src/sdk/oauth/jwt-verify'
 import type { CoPresentationRequest, DlvpSessionRequest, Ask } from './protocol'
+import type { DualLegOffer } from './offer'
 
 export const RESOLVER_ORIGIN = 'https://id.org.ai'
 /** Session request-object lifetime (short-lived — lens-B move 2). */
@@ -119,6 +120,8 @@ export function buildCoPresentationRequest(
     consumerAsk,
     brandAsk,
     resolverAud: resolverOrigin,
+    // Phase-6: fold the dual-leg OFFER into the SIGNED claims (tamper-proof terms).
+    ...(req.offer ? { offer: req.offer } : {}),
   }
 }
 
