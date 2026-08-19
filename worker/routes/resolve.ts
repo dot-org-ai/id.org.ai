@@ -27,6 +27,7 @@
  * conneg inputs, and a Link rel="alternate" advertising sibling faces.
  */
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import type { Env, Variables } from '../types'
 import type { Identity, IdentityStub } from '../../src/sdk/types'
 import { AuthBrokerImpl } from '../../src/sdk/auth/broker-impl'
@@ -48,12 +49,9 @@ import { stampResolve } from '../resolve/capture'
 // client switches on.
 type ResolverErrorCode = 'CONFORMANCE' | 'CHECKSUM_FAIL'
 
-function resolverError(
-  c: Parameters<Parameters<Hono<{ Bindings: Env; Variables: Variables }>['get']>[1]>[0],
-  code: ResolverErrorCode,
-  message: string,
-  hint: string,
-) {
+type ResolveContext = Context<{ Bindings: Env; Variables: Variables }>
+
+function resolverError(c: ResolveContext, code: ResolverErrorCode, message: string, hint: string) {
   return c.json({ error: { code, message, hint } }, 400)
 }
 
@@ -91,10 +89,7 @@ const NO_STUB = {
  * no-op), `verifyJwt` trusts the already-resolved identityId. No new identity
  * mechanism — this is exactly the ADR D3 Who wiring.
  */
-async function resolveWho(c: {
-  get: (k: string) => unknown
-  req: { raw: Request }
-}): Promise<Identity | null> {
+async function resolveWho(c: ResolveContext): Promise<Identity | null> {
   try {
     const stub = c.get('identityStub') as IdentityStub | undefined
     const resolvedId = c.get('resolvedIdentityId') as string | undefined
@@ -126,15 +121,7 @@ function whoBlock(identity: Identity): WhoBlock {
  * the jsonld/json faces resolve to a JSON-LD body — html falls back with an
  * extra header noting the deferred 303. Never 406.
  */
-function emitFace(
-  c: {
-    body: (data: string, status?: number) => Response
-    header: (k: string, v: string) => void
-  },
-  neg: NegotiateResult,
-  canonical: string,
-  doc: unknown,
-) {
+function emitFace(c: ResolveContext, neg: NegotiateResult, canonical: string, doc: unknown) {
   // Faces that carry a JSON-LD body in stage 1: jsonld, json, and the html
   // fallback (303 target store deferred).
   const bodyFace: Face = neg.face === 'html' ? 'jsonld' : neg.face
@@ -190,7 +177,7 @@ export function createResolveApp() {
   // One handler over the DL path form: parse the leftmost primary key and the
   // optional /21 qualifier from the raw pathname (tolerating unknown trailing
   // AIs), so both routes flow through the same grammar + check-digit gate.
-  const gtinHandler = async (c: Parameters<Parameters<typeof app.get>[1]>[0]) => {
+  const gtinHandler = async (c: ResolveContext) => {
     const { pathname } = new URL(c.req.url)
     const segs = pathname.split('/').filter(Boolean)
     // segs starts at the primary key AI '01'.
