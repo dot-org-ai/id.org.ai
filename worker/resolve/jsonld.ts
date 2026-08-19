@@ -193,7 +193,9 @@ const GRAIN_TYPE: Record<Grain, string> = {
   lot: 'Product',
   instance: 'Product',
   place: 'Place',
-  asset: 'Product',
+  // GIAI (individual asset) / GRAI (returnable asset) are NOT tradeable products;
+  // map to schema.org Thing (root) rather than overclaim Product. id.org.ai-5b2.
+  asset: 'Thing',
   document: 'CreativeWork',
 }
 

@@ -15,7 +15,11 @@
 import { SUPPORTED_PRIMARY_KEYS } from './identifiers'
 import { ID_LINKTYPES } from './linkset'
 
-/** The gs1:* linkTypes this resolver recognises today (ratified GS1 relations). */
+/**
+ * The gs1:* linkTypes surfaced by this resolver (ratified GS1 relations). They appear
+ * INSIDE the RFC 9264 linkset and as the 303 defaultLink target; per-linkType ?linkType
+ * dispatch for gs1:* (beyond linkset/all + the id:* set) is tracked by id.org.ai-ch5.
+ */
 const SUPPORTED_GS1_LINKTYPES = Object.freeze([
   'gs1:pip',
   'gs1:defaultLink',

@@ -2,6 +2,15 @@
  * registry/ownership.ts — the four-methods-to-one ownership reducer (lens-A §2).
  * PURE: no I/O.
  *
+ * PROVISION-SIDE: this reducer runs on the registry WRITE/provision path (a claim is
+ * verified once, when a record is written), not at resolve time — the resolver reads
+ * an already-proven owner from the manifest. Wiring reduceToClaim/verifyRangeClaim
+ * into the write API + the full cryptographic verification are ticketed on
+ * id.org.ai-506 (write API) and id.org.ai-q5f (crypto verify); this module currently
+ * has unit coverage only. GTM research (2026-08-19, HYPOTHESES.md Q5) adds a needed
+ * FIFTH method — `GTIN + possession-proof` (receipt / geo-at-POS / NFC-tap) as an
+ * OwnershipClaim for the volume consumer tier without a serial — tracked separately.
+ *
  * The registry accepts a claim when it carries ANY ONE of four proofs, ranked by
  * strength, all reduced to one `OwnershipClaim` with a proof digest:
  *   1. GCP-VC   — a GS1 Company Prefix verifiable credential ASSERTS the licensed

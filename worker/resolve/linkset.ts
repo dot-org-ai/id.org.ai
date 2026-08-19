@@ -132,7 +132,7 @@ const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
     draftSuperset: true,
     direction: 'mutual',
     $comment: 'The AXP OFFER face. Settlement / value-rail is Phase-6.',
-    ticket: 'id.org.ai-offer-p6',
+    ticket: 'id.org.ai-dfh',
   }),
   'id:consent': (anchor) => ({
     $context: ID_VOC,
@@ -142,7 +142,7 @@ const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
     status: 'placeholder',
     draftSuperset: true,
     $comment: 'The disclosure handshake face. DLVP / SD-JWT-VC / OIDC4VP crypto is Phase-5.',
-    ticket: 'id.org.ai-consent-p5',
+    ticket: 'id.org.ai-dfh',
   }),
   'id:event': (anchor) => ({
     $context: ID_VOC,
@@ -163,7 +163,7 @@ const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
     status: 'placeholder',
     draftSuperset: true,
     $comment: 'The ownership-proof record face. The proof ladder is a later Phase-4 increment.',
-    ticket: 'id.org.ai-owner-ladder',
+    ticket: 'id.org.ai-dfh',
   }),
 }
 

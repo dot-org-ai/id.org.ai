@@ -178,8 +178,8 @@ describe('Phase-4 generalised key routes (production mount, empty registry)', ()
   const grainCases: Array<[string, string, string]> = [
     [`/00/${SSCC}`, 'Product', 'sscc'],
     [`/414/${GLN}`, 'Place', 'gln'],
-    [`/8004/ASSET-1`, 'Product', 'giai'],
-    [`/8003/${GRAI_CORE}`, 'Product', 'grai'],
+    [`/8004/ASSET-1`, 'Thing', 'giai'],
+    [`/8003/${GRAI_CORE}`, 'Thing', 'grai'],
     [`/253/${GDTI_CORE}`, 'CreativeWork', 'gdti'],
   ]
   for (const [path, type, propertyID] of grainCases) {
