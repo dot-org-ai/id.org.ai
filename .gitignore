@@ -141,3 +141,4 @@ vite.config.ts.timestamp-*
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
 
+pnpm-workspace.yaml

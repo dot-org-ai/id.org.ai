@@ -52,6 +52,7 @@ import { workosRoutes } from './routes/workos'
 import { githubRoutes } from './routes/github'
 import { aapRoutes } from './routes/aap'
 import { credentialRoutes } from './routes/credentials'
+import { resolveRoutes } from './routes/resolve'
 
 export { IdentityDO }
 
@@ -775,6 +776,13 @@ app.route('', authVerifyRoutes)
 app.route('', authRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
+
+// ── Resolver Door (ADR 0001 stage 1) ─────────────────────────────────────────
+// Public, anonymous-first GS1 Digital Link resolver: GET /vin/{vin},
+// GET /01/{gtin}[/21/{serial}]. Mounted here — AFTER the public/self-authing
+// block and BEFORE authenticateRequest — so the door stays keyless-first-value
+// and every OAuth/authenticated route below is untouched.
+app.route('', resolveRoutes)
 
 // ── Validate API Key Endpoint ────────────────────────────────────────────────
 // Validates WorkOS API keys (sk_*) — mirrors oauth.do's POST /validate-api-key
