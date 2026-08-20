@@ -121,10 +121,6 @@ export interface LinkTypeStub {
 
 /** The draft digital bizStep verb (reused from capture.ts; provisional, non-ratified). */
 const BIZSTEP_RESOLVING = 'https://gs1.org.ai/cbv/BizStep-resolving'
-/** The provisional DLVP consent bizStep (from dlvp/bizsteps.ts; non-ratified GS1). */
-const BIZSTEP_CONSENTING = 'https://gs1.org.ai/cbv/BizStep-consenting'
-/** The live Phase-5 DLVP co-presentation endpoint. */
-const DLVP_SESSION_ENDPOINT = 'https://id.org.ai/dlvp/session'
 
 const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
   'id:offer': (anchor) => ({
@@ -143,14 +139,9 @@ const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
     $type: 'ConsentRequest',
     linkType: 'id:consent',
     anchor,
-    // status stays 'placeholder': the DLVP endpoint is LIVE (Phase-5), but the
-    // record-backed requirements (per-OFFER minConfidence read from a live
-    // policy) are still draft-superset — no GS1 ratification claimed.
     status: 'placeholder',
     draftSuperset: true,
-    $comment:
-      'The disclosure handshake face. Phase-5 DLVP endpoint is LIVE; the ' +
-      'consentRequirements block below is our draft superset (SD-JWT-VC co-presentation).',
+    $comment: 'The disclosure handshake face. DLVP / SD-JWT-VC / OIDC4VP crypto is Phase-5.',
     ticket: 'id.org.ai-dfh',
   }),
   'id:event': (anchor) => ({
@@ -196,39 +187,5 @@ export function buildLinkTypeStub(linkType: string, anchor: string, manifest?: R
       provedAt: manifest.owner.claim.provedAt,
     }
   }
-  if (linkType === 'id:consent') {
-    stub.consentRequirements = buildConsentRequirements(anchor, manifest)
-  }
   return stub
-}
-
-/**
- * The real (draft-superset) ConsentRequirements block wired into the id:consent
- * face (Phase-5). Names the LIVE DLVP endpoint, the provisional consent bizStep,
- * the consumer_ask / brand_offer predicates (read from the record's policy
- * offerBindings when provisioned), and the per-OFFER minConfidence (SYNTHESIS C5
- * — the possession-confidence the value at stake demands). Existence-neutral
- * defaults when no record resolves. Still OUR draft superset — no GS1 ratified.
- */
-export function buildConsentRequirements(anchor: string, manifest?: ResolvedManifest) {
-  const bindings = manifest?.policy.offerBindings ?? []
-  // offerBindings are opaque predicate keys in v1; each becomes a presence ask.
-  const consumerAsk = bindings.length > 0 ? bindings.map((b) => ({ claim: b, op: 'present' as const })) : [{ claim: 'owns', op: 'present' as const }]
-  return {
-    protocol: 'DLVP/1',
-    description: 'symmetric SD-JWT-VC co-presentation (one nonce, two presentations, one EPCIS event)',
-    endpoint: DLVP_SESSION_ENDPOINT,
-    method: 'POST',
-    anchor,
-    bizStep: BIZSTEP_CONSENTING,
-    draftSuperset: true,
-    consumerAsk,
-    brandOffer: [
-      { claim: 'genuine', op: 'present' as const },
-      { claim: 'warranty_active', op: 'present' as const },
-    ],
-    // C5: the possession-confidence tier the value at stake demands (v1 advertises;
-    // it does not settle value — Phase-6). 1 = coupon-tier default.
-    minConfidence: 1,
-  }
 }
