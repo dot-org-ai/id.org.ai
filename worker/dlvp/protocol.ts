@@ -23,7 +23,6 @@
  */
 
 import type { VerificationVerdict } from '../../src/sdk/credential/types'
-import type { DualLegOffer } from './offer'
 
 // ── Predicates (the asked/offered claims) ───────────────────────────────────
 
@@ -55,12 +54,6 @@ export interface DlvpSessionRequest {
   consumerAsk: Ask
   /** What the brand offers to prove / asks the consumer (symmetric). */
   brandOffer?: Ask
-  /**
-   * Phase-6: the dual-leg OFFER to settle at /dlvp/settle-offer. When present it is
-   * folded into the SIGNED session claims (sess.offer), so its minConfidence + value
-   * terms are tamper-proof. Absent → the P5 consent-only /dlvp/settle path is used.
-   */
-  offer?: DualLegOffer
 }
 
 /**
@@ -86,8 +79,6 @@ export interface CoPresentationRequest {
   brandAsk: Ask
   /** The resolver origin each KB-JWT must set as its `aud`. */
   resolverAud: string
-  /** Phase-6: the tamper-proof dual-leg OFFER (folded into the signed claims). */
-  offer?: DualLegOffer
   /** exp / iat — RFC 7519, injected by the signer (short-lived, ~120s). */
   exp?: number
   iat?: number
@@ -103,17 +94,6 @@ export interface DlvpSettleRequest {
   consumerPresentation: string
   /** The brand's SD-JWT-VC presentation, bound to the same r. */
   brandPresentation: string
-}
-
-/**
- * POST /dlvp/settle-offer request body (Phase-6). Same co-presentation as
- * /dlvp/settle, PLUS an optional opaque value-rail authorization. The OFFER
- * terms are NOT in the body — they ride the signed session (sess.offer), so the
- * body can never tamper with minConfidence or the amounts.
- */
-export interface DlvpSettleOfferRequest extends DlvpSettleRequest {
-  /** Opaque rail authorization (rail-specific); never the OFFER terms. */
-  valueProof?: Record<string, unknown>
 }
 
 // ── The DLVP verdict (the C3 dual-verifier tier) ─────────────────────────────
@@ -178,21 +158,6 @@ export interface DlvpBinding {
   brandPresentationDigest: string
   /** The provisional consent bizStep (non-ratified GS1). */
   bizStep: string
-  /**
-   * Phase-6: a non-PII summary of the value that cleared alongside disclosure
-   * (value TYPE + amount only — never counterparty PII). Present only when the
-   * receipt records an atomic settlement (BizStep-clearing).
-   */
-  valueExchanged?: {
-    // ADVISORY: added to the receipt object AFTER the VC is signed, so NOT covered by
-    // receipt.vcJwt. The authoritative record of the transfer is the signed settlement
-    // EPCIS event (buildSettlementEvent). A signed-after-commit attestation is deferred.
-    attestation?: 'advisory'
-    authoritativeRecord?: 'epcis-settlement-event'
-    txRef: string
-    achievedConfidence: number
-    legs: Array<{ valueType: string; from: 'brand' | 'consumer'; to: 'brand' | 'consumer'; amountMicros?: number }>
-  }
 }
 
 /** A Token-Status-List reference (v1: served/in-memory; persistent store DEFERRED). */
@@ -251,16 +216,6 @@ export interface DlvpError {
       | 'SD_HASH_MISMATCH'
       | 'BAD_REQUEST'
       | 'RECEIPT_NOT_FOUND'
-      | 'NONCE_REPLAY'
-      | 'REVOKE_UNAUTHORIZED'
-      // Phase-6 settle-offer codes.
-      | 'OFFER_MISSING'
-      | 'OFFER_INVALID'
-      | 'OFFER_EXPIRED'
-      | 'OFFER_REQUIRES_SETTLE_OFFER'
-      | 'CONFIDENCE_TOO_LOW'
-      | 'CONFIDENCE_NOT_COUNTERVERIFIED'
-      | 'SETTLEMENT_FAILED'
     /** Which side failed, when applicable. */
     side?: 'consumer' | 'brand'
     message: string

@@ -15,7 +15,7 @@
  */
 
 import { noopCaptureSink, type CaptureSink } from '../resolve/capture'
-import { BIZSTEP_CONSENTING, BIZSTEP_DISCLOSING, BIZSTEP_REVOKING, BIZSTEP_CLEARING } from './bizsteps'
+import { BIZSTEP_CONSENTING, BIZSTEP_DISCLOSING, BIZSTEP_REVOKING } from './bizsteps'
 
 /** A DLVP EPCIS-shaped event (provisional; never persisted in v1). */
 export interface DlvpEvent {
@@ -29,18 +29,7 @@ export interface DlvpEvent {
   /** Who — a principal id or a scoped pseudonym; 'anon' for L0. */
   'who.principal': string
   /** The DLVP binding — r ⊆ e (the single-event property). */
-  dlvp: {
-    nonce: string
-    epcisEventId: string
-    receiptDigest?: string
-    side?: 'consumer' | 'brand'
-    /** Phase-6 settlement: the value-rail tx reference (mock in v1). */
-    txRef?: string
-    /** Phase-6 settlement: the two leg value-type digests (no PII, no amounts in the clear). */
-    legDigests?: string[]
-    /** Phase-6 settlement: the achieved possession rung the value cleared at. */
-    achievedConfidence?: number
-  }
+  dlvp: { nonce: string; epcisEventId: string; receiptDigest?: string; side?: 'consumer' | 'brand' }
   /** Marks this as a non-persisted, provisional stamp — never a G5 write. */
   provisional: true
 }
@@ -86,40 +75,6 @@ export function buildDisclosureEvent(params: {
       epcisEventId: params.epcisEventId,
       side: params.side,
       receiptDigest: params.presentationDigest,
-    },
-    provisional: true,
-  }
-}
-
-/**
- * Phase-6 settlement (move: clearing): the PAIRED settlement event. A
- * TransactionEvent (action ADD) that carries both leg value-type digests + the
- * mock txRef + r (r ⊆ e) + the rung the value cleared at. This ONE event is the
- * settlement receipt + provenance entry + audit row (lens-C move 4). Never a G5
- * write — stamped to the same noopCaptureSink as every other DLVP event.
- */
-export function buildSettlementEvent(params: {
-  receiptDigitalLink: string
-  principal: string
-  nonce: string
-  epcisEventId: string
-  txRef: string
-  legDigests: string[]
-  achievedConfidence: number
-}): DlvpEvent {
-  return {
-    type: 'TransactionEvent',
-    action: 'ADD',
-    epcList: [params.receiptDigitalLink],
-    eventTime: new Date().toISOString(),
-    'why.bizStep': BIZSTEP_CLEARING,
-    'who.principal': params.principal,
-    dlvp: {
-      nonce: params.nonce,
-      epcisEventId: params.epcisEventId,
-      txRef: params.txRef,
-      legDigests: params.legDigests,
-      achievedConfidence: params.achievedConfidence,
     },
     provisional: true,
   }

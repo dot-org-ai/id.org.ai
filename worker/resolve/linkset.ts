@@ -24,7 +24,6 @@
  */
 
 import type { ResolvedManifest, LinkEntry } from '../registry/port'
-import { buildBrandPaysConsumerOffer, type DualLegOffer, type PossessionTier } from '../dlvp/offer'
 
 /** GS1 link-relation vocabulary base (the ratified gs1:* relations). */
 export const GS1_VOC = 'https://ref.gs1.org/voc/'
@@ -133,18 +132,11 @@ const STUBS: Record<string, (anchor: string) => LinkTypeStub> = {
     $type: 'Offer',
     linkType: 'id:offer',
     anchor,
-    // The ENVELOPE stays a draft-superset placeholder (no GS1 ratification, value
-    // settlement is v1-mock), but it now carries a LIVE typed dual-leg OFFER book
-    // (see `offers` below, attached in buildLinkTypeStub). Phase-6.
     status: 'placeholder',
     draftSuperset: true,
     direction: 'mutual',
-    $comment:
-      'The bidirectional dual-leg OFFER face. Phase-6: `offers` is a live typed ' +
-      'DualLegOffer book (brand-pays-consumer by default); the value rail is a ' +
-      'money-safe mock/no-op port until id.org.ai-67g wires the live rail.',
+    $comment: 'The AXP OFFER face. Settlement / value-rail is Phase-6.',
     ticket: 'id.org.ai-dfh',
-    settleEndpoint: 'https://id.org.ai/dlvp/settle-offer',
   }),
   'id:consent': (anchor) => ({
     $context: ID_VOC,
@@ -207,38 +199,7 @@ export function buildLinkTypeStub(linkType: string, anchor: string, manifest?: R
   if (linkType === 'id:consent') {
     stub.consentRequirements = buildConsentRequirements(anchor, manifest)
   }
-  if (linkType === 'id:offer') {
-    stub.offers = buildOfferFace(anchor, manifest)
-  }
   return stub
-}
-
-/**
- * The live (draft-superset) dual-leg OFFER book advertised on the id:offer face
- * (Phase-6). Reads `manifest.policy.offerBindings` — each becomes the verified-
- * attribute the consumer discloses in exchange for a brand-paid coupon (value
- * flows TO the discloser; default minConfidence 1 = coupon tier). Existence-
- * neutral default when no record resolves: a single `owns`-for-coupon OFFER.
- *
- * Settlement is atomic disclosure↔value via POST /dlvp/settle-offer and clears on
- * a money-safe MOCK/no-op port in v1 (no live rail, no keys — id.org.ai-67g).
- */
-export function buildOfferFace(anchor: string, manifest?: ResolvedManifest): DualLegOffer[] {
-  const bindings = manifest?.policy.offerBindings ?? []
-  const attributes = (bindings.length > 0 ? bindings : ['owns']).map((b) => ({ claim: b, op: 'present' as const }))
-  const minConfidence: PossessionTier = 1
-  return [
-    buildBrandPaysConsumerOffer({
-      anchor,
-      consumerGives: { valueType: 'verified-attribute', attributes },
-      brandGives: { valueType: 'micro-payment', amountMicros: 100_000, asset: 'USD' }, // $0.10 coupon (mock)
-      minConfidence,
-      // Deterministic id + expiry aligned with the face's 1h cache (illustrative
-      // advert; real policy-driven offers with per-OFFER expiry are id.org.ai-67g).
-      offerId: `offer_advert_${anchor}`,
-      expiry: new Date(Date.now() + 3600_000).toISOString(),
-    }),
-  ]
 }
 
 /**
