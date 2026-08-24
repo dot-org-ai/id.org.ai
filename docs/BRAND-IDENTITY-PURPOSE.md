@@ -172,7 +172,7 @@ This is **in force**, not proposed. It supersedes *"Agent. Human. Thing."* (`vis
 [RULED 2026-07-31]) and the live *"Humans. Agents. Identity."* in
 `site/components/auth-hero.tsx:48-51` and `APP_TAGLINE`.
 
-### What this ruling is not **[OWNER CLARIFICATION, 2026-08-24 — the brand triad is not the identity model]**
+### What this ruling is not **[CLARIFICATION — agent-drafted 2026-08-24, pending owner ratification: the brand triad is not the identity model]**
 
 The ruling above is the **human-facing brand ruling only**, and it must never be read as "id.org.ai
 has no Thing identity." id.org.ai remains the estate's **default GS1 Digital Link resolver**
