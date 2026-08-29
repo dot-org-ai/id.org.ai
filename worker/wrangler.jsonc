@@ -51,6 +51,11 @@
     { "pattern": "auth.headless.ly/*", "zone_name": "workers.do" },
     { "pattern": "id.org.ai/*", "zone_name": "id.org.ai" },
     { "pattern": "auth.org.ai/*", "zone_name": "workers.do" },
+    // startups.new sign-in (dot-do/startups.new#22): the Vercel-hosted app's
+    // sibling hostname. The zone is in this account; the DNS record is a
+    // proxied placeholder `AAAA auth.startups.new 100::` so the route fires.
+    // The auth cookie lands on Domain=.startups.new via getRootDomain.
+    { "pattern": "auth.startups.new/*", "zone_name": "startups.new" },
   ],
 
   "durable_objects": {
