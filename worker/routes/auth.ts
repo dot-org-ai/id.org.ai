@@ -301,6 +301,20 @@ app.get('/api/callback', async (c) => {
   const shardKey = `human:${authResult.user.id}`
   const stub = getStubForIdentity(c.env, shardKey)
 
+  // Authorization snapshot — the exact values the session JWT below is
+  // signed with. Persisted on the identity record (refreshed every login)
+  // so opaque OAuth access tokens can surface the same claims via
+  // /oauth/userinfo and /oauth/introspect (see toIdentityInfo in
+  // worker/routes/oauth.ts). WorkOS only hands us roles/permissions on the
+  // auth result; nothing else in the system has them.
+  const authorizationSnapshot = {
+    ...(orgId ? { organizationId: orgId } : {}),
+    ...(orgInfo?.name ? { organizationName: orgInfo.name } : {}),
+    ...(orgInfo?.domains?.length ? { organizationDomains: orgInfo.domains } : {}),
+    ...(authResult.user.roles ? { roles: authResult.user.roles } : {}),
+    ...(authResult.user.permissions ? { permissions: authResult.user.permissions } : {}),
+  }
+
   let identity = await stub.getIdentity(shardKey)
   if (!identity) {
     // Create new human identity
@@ -321,18 +335,26 @@ app.get('/api/callback', async (c) => {
         workosUserId: authResult.user.id,
         organizationId: authResult.user.organization_id || authResult.organization_id,
         ...(githubIdFromWorkOS ? { githubUserId: githubIdFromWorkOS } : {}),
+        ...authorizationSnapshot,
         createdAt: Date.now(),
       },
     })
     identity = await stub.getIdentity(shardKey)
-  } else if (githubIdFromWorkOS && !identity.githubUserId) {
-    // Existing identity without GitHub ID — backfill from WorkOS profile
+  } else {
+    // Existing identity — refresh the authorization snapshot on every login
+    // (roles/org membership change upstream) and backfill the GitHub ID
+    // from the WorkOS profile if we don't have one yet.
     const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${shardKey}` })
     if (stored.value) {
       await stub.oauthStorageOp({
         op: 'put',
         key: `identity:${shardKey}`,
-        value: { ...(stored.value as object), githubUserId: githubIdFromWorkOS },
+        value: {
+          ...(stored.value as object),
+          ...authorizationSnapshot,
+          ...(githubIdFromWorkOS && !identity.githubUserId ? { githubUserId: githubIdFromWorkOS } : {}),
+          updatedAt: Date.now(),
+        },
       })
       identity = await stub.getIdentity(shardKey)
     }

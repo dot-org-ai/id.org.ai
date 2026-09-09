@@ -42,8 +42,8 @@ export { MemoryOAuthStorage } from './storage'
 export type { OAuthStorage, ListOptions } from './storage'
 
 // OAuth 2.1 Provider implementation
-export { OAuthProvider } from './provider'
-export type { OAuthConfig, OAuthProviderClient } from './provider'
+export { OAuthProvider, authorizationClaims } from './provider'
+export type { OAuthConfig, OAuthProviderClient, IdentityInfo } from './provider'
 
 // Default client seeding (CLI, dashboard, headless.ly, etc.)
 export {

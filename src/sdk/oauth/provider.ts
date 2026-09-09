@@ -174,7 +174,7 @@ interface ConsentRecord {
 }
 
 // Internal display type — see OAuthUser in ./types.ts for canonical API type
-interface IdentityInfo {
+export interface IdentityInfo {
   id: string
   name?: string
   handle?: string
@@ -182,6 +182,43 @@ interface IdentityInfo {
   emailVerified?: boolean
   image?: string
   level?: number
+  /**
+   * Authorization claims — the same set the session JWT carries
+   * (worker/routes/auth.ts). Opaque access tokens have no payload, so
+   * /oauth/userinfo and /oauth/introspect surface these from the identity
+   * record; relying parties gate on them exactly as they gate on the JWT.
+   */
+  organizationId?: string
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
+  /** 'superadmin' when the identity's org is the platform org. */
+  platformRole?: 'superadmin'
+}
+
+/**
+ * Authorization claims shared by the session JWT, /oauth/userinfo and
+ * /oauth/introspect. Mirrors the JWT's `org {id,name,domains}`, `roles`,
+ * `permissions`, `platformRole`; keeps the flat `org_id` for existing
+ * consumers. Only defined values are emitted so a token without a snapshot
+ * looks exactly as it did before.
+ */
+export function authorizationClaims(identity: IdentityInfo | null | undefined): Record<string, unknown> {
+  if (!identity) return {}
+  const claims: Record<string, unknown> = {}
+  if (identity.organizationId) {
+    claims.org_id = identity.organizationId
+    claims.org = {
+      id: identity.organizationId,
+      ...(identity.organizationName ? { name: identity.organizationName } : {}),
+      ...(identity.organizationDomains?.length ? { domains: identity.organizationDomains } : {}),
+    }
+  }
+  if (identity.roles) claims.roles = identity.roles
+  if (identity.permissions) claims.permissions = identity.permissions
+  if (identity.platformRole === 'superadmin') claims.platformRole = 'superadmin'
+  return claims
 }
 
 function tierFromLevel(level: number | undefined): string | undefined {
@@ -213,7 +250,20 @@ export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, un
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier'],
+    claims_supported: [
+      'sub',
+      'name',
+      'preferred_username',
+      'picture',
+      'email',
+      'email_verified',
+      'tier',
+      'org_id',
+      'org',
+      'roles',
+      'permissions',
+      'platformRole',
+    ],
   }
 }
 
@@ -913,6 +963,10 @@ export class OAuthProvider {
       claims.email_verified = identity.emailVerified ?? false
     }
 
+    // Authorization claims — same set as the session JWT. Not scope-gated:
+    // org/roles/permissions describe what the token may do, not PII.
+    Object.assign(claims, authorizationClaims(identity))
+
     return jsonResponse(claims)
   }
 
@@ -947,6 +1001,9 @@ export class OAuthProvider {
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tier && { tier }),
+          // RFC 7662 §2.2 permits additional members; these mirror the
+          // session JWT so RPs can gate opaque tokens on roles/permissions.
+          ...authorizationClaims(identity),
         })
       }
     }
@@ -966,6 +1023,7 @@ export class OAuthProvider {
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tier && { tier }),
+          ...authorizationClaims(identity),
         })
       }
     }

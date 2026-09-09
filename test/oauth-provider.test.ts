@@ -38,6 +38,12 @@ interface IdentityInfo {
   emailVerified?: boolean
   image?: string
   level?: number
+  organizationId?: string
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
+  platformRole?: 'superadmin'
 }
 
 function createMockStorage(): StorageLike {
@@ -101,6 +107,22 @@ const TEST_IDENTITIES: Record<string, IdentityInfo> = {
     name: 'No Level',
     email: 'nolevel@example.com',
     emailVerified: true,
+  },
+  // Identity with the login-time authorization snapshot the session JWT is
+  // signed from (org, roles, permissions) plus the platform-org flag.
+  'user-org': {
+    id: 'user-org',
+    name: 'Org Operator',
+    handle: 'operator',
+    email: 'operator@example.com',
+    emailVerified: true,
+    level: 2,
+    organizationId: 'org_platform',
+    organizationName: 'Platform Org',
+    organizationDomains: ['example.com'],
+    roles: ['admin', 'operator'],
+    permissions: ['sdb:operate', 'sdb:read'],
+    platformRole: 'superadmin',
   },
 }
 
@@ -286,6 +308,13 @@ describe('OAuthProvider', () => {
     it('advertises tier in claims_supported', async () => {
       const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
       expect(d.claims_supported).toContain('tier')
+    })
+
+    it('advertises the authorization claims (org_id, org, roles, permissions, platformRole)', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      for (const claim of ['org_id', 'org', 'roles', 'permissions', 'platformRole']) {
+        expect(d.claims_supported).toContain(claim)
+      }
     })
 
     it('includes token endpoint auth methods', async () => {
@@ -1463,6 +1492,48 @@ describe('OAuthProvider', () => {
       expect(d.token_type).toBe('refresh_token')
     })
 
+    it('carries the session-JWT authorization claims (org, roles, permissions, platformRole) for an opaque access token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const d = await (await introspect(t.access_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.sub).toBe('user-org')
+      // RFC 7662 standard members are untouched
+      expect(d.client_id).toBe(clientId)
+      expect(d.token_type).toBe('Bearer')
+      expect(d.scope).toContain('openid')
+      expect(d.exp).toBeDefined()
+      expect(d.iat).toBeDefined()
+      expect(d.tier).toBe('L2')
+      // Same shape as the session JWT (worker/routes/auth.ts)
+      expect(d.org_id).toBe('org_platform')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('carries the same authorization claims for a refresh token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const d = await (await introspect(t.refresh_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.token_type).toBe('refresh_token')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('omits authorization claims entirely when the identity has no snapshot', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await introspect(t.access_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d).not.toHaveProperty('org_id')
+      expect(d).not.toHaveProperty('org')
+      expect(d).not.toHaveProperty('roles')
+      expect(d).not.toHaveProperty('permissions')
+      expect(d).not.toHaveProperty('platformRole')
+    })
+
     it('active=false for expired access token', async () => {
       const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
       const at = t.access_token as string
@@ -1599,6 +1670,33 @@ describe('OAuthProvider', () => {
       expect(d.picture).toBe('https://example.com/alice.png')
       expect(d.email).toBe('alice@example.com')
       expect(d.email_verified).toBe(true)
+    })
+
+    it('returns the session-JWT authorization claims alongside the standard OIDC claims', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const res = await userinfo(t.access_token as string)
+      expect(res.status).toBe(200)
+      const d = await res.json() as Record<string, unknown>
+      // Standard OIDC claims stay
+      expect(d.sub).toBe('user-org')
+      expect(d.name).toBe('Org Operator')
+      expect(d.preferred_username).toBe('operator')
+      expect(d.email).toBe('operator@example.com')
+      expect(d.email_verified).toBe(true)
+      // Authorization claims — org_id kept, org/roles/permissions/platformRole added
+      expect(d.org_id).toBe('org_platform')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('does not emit platformRole or org for an identity without a snapshot', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await userinfo(t.access_token as string)).json() as Record<string, unknown>
+      expect(d).not.toHaveProperty('org')
+      expect(d).not.toHaveProperty('roles')
+      expect(d).not.toHaveProperty('platformRole')
     })
 
     it('401 for missing Authorization header', async () => {

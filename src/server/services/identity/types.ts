@@ -39,6 +39,12 @@ export interface Identity {
   verified: boolean
   level: CapabilityLevel
   claimStatus: ClaimStatus
+  organizationId?: string
+  /** Login-time authorization snapshot — see src/sdk/types.ts:Identity. */
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
   frozen?: boolean
   frozenAt?: number
   githubUserId?: string

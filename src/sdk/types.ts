@@ -34,6 +34,18 @@ export interface Identity {
   level: CapabilityLevel
   claimStatus: ClaimStatus
   organizationId?: string
+  /**
+   * Authorization snapshot persisted at WorkOS login (worker/routes/auth.ts
+   * /api/callback). The session JWT carries `org {id,name,domains}`, `roles`
+   * and `permissions` straight from the WorkOS auth result; opaque OAuth
+   * access tokens carry no claims, so /oauth/userinfo and /oauth/introspect
+   * read these back from the identity record instead. Refreshed on every
+   * login.
+   */
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
   frozen?: boolean
   frozenAt?: number
   githubUserId?: string

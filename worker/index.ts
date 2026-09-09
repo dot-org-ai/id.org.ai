@@ -671,7 +671,9 @@ app.get('/.well-known/openid-configuration', (c) => {
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
+    // org/roles/permissions/platformRole mirror the session JWT and are
+    // returned by /oauth/userinfo and /oauth/introspect for opaque tokens.
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'org_id', 'org', 'roles', 'permissions', 'platformRole'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
 
