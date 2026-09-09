@@ -1021,8 +1021,8 @@ describe('OAuthProvider', () => {
       await seedDefaultClients(storage)
     })
 
-    it('the family is exactly the three seeded device-flow CLIs', () => {
-      expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual([CLI_B, CLI_A, CLI_C].sort())
+    it('the family is exactly the four seeded device-flow CLIs', () => {
+      expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual([CLI_B, CLI_A, CLI_C, 'rpc_do_cli'].sort())
     })
 
     it('same-client refresh is unchanged (no cross-client audit)', async () => {

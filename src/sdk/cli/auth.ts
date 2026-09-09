@@ -7,6 +7,7 @@ import {
   ID_ORG_AI_CLI_CLIENT_ID,
   OAUTH_DO_CLI_CLIENT_ID,
   AUTO_DEV_CLI_CLIENT_ID,
+  RPC_DO_CLI_CLIENT_ID,
 } from '../auth/index.js'
 import type { TokenStorage, StoredTokenData } from './storage.js'
 
@@ -19,7 +20,7 @@ const CLIENT_ID = process.env.ID_ORG_AI_CLIENT_ID || ID_ORG_AI_CLI_CLIENT_ID
  * issued it, so when a token file predates `clientId` being recorded we have
  * to probe: the configured id first, then the other known CLIs.
  */
-export const KNOWN_CLI_CLIENT_IDS = [ID_ORG_AI_CLI_CLIENT_ID, OAUTH_DO_CLI_CLIENT_ID, AUTO_DEV_CLI_CLIENT_ID] as const
+export const KNOWN_CLI_CLIENT_IDS = [ID_ORG_AI_CLI_CLIENT_ID, OAUTH_DO_CLI_CLIENT_ID, AUTO_DEV_CLI_CLIENT_ID, RPC_DO_CLI_CLIENT_ID] as const
 
 /** Buffer before expiry to trigger refresh (30 seconds) */
 const REFRESH_BUFFER_MS = 30_000

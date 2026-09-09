@@ -67,6 +67,16 @@ export const DEFAULT_OAUTH_CLIENTS: readonly DefaultClient[] = [
     tokenEndpointAuthMethod: 'none',
   },
   {
+    id: 'rpc_do_cli',
+    name: 'rpc.do CLI',
+    redirectUris: [],
+    grantTypes: [DEVICE_CODE_GRANT_TYPE],
+    responseTypes: [],
+    scopes: ['openid', 'profile', 'email', 'offline_access'],
+    trusted: true,
+    tokenEndpointAuthMethod: 'none',
+  },
+  {
     id: 'id_org_ai_dash',
     name: 'id.org.ai Dashboard',
     redirectUris: ['https://id.org.ai/dash/profile'],

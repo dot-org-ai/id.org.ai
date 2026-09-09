@@ -107,13 +107,13 @@ describe('refreshClientIdOrder', () => {
   it('tries the configured CLIENT_ID first, then the other first-party CLI ids, de-duplicated', () => {
     const order = refreshClientIdOrder()
     expect(order[0]).toBe('id_org_ai_cli')
-    expect(order).toEqual(['id_org_ai_cli', 'oauth_do_cli', 'auto_dev_cli'])
+    expect(order).toEqual(['id_org_ai_cli', 'oauth_do_cli', 'auto_dev_cli', 'rpc_do_cli'])
     expect(new Set(order).size).toBe(order.length)
     for (const id of KNOWN_CLI_CLIENT_IDS) expect(order).toContain(id)
   })
 
   it('puts the stored clientId first and keeps the rest as fallbacks', () => {
-    expect(refreshClientIdOrder({ clientId: 'auto_dev_cli' })).toEqual(['auto_dev_cli', 'id_org_ai_cli', 'oauth_do_cli'])
+    expect(refreshClientIdOrder({ clientId: 'auto_dev_cli' })).toEqual(['auto_dev_cli', 'id_org_ai_cli', 'oauth_do_cli', 'rpc_do_cli'])
   })
 
   it('honours explicit fallbackClientIds', () => {
@@ -180,7 +180,7 @@ describe('refreshTokens', () => {
     const outcome = await refreshTokens('refresh_0')
     expect(outcome.ok).toBe(false)
     if (!outcome.ok) {
-      expect(outcome.error.triedClientIds).toEqual(['id_org_ai_cli', 'oauth_do_cli', 'auto_dev_cli'])
+      expect(outcome.error.triedClientIds).toEqual(['id_org_ai_cli', 'oauth_do_cli', 'auto_dev_cli', 'rpc_do_cli'])
       expect(outcome.error.description).toMatch(/not issued to this client/)
     }
   })
