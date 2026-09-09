@@ -11,6 +11,13 @@ export interface StoredTokenData {
   accessToken: string
   refreshToken?: string
   expiresAt?: number
+  /**
+   * OAuth client_id the tokens were issued to. Refresh tokens are bound to
+   * their issuing client and rotate on use, so a refresh MUST be sent under
+   * this id. Optional for backward compatibility with token files written
+   * before it was recorded (those fall back to probing the known CLI ids).
+   */
+  clientId?: string
 }
 
 export interface TokenStorage {

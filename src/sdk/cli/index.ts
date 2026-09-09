@@ -12,8 +12,10 @@
  */
 
 import { authorizeDevice, pollForTokens } from './device.js'
-import { getUser, logout as logoutFn, ensureValidToken } from './auth.js'
+import { getUser, logout as logoutFn, resolveAccessToken, describeTokenFailure } from './auth.js'
+import type { TokenResolution } from './auth.js'
 import { createStorage, SecureFileTokenStorage } from './storage.js'
+import { getCliVersion } from './version.js'
 import { provisionCommand } from './provision.js'
 import { claimCommand } from './claim.js'
 import { ProvisionStorage } from './provision-storage.js'
@@ -48,6 +50,20 @@ function printSuccess(message: string) {
 
 function printInfo(message: string) {
   console.log(`${colors.cyan}ℹ${colors.reset} ${message}`)
+}
+
+/**
+ * Print why no usable token could be resolved, and what to do about it.
+ * Expired/revoked refresh tokens are the common case — say so explicitly
+ * instead of a bare "Not authenticated".
+ */
+function printNoToken(resolution: TokenResolution) {
+  if (resolution.reason === 'no_token') {
+    console.log(`${colors.dim}Not logged in${colors.reset}`)
+  } else {
+    console.log(`${colors.yellow}Not authenticated${colors.reset} ${colors.dim}(${describeTokenFailure(resolution)})${colors.reset}`)
+  }
+  console.log(`\nRun ${colors.cyan}id.org.ai login${colors.reset} to authenticate`)
 }
 
 function printHelp() {
@@ -114,16 +130,24 @@ async function loginCommand() {
     console.log(`\n  ${colors.dim}Or open this URL directly:${colors.reset}`)
     console.log(`  ${colors.blue}${authResponse.verification_uri_complete}${colors.reset}\n`)
 
-    const open = await import('open').catch(() => null)
+    // `open` is a runtime dependency (kept external by tsup); if it is missing
+    // or the platform has no opener we fall back to the printed URL.
+    let openError: unknown = null
+    const open = await import('open').catch((err: unknown) => {
+      openError = err
+      return null
+    })
     if (open) {
       try {
         await open.default(authResponse.verification_uri_complete)
         printSuccess('Opened browser for authentication')
-      } catch {
-        printInfo('Could not open browser. Please visit the URL above manually.')
+      } catch (err) {
+        openError = err
       }
-    } else {
+    }
+    if (!open || openError) {
       printInfo('Could not open browser. Please visit the URL above manually.')
+      if (process.env.DEBUG && openError instanceof Error) console.error(`${colors.dim}${openError.message}${colors.reset}`)
     }
 
     console.log(`\n${colors.dim}Waiting for authorization...${colors.reset}\n`)
@@ -135,10 +159,13 @@ async function loginCommand() {
     )
 
     const expiresAt = tokenResponse.expires_in ? Date.now() + tokenResponse.expires_in * 1000 : undefined
+    // Record the issuing client: refresh tokens are bound to it and rotate on
+    // use, so every later refresh must be sent under this exact client_id.
     await storage.setTokenData({
       accessToken: tokenResponse.access_token,
       refreshToken: tokenResponse.refresh_token,
       expiresAt,
+      clientId: CLIENT_ID,
     })
 
     const authResult = await getUser(tokenResponse.access_token)
@@ -169,7 +196,7 @@ async function logoutCommand() {
       return
     }
 
-    await logoutFn(tokenData.accessToken, tokenData.refreshToken)
+    await logoutFn(tokenData.accessToken, tokenData.refreshToken, undefined, tokenData.clientId)
     await storage.removeToken()
     printSuccess('Logged out successfully')
   } catch (error) {
@@ -180,15 +207,14 @@ async function logoutCommand() {
 
 async function whoamiCommand() {
   try {
-    const token = await ensureValidToken(storage)
+    const resolution = await resolveAccessToken(storage)
 
-    if (!token) {
-      console.log(`${colors.dim}Not logged in${colors.reset}`)
-      console.log(`\nRun ${colors.cyan}id.org.ai login${colors.reset} to authenticate`)
+    if (!resolution.token) {
+      printNoToken(resolution)
       return
     }
 
-    const authResult = await getUser(token)
+    const authResult = await getUser(resolution.token)
 
     if (!authResult.user) {
       console.log(`${colors.dim}Not authenticated${colors.reset}`)
@@ -209,16 +235,17 @@ async function whoamiCommand() {
 
 async function tokenCommand() {
   try {
-    const token = await ensureValidToken(storage)
+    const resolution = await resolveAccessToken(storage)
 
-    if (!token) {
-      console.log(`${colors.dim}No token found${colors.reset}`)
-      console.log(`\nRun ${colors.cyan}id.org.ai login${colors.reset} to authenticate`)
-      return
+    if (!resolution.token) {
+      // stderr so `$(id.org.ai token)` never captures the explanation
+      console.error(`No valid token: ${describeTokenFailure(resolution)}`)
+      console.error('Run id.org.ai login to authenticate')
+      process.exit(1)
     }
 
     // Output raw token (for piping to other commands)
-    console.log(token)
+    console.log(resolution.token)
   } catch (error) {
     printError('Failed to get token', error instanceof Error ? error : undefined)
     process.exit(1)
@@ -235,14 +262,24 @@ async function statusCommand() {
       console.log(`  ${colors.dim}${storagePath} (0600 permissions)${colors.reset}`)
     }
 
-    const token = await ensureValidToken(storage)
-    if (!token) {
-      console.log(`\n${colors.cyan}Auth:${colors.reset} ${colors.dim}Not authenticated${colors.reset}`)
+    const resolution = await resolveAccessToken(storage)
+    if (!resolution.token) {
+      console.log(`\n${colors.cyan}Auth:${colors.reset} ${colors.yellow}Not authenticated${colors.reset}`)
+      if (resolution.reason !== 'no_token') {
+        console.log(`  ${colors.dim}${describeTokenFailure(resolution)}${colors.reset}`)
+      }
       console.log(`\nRun ${colors.cyan}id.org.ai login${colors.reset} to authenticate`)
       return
     }
+    const token = resolution.token
 
     const tokenData = await storage.getTokenData()
+    if (tokenData?.clientId) {
+      console.log(`${colors.cyan}Client:${colors.reset} ${tokenData.clientId}`)
+    }
+    if (resolution.refreshed) {
+      console.log(`${colors.cyan}Token:${colors.reset} ${colors.green}Refreshed${colors.reset} just now`)
+    }
     if (tokenData?.expiresAt) {
       const remaining = tokenData.expiresAt - Date.now()
       if (remaining > 0) {
@@ -269,10 +306,10 @@ async function statusCommand() {
 
 async function autoLoginOrShowUser() {
   try {
-    const token = await ensureValidToken(storage)
+    const resolution = await resolveAccessToken(storage)
 
-    if (token) {
-      const authResult = await getUser(token)
+    if (resolution.token) {
+      const authResult = await getUser(resolution.token)
 
       if (authResult.user) {
         console.log(`${colors.green}✓${colors.reset} Already authenticated\n`)
@@ -282,6 +319,8 @@ async function autoLoginOrShowUser() {
         return
       }
       printInfo('Session expired, logging in again...\n')
+    } else if (resolution.reason && resolution.reason !== 'no_token') {
+      printInfo(`${describeTokenFailure(resolution)} — logging in again...\n`)
     }
 
     await loginCommand()
@@ -299,7 +338,7 @@ async function main() {
   }
 
   if (args.includes('--version') || args.includes('-v')) {
-    console.log('id.org.ai v0.0.1')
+    console.log(`id.org.ai v${getCliVersion()}`)
     process.exit(0)
   }
 
