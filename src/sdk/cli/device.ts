@@ -51,8 +51,20 @@ export async function authorizeDevice(
   return (await response.json()) as DeviceAuthorizationResponse
 }
 
+/** Transient conditions that should NOT abort polling (RFC 8628 §3.5) */
+const TRANSIENT_POLL_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
+
 /**
- * Poll for tokens after device authorization
+ * Poll for tokens after device authorization (RFC 8628 §3.4–3.5).
+ *
+ * - `authorization_pending` → keep polling at `interval`
+ * - `slow_down`             → add 5s to the interval and keep polling
+ * - `expired_token`         → the SERVER says the device code expired
+ * - network errors / 5xx    → transient; keep polling until our own deadline
+ *
+ * The local deadline mirrors the server's `expires_in`; hitting it raises
+ * "Device authorization expired" (client side), which is distinct from the
+ * server-reported "Device code expired" so the two can be told apart.
  */
 export async function pollForTokens(
   clientId: string,
@@ -63,17 +75,19 @@ export async function pollForTokens(
 ): Promise<TokenResponse> {
   const startTime = Date.now()
   const timeout = expiresIn * 1000
-  let currentInterval = interval * 1000
+  let currentInterval = Math.max(1, interval) * 1000
+  const elapsed = () => Math.round((Date.now() - startTime) / 1000)
 
   while (true) {
     if (Date.now() - startTime > timeout) {
-      throw new Error('Device authorization expired. Please try again.')
+      throw new Error(`Device authorization expired after ${elapsed()}s (expires_in was ${expiresIn}s). Please try again.`)
     }
 
     await new Promise((resolve) => setTimeout(resolve, currentInterval))
 
+    let response: Response
     try {
-      const response = await fetch(`${API_BASE}/oauth/token`, {
+      response = await fetch(`${API_BASE}/oauth/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
         body: new URLSearchParams({
@@ -82,30 +96,35 @@ export async function pollForTokens(
           client_id: clientId,
         }).toString(),
       })
-
-      if (response.ok) {
-        return (await response.json()) as TokenResponse
-      }
-
-      const errorData = (await response.json().catch(() => ({ error: 'unknown' }))) as { error?: string }
-      const error = (errorData.error || 'unknown') as TokenError
-
-      switch (error) {
-        case 'authorization_pending':
-          continue
-        case 'slow_down':
-          currentInterval += 5000
-          continue
-        case 'access_denied':
-          throw new Error('Access denied by user')
-        case 'expired_token':
-          throw new Error('Device code expired')
-        default:
-          throw new Error(`Token polling failed: ${error}`)
-      }
-    } catch (error) {
-      if (error instanceof Error) throw error
+    } catch {
+      // Network blip — the device code is still valid server-side; keep polling.
       continue
+    }
+
+    if (response.ok) {
+      return (await response.json()) as TokenResponse
+    }
+
+    const errorData = (await response.json().catch(() => ({}))) as { error?: string; error_description?: string }
+    if (!errorData.error && TRANSIENT_POLL_STATUSES.has(response.status)) continue
+
+    const error = (errorData.error || 'unknown') as TokenError
+    const detail = errorData.error_description ? `: ${errorData.error_description}` : ''
+
+    switch (error) {
+      case 'authorization_pending':
+        continue
+      case 'slow_down':
+        currentInterval += 5000
+        continue
+      case 'access_denied':
+        throw new Error('Access denied by user')
+      case 'expired_token':
+        throw new Error(
+          `Device code expired (server reported expired_token after ${elapsed()}s; expires_in was ${expiresIn}s)${detail}`,
+        )
+      default:
+        throw new Error(`Token polling failed: ${error}${detail} (HTTP ${response.status})`)
     }
   }
 }

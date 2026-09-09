@@ -42,11 +42,17 @@ export { MemoryOAuthStorage } from './storage'
 export type { OAuthStorage, ListOptions } from './storage'
 
 // OAuth 2.1 Provider implementation
-export { OAuthProvider } from './provider'
-export type { OAuthConfig, OAuthProviderClient } from './provider'
+export { OAuthProvider, authorizationClaims } from './provider'
+export type { OAuthConfig, OAuthProviderClient, IdentityInfo } from './provider'
 
 // Default client seeding (CLI, dashboard, headless.ly, etc.)
-export { seedDefaultClients, DEFAULT_OAUTH_CLIENTS } from './clients'
+export {
+  seedDefaultClients,
+  DEFAULT_OAUTH_CLIENTS,
+  DEVICE_CODE_GRANT_TYPE,
+  FIRST_PARTY_CLI_CLIENT_IDS,
+  isFirstPartyCliClient,
+} from './clients'
 export type { ClientSeedStorage, DefaultClient } from './clients'
 
 // PKCE + crypto utilities (canonical, from @dotdo/oauth)

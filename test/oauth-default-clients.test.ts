@@ -6,7 +6,13 @@
  * that lived there worth keeping.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { seedDefaultClients, DEFAULT_OAUTH_CLIENTS } from '../src/sdk/oauth/clients'
+import {
+  seedDefaultClients,
+  DEFAULT_OAUTH_CLIENTS,
+  DEVICE_CODE_GRANT_TYPE,
+  FIRST_PARTY_CLI_CLIENT_IDS,
+  isFirstPartyCliClient,
+} from '../src/sdk/oauth/clients'
 
 function createMockStorage() {
   const store = new Map<string, unknown>()
@@ -46,6 +52,24 @@ describe('seedDefaultClients', () => {
     expect(client!.name).toBe('oauth.do CLI')
   })
 
+  it('seeds rpc.do CLI client (trusted, public, device_code, offline_access) — same shape as auto_dev_cli', async () => {
+    await seedDefaultClients(storage)
+    const client = store.get('client:rpc_do_cli') as Record<string, unknown> | undefined
+    expect(client).toBeDefined()
+    expect(client!.name).toBe('rpc.do CLI')
+    expect(client!.trusted).toBe(true)
+    expect(client!.tokenEndpointAuthMethod).toBe('none')
+    expect(client!.grantTypes).toEqual([DEVICE_CODE_GRANT_TYPE])
+    expect(client!.redirectUris).toEqual([])
+    expect(client!.scopes).toContain('offline_access')
+
+    const autoDev = DEFAULT_OAUTH_CLIENTS.find((c) => c.id === 'auto_dev_cli')!
+    const rpcDo = DEFAULT_OAUTH_CLIENTS.find((c) => c.id === 'rpc_do_cli')!
+    const { id: _a, name: _b, ...autoDevShape } = autoDev
+    const { id: _c, name: _d, ...rpcDoShape } = rpcDo
+    expect(rpcDoShape).toEqual(autoDevShape)
+  })
+
   it('seeds dashboard web client (authorization_code grant)', async () => {
     await seedDefaultClients(storage)
     const client = store.get('client:id_org_ai_dash') as Record<string, unknown> | undefined
@@ -83,5 +107,39 @@ describe('seedDefaultClients', () => {
     for (const expected of DEFAULT_OAUTH_CLIENTS) {
       expect(store.get(`client:${expected.id}`)).toBeDefined()
     }
+  })
+})
+
+describe('first-party CLI family', () => {
+  it('is derived from the registry by shape: trusted + public + device_code', () => {
+    const expected = DEFAULT_OAUTH_CLIENTS
+      .filter((c) => c.trusted && c.tokenEndpointAuthMethod === 'none' && c.grantTypes.includes(DEVICE_CODE_GRANT_TYPE))
+      .map((c) => c.id)
+    expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual(expected.sort())
+    expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual(['auto_dev_cli', 'id_org_ai_cli', 'oauth_do_cli', 'rpc_do_cli'])
+  })
+
+  it('admits rpc_do_cli to the family by shape, not by name', () => {
+    const rpcDo = DEFAULT_OAUTH_CLIENTS.find((c) => c.id === 'rpc_do_cli')
+    expect(rpcDo).toBeDefined()
+    expect(isFirstPartyCliClient(rpcDo)).toBe(true)
+    expect(FIRST_PARTY_CLI_CLIENT_IDS.has('rpc_do_cli')).toBe(true)
+  })
+
+  it('excludes the trusted web clients (no device_code grant)', () => {
+    for (const id of ['id_org_ai_dash', 'id_org_ai_headlessly', 'auto_dev_web', 'saas_studio_dash']) {
+      expect(FIRST_PARTY_CLI_CLIENT_IDS.has(id)).toBe(false)
+    }
+  })
+
+  it('isFirstPartyCliClient is structural, not name-based', () => {
+    const cli = { trusted: true, tokenEndpointAuthMethod: 'none', grantTypes: [DEVICE_CODE_GRANT_TYPE] }
+    expect(isFirstPartyCliClient(cli)).toBe(true)
+    expect(isFirstPartyCliClient({ ...cli, trusted: false })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, tokenEndpointAuthMethod: 'client_secret_post' })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, secret: 'hashed' })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, grantTypes: ['authorization_code'] })).toBe(false)
+    expect(isFirstPartyCliClient(null)).toBe(false)
+    expect(isFirstPartyCliClient(undefined)).toBe(false)
   })
 })

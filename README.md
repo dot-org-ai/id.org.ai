@@ -305,6 +305,10 @@ Trade-off: per-app revocation is coarser. Revoking the trusted-account client in
 
 See [`docs/adr/0007-trusted-account-oauth-via-better-auth.md`](https://github.com/dot-do/startup.games/blob/main/docs/adr/0007-trusted-account-oauth-via-better-auth.md) for the full rationale.
 
+### Refresh Tokens and the First-Party CLI Family
+
+Refresh tokens rotate on every use and are bound to the `client_id` that issued them: a `refresh_token` grant from any other client is rejected with `invalid_grant` ("Refresh token was not issued to this client"). There is one deliberate exception. The first-party CLIs (`id_org_ai_cli`, `oauth_do_cli`, `auto_dev_cli`) share a single on-disk token store, so they form a **first-party CLI family**: a refresh token issued to one member may be refreshed by another. The family is not a name or prefix rule — it is derived from the default client registry by shape (`trusted: true`, `token_endpoint_auth_method: none`, no client secret, device_code grant), and the live client records of both the issuing and the requesting client must still match that shape at refresh time, or the request fails closed. A family refresh re-binds the new token pair to the requesting client, keeps the issued scopes and narrows them to whatever the requesting client is allowed (scopes never widen; an empty intersection is `invalid_scope`), rotates the old refresh token exactly as a same-client refresh would, and records an `oauth.refresh.cross_client` audit event carrying both client ids. Confidential clients, web clients, and unknown clients are never in the family.
+
 ## Implementation Phases
 
 ### Phase 1: Anonymous → Sandboxed (Level 0 → 1)

@@ -568,7 +568,7 @@ describe('OIDC Discovery response fields', () => {
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'org_id', 'org', 'roles', 'permissions', 'platformRole'],
   }
 
   it('has issuer set to https://id.org.ai', () => {

@@ -49,6 +49,7 @@
 // ============================================================================
 
 import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+import { FIRST_PARTY_CLI_CLIENT_IDS, isFirstPartyCliClient } from './clients'
 
 export interface OAuthConfig {
   issuer: string
@@ -173,7 +174,7 @@ interface ConsentRecord {
 }
 
 // Internal display type — see OAuthUser in ./types.ts for canonical API type
-interface IdentityInfo {
+export interface IdentityInfo {
   id: string
   name?: string
   handle?: string
@@ -181,6 +182,43 @@ interface IdentityInfo {
   emailVerified?: boolean
   image?: string
   level?: number
+  /**
+   * Authorization claims — the same set the session JWT carries
+   * (worker/routes/auth.ts). Opaque access tokens have no payload, so
+   * /oauth/userinfo and /oauth/introspect surface these from the identity
+   * record; relying parties gate on them exactly as they gate on the JWT.
+   */
+  organizationId?: string
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
+  /** 'superadmin' when the identity's org is the platform org. */
+  platformRole?: 'superadmin'
+}
+
+/**
+ * Authorization claims shared by the session JWT, /oauth/userinfo and
+ * /oauth/introspect. Mirrors the JWT's `org {id,name,domains}`, `roles`,
+ * `permissions`, `platformRole`; keeps the flat `org_id` for existing
+ * consumers. Only defined values are emitted so a token without a snapshot
+ * looks exactly as it did before.
+ */
+export function authorizationClaims(identity: IdentityInfo | null | undefined): Record<string, unknown> {
+  if (!identity) return {}
+  const claims: Record<string, unknown> = {}
+  if (identity.organizationId) {
+    claims.org_id = identity.organizationId
+    claims.org = {
+      id: identity.organizationId,
+      ...(identity.organizationName ? { name: identity.organizationName } : {}),
+      ...(identity.organizationDomains?.length ? { domains: identity.organizationDomains } : {}),
+    }
+  }
+  if (identity.roles) claims.roles = identity.roles
+  if (identity.permissions) claims.permissions = identity.permissions
+  if (identity.platformRole === 'superadmin') claims.platformRole = 'superadmin'
+  return claims
 }
 
 function tierFromLevel(level: number | undefined): string | undefined {
@@ -212,7 +250,20 @@ export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, un
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier'],
+    claims_supported: [
+      'sub',
+      'name',
+      'preferred_username',
+      'picture',
+      'email',
+      'email_verified',
+      'tier',
+      'org_id',
+      'org',
+      'roles',
+      'permissions',
+      'platformRole',
+    ],
   }
 }
 
@@ -912,6 +963,10 @@ export class OAuthProvider {
       claims.email_verified = identity.emailVerified ?? false
     }
 
+    // Authorization claims — same set as the session JWT. Not scope-gated:
+    // org/roles/permissions describe what the token may do, not PII.
+    Object.assign(claims, authorizationClaims(identity))
+
     return jsonResponse(claims)
   }
 
@@ -946,6 +1001,9 @@ export class OAuthProvider {
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tier && { tier }),
+          // RFC 7662 §2.2 permits additional members; these mirror the
+          // session JWT so RPs can gate opaque tokens on roles/permissions.
+          ...authorizationClaims(identity),
         })
       }
     }
@@ -965,6 +1023,7 @@ export class OAuthProvider {
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tier && { tier }),
+          ...authorizationClaims(identity),
         })
       }
     }
@@ -1139,8 +1198,28 @@ export class OAuthProvider {
     }
 
     // ── Verify client ───────────────────────────────────────────────────
+    // A refresh token is bound to the client that issued it. The single
+    // exception is the first-party CLI family (see `resolveCliFamilyRefresh`):
+    // those CLIs share one on-disk token store, so a member may refresh a
+    // token minted by another member. Every other cross-client refresh —
+    // confidential clients, web clients, unknown clients — is invalid_grant.
+    let scopes = tokenData.scopes
+    let crossClientIssuer: string | undefined
     if (tokenData.clientId !== clientId) {
-      return oauthError('invalid_grant', 'Refresh token was not issued to this client')
+      const requestingClient = await this.resolveCliFamilyRefresh(tokenData.clientId, clientId)
+      if (!requestingClient) {
+        return oauthError('invalid_grant', 'Refresh token was not issued to this client')
+      }
+      crossClientIssuer = tokenData.clientId
+
+      // Scopes never widen across the family: keep the issued scopes, narrowed
+      // to what the requesting client is allowed. Fail before rotation so a
+      // rejected request does not burn the caller's refresh token.
+      const allowed = new Set(requestingClient.scopes)
+      scopes = tokenData.scopes.filter((scope) => allowed.has(scope))
+      if (scopes.length === 0) {
+        return oauthError('invalid_scope', 'Requesting client is not allowed any of the issued scopes')
+      }
     }
 
     // ── Verify client secret for confidential clients ───────────────────
@@ -1188,11 +1267,29 @@ export class OAuthProvider {
       revoked: true,
     } satisfies RefreshToken)
 
+    if (crossClientIssuer !== undefined) {
+      await this.safeEmitAudit({
+        event: 'oauth.refresh.cross_client',
+        actor: tokenData.identityId,
+        target: refreshTokenId,
+        metadata: {
+          issuingClientId: crossClientIssuer,
+          requestingClientId: clientId,
+          identityId: tokenData.identityId,
+          family: tokenData.family,
+          issuedScopes: tokenData.scopes,
+          scopes,
+        },
+      })
+    }
+
     // ── Issue new token pair (same family for rotation tracking) ─────────
+    // Bound to the REQUESTING client: after a family refresh the new pair
+    // belongs to the requester, so the family rule is transitive by design.
     return this.issueTokenPair({
       clientId,
       identityId: tokenData.identityId,
-      scopes: tokenData.scopes,
+      scopes,
       family: tokenData.family,
       resource: tokenData.resource,
       effectiveIssuer: tokenData.effectiveIssuer,
@@ -1547,6 +1644,36 @@ export class OAuthProvider {
     if (!clientId) return null
     const client = await this.storage.get<OAuthProviderClient>(`client:${clientId}`)
     return client ?? null
+  }
+
+  /**
+   * First-party CLI family rule for the refresh grant.
+   *
+   * Returns the requesting client's live record when BOTH the issuing and
+   * the requesting client are members of the first-party CLI family, and
+   * null otherwise. Membership is two-fold, and both halves must hold:
+   *
+   *   1. both ids are in `FIRST_PARTY_CLI_CLIENT_IDS` — the explicit set
+   *      derived from the seed registry (`DEFAULT_OAUTH_CLIENTS`) by shape,
+   *      never by id prefix; and
+   *   2. both live `client:<id>` records still satisfy
+   *      `isFirstPartyCliClient` (trusted, `token_endpoint_auth_method:
+   *      none`, no secret, device_code grant) — so an operator edit that
+   *      makes a CLI confidential or untrusted removes it from the family
+   *      without a redeploy, and a missing record fails closed.
+   */
+  private async resolveCliFamilyRefresh(
+    issuingClientId: string,
+    requestingClientId: string,
+  ): Promise<OAuthProviderClient | null> {
+    if (!FIRST_PARTY_CLI_CLIENT_IDS.has(issuingClientId)) return null
+    if (!FIRST_PARTY_CLI_CLIENT_IDS.has(requestingClientId)) return null
+    const [issuing, requesting] = await Promise.all([
+      this.getClient(issuingClientId),
+      this.getClient(requestingClientId),
+    ])
+    if (!isFirstPartyCliClient(issuing) || !isFirstPartyCliClient(requesting)) return null
+    return requesting
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

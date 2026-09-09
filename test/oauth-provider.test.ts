@@ -15,7 +15,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { OAuthProvider } from '../src/sdk/oauth/provider'
-import type { OAuthConfig } from '../src/sdk/oauth/provider'
+import type { OAuthConfig, OAuthAuditEmit } from '../src/sdk/oauth/provider'
+import { seedDefaultClients, FIRST_PARTY_CLI_CLIENT_IDS } from '../src/sdk/oauth/clients'
 import { SigningKeyManager } from '../src/sdk/jwt/signing'
 
 // ============================================================================
@@ -37,6 +38,12 @@ interface IdentityInfo {
   emailVerified?: boolean
   image?: string
   level?: number
+  organizationId?: string
+  organizationName?: string
+  organizationDomains?: string[]
+  roles?: string[]
+  permissions?: string[]
+  platformRole?: 'superadmin'
 }
 
 function createMockStorage(): StorageLike {
@@ -100,6 +107,22 @@ const TEST_IDENTITIES: Record<string, IdentityInfo> = {
     name: 'No Level',
     email: 'nolevel@example.com',
     emailVerified: true,
+  },
+  // Identity with the login-time authorization snapshot the session JWT is
+  // signed from (org, roles, permissions) plus the platform-org flag.
+  'user-org': {
+    id: 'user-org',
+    name: 'Org Operator',
+    handle: 'operator',
+    email: 'operator@example.com',
+    emailVerified: true,
+    level: 2,
+    organizationId: 'org_platform',
+    organizationName: 'Platform Org',
+    organizationDomains: ['example.com'],
+    roles: ['admin', 'operator'],
+    permissions: ['sdb:operate', 'sdb:read'],
+    platformRole: 'superadmin',
   },
 }
 
@@ -285,6 +308,13 @@ describe('OAuthProvider', () => {
     it('advertises tier in claims_supported', async () => {
       const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
       expect(d.claims_supported).toContain('tier')
+    })
+
+    it('advertises the authorization claims (org_id, org, roles, permissions, platformRole)', async () => {
+      const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
+      for (const claim of ['org_id', 'org', 'roles', 'permissions', 'platformRole']) {
+        expect(d.claims_supported).toContain(claim)
+      }
     })
 
     it('includes token endpoint auth methods', async () => {
@@ -976,6 +1006,197 @@ describe('OAuthProvider', () => {
   })
 
   // ══════════════════════════════════════════════════════════════════════════
+  // 5b. Refresh Token: first-party CLI family
+  // ══════════════════════════════════════════════════════════════════════════
+
+  describe('Refresh Token: first-party CLI family', () => {
+    const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
+    const CLI_A = 'id_org_ai_cli'
+    const CLI_B = 'auto_dev_cli'
+    const CLI_C = 'oauth_do_cli'
+    let audit: ReturnType<typeof vi.fn<Parameters<OAuthAuditEmit>, ReturnType<OAuthAuditEmit>>>
+
+    /** Mint a token pair for `cid` via the full device flow (init → approve → poll). */
+    async function deviceTokens(cid: string, identityId = 'user-1'): Promise<Record<string, unknown>> {
+      const init = await provider.handleDeviceAuthorization(new Request('https://id.org.ai/oauth/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: cid }),
+      }))
+      const d = await init.json() as Record<string, unknown>
+      expect(d.device_code, JSON.stringify(d)).toBeDefined()
+      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
+      }), identityId)
+      const res = await provider.handleToken(makeTokenRequest({
+        grant_type: DEVICE_GRANT, device_code: d.device_code as string, client_id: cid,
+      }))
+      expect(res.status).toBe(200)
+      return res.json() as Promise<Record<string, unknown>>
+    }
+
+    function refresh(rt: string, cid: string): Promise<Response> {
+      return provider.handleToken(makeTokenRequest({ grant_type: 'refresh_token', refresh_token: rt, client_id: cid }))
+    }
+
+    beforeEach(async () => {
+      audit = vi.fn<Parameters<OAuthAuditEmit>, ReturnType<OAuthAuditEmit>>()
+      provider = new OAuthProvider({
+        storage,
+        config: TEST_CONFIG,
+        getIdentity: async (id: string) => TEST_IDENTITIES[id] ?? null,
+        auditEmit: audit,
+      })
+      await seedDefaultClients(storage)
+    })
+
+    it('the family is exactly the four seeded device-flow CLIs', () => {
+      expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual([CLI_B, CLI_A, CLI_C, 'rpc_do_cli'].sort())
+    })
+
+    it('same-client refresh is unchanged (no cross-client audit)', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      const res = await refresh(t1.refresh_token as string, CLI_A)
+      expect(res.status).toBe(200)
+      const t2 = await res.json() as Record<string, unknown>
+      expect(t2.refresh_token).not.toBe(t1.refresh_token)
+      const rec = await storage.get<Record<string, unknown>>(`refresh:${t2.refresh_token}`)
+      expect(rec!.clientId).toBe(CLI_A)
+      expect(audit).not.toHaveBeenCalled()
+    })
+
+    it('a family member may refresh a token issued to another member; the new pair is bound to the requester', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      const res = await refresh(t1.refresh_token as string, CLI_B)
+      expect(res.status).toBe(200)
+      const t2 = await res.json() as Record<string, unknown>
+      expect(t2.access_token).not.toBe(t1.access_token)
+      expect(t2.refresh_token).not.toBe(t1.refresh_token)
+
+      const rt = await storage.get<Record<string, unknown>>(`refresh:${t2.refresh_token}`)
+      expect(rt!.clientId).toBe(CLI_B)
+      const at = await storage.get<Record<string, unknown>>(`access:${t2.access_token}`)
+      expect(at!.clientId).toBe(CLI_B)
+
+      // Transitive by design: a third member can refresh the re-bound token,
+      // and the original issuer can take it back.
+      const r3 = await refresh(t2.refresh_token as string, CLI_C)
+      expect(r3.status).toBe(200)
+      const t3 = await r3.json() as Record<string, unknown>
+      expect((await storage.get<Record<string, unknown>>(`refresh:${t3.refresh_token}`))!.clientId).toBe(CLI_C)
+      const r4 = await refresh(t3.refresh_token as string, CLI_A)
+      expect(r4.status).toBe(200)
+    })
+
+    it('rotation still invalidates the old refresh token after a cross-client refresh', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      const rt1 = t1.refresh_token as string
+      const family = (await storage.get<Record<string, unknown>>(`refresh:${rt1}`))!.family
+      const t2 = await (await refresh(rt1, CLI_B)).json() as Record<string, unknown>
+      const rt2 = t2.refresh_token as string
+      expect((await storage.get<Record<string, unknown>>(`refresh:${rt1}`))!.revoked).toBe(true)
+      expect((await storage.get<Record<string, unknown>>(`refresh:${rt2}`))!.family).toBe(family)
+
+      // Reuse of the rotated-out token — by either client — is replay:
+      // invalid_grant, and the whole family is revoked.
+      const replay = await refresh(rt1, CLI_A)
+      expect(replay.status).toBe(400)
+      expect((await replay.json() as Record<string, unknown>).error).toBe('invalid_grant')
+      expect((await storage.get<Record<string, unknown>>(`refresh:${rt2}`))!.revoked).toBe(true)
+    })
+
+    it('rejects cross-client refresh from a non-family client (DCR public client)', async () => {
+      const t = await deviceTokens(CLI_A)
+      const other = (await registerClient(provider, {
+        client_name: 'Other CLI', grant_types: [DEVICE_GRANT, 'refresh_token'], redirect_uris: [],
+      })).client_id as string
+      const s = await storage.get<Record<string, unknown>>(`client:${other}`)
+      await storage.put(`client:${other}`, { ...s, trusted: true }) // trusted alone is not membership
+      const res = await refresh(t.refresh_token as string, other)
+      expect(res.status).toBe(400)
+      const d = await res.json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_grant')
+      expect(d.error_description).toContain('not issued to this client')
+      expect(audit).not.toHaveBeenCalled()
+    })
+
+    it('rejects a family member refreshing a token issued to a non-family client', async () => {
+      // Token issued to a seeded trusted WEB client (authorization_code, not device_code).
+      const web = 'saas_studio_dash'
+      const t = await getAuthCodeTokens(provider, web, 'https://app.saas.studio/auth/callback', 'user-1', 'family-web-verifier-long-enough-value')
+      expect(t.refresh_token).toBeDefined()
+      const res = await refresh(t.refresh_token as string, CLI_A)
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
+    })
+
+    it('rejects confidential and unknown requesting clients', async () => {
+      const t = await deviceTokens(CLI_A)
+      const conf = await registerConfidentialClient(provider, { grant_types: [DEVICE_GRANT, 'refresh_token'], redirect_uris: [] })
+      const r1 = await provider.handleToken(makeTokenRequest({
+        grant_type: 'refresh_token', refresh_token: t.refresh_token as string,
+        client_id: conf.client_id as string, client_secret: conf.client_secret as string,
+      }))
+      expect((await r1.json() as Record<string, unknown>).error).toBe('invalid_grant')
+      const r2 = await refresh(t.refresh_token as string, 'cid_unknown')
+      expect((await r2.json() as Record<string, unknown>).error).toBe('invalid_grant')
+      // The rejected attempts did not rotate the token: the issuer can still use it.
+      expect((await refresh(t.refresh_token as string, CLI_A)).status).toBe(200)
+    })
+
+    it('fails closed when a live family record no longer has the family shape', async () => {
+      const t = await deviceTokens(CLI_A)
+      const rec = await storage.get<Record<string, unknown>>(`client:${CLI_B}`)
+      await storage.put(`client:${CLI_B}`, { ...rec, tokenEndpointAuthMethod: 'client_secret_post', secret: 'hashed' })
+      const res = await refresh(t.refresh_token as string, CLI_B)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
+    })
+
+    it('narrows scopes to the intersection with the requesting client; never widens', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      expect((t1.scope as string).split(' ').sort()).toEqual(['email', 'offline_access', 'openid', 'profile'])
+      const rec = await storage.get<Record<string, unknown>>(`client:${CLI_B}`)
+      await storage.put(`client:${CLI_B}`, { ...rec, scopes: ['openid', 'offline_access', 'admin'] })
+
+      const res = await refresh(t1.refresh_token as string, CLI_B)
+      expect(res.status).toBe(200)
+      const t2 = await res.json() as Record<string, unknown>
+      expect((t2.scope as string).split(' ').sort()).toEqual(['offline_access', 'openid'])
+      expect((await storage.get<Record<string, unknown>>(`refresh:${t2.refresh_token}`))!.scopes).toEqual(['openid', 'offline_access'])
+
+      // Refreshing back under the issuer does not restore the dropped scopes.
+      const t3 = await (await refresh(t2.refresh_token as string, CLI_A)).json() as Record<string, unknown>
+      expect((t3.scope as string).split(' ').sort()).toEqual(['offline_access', 'openid'])
+    })
+
+    it('rejects with invalid_scope (and does not rotate) when the intersection is empty', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      const rec = await storage.get<Record<string, unknown>>(`client:${CLI_B}`)
+      await storage.put(`client:${CLI_B}`, { ...rec, scopes: ['admin'] })
+      const res = await refresh(t1.refresh_token as string, CLI_B)
+      expect(res.status).toBe(400)
+      expect((await res.json() as Record<string, unknown>).error).toBe('invalid_scope')
+      expect((await storage.get<Record<string, unknown>>(`refresh:${t1.refresh_token}`))!.revoked).toBe(false)
+    })
+
+    it('records an oauth.refresh.cross_client audit entry with both client ids', async () => {
+      const t1 = await deviceTokens(CLI_A)
+      await refresh(t1.refresh_token as string, CLI_B)
+      expect(audit).toHaveBeenCalledTimes(1)
+      const ev = audit.mock.calls[0][0]
+      expect(ev.event).toBe('oauth.refresh.cross_client')
+      expect(ev.actor).toBe('user-1')
+      expect(ev.target).toBe(t1.refresh_token)
+      expect(ev.metadata).toMatchObject({
+        issuingClientId: CLI_A,
+        requestingClientId: CLI_B,
+        identityId: 'user-1',
+      })
+      expect(ev.metadata!.scopes).toEqual(t1.scope && (t1.scope as string).split(' '))
+    })
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 6. Client Credentials
   // ══════════════════════════════════════════════════════════════════════════
 
@@ -1271,6 +1492,48 @@ describe('OAuthProvider', () => {
       expect(d.token_type).toBe('refresh_token')
     })
 
+    it('carries the session-JWT authorization claims (org, roles, permissions, platformRole) for an opaque access token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const d = await (await introspect(t.access_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.sub).toBe('user-org')
+      // RFC 7662 standard members are untouched
+      expect(d.client_id).toBe(clientId)
+      expect(d.token_type).toBe('Bearer')
+      expect(d.scope).toContain('openid')
+      expect(d.exp).toBeDefined()
+      expect(d.iat).toBeDefined()
+      expect(d.tier).toBe('L2')
+      // Same shape as the session JWT (worker/routes/auth.ts)
+      expect(d.org_id).toBe('org_platform')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('carries the same authorization claims for a refresh token', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const d = await (await introspect(t.refresh_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d.token_type).toBe('refresh_token')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('omits authorization claims entirely when the identity has no snapshot', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await introspect(t.access_token as string)).json() as Record<string, unknown>
+      expect(d.active).toBe(true)
+      expect(d).not.toHaveProperty('org_id')
+      expect(d).not.toHaveProperty('org')
+      expect(d).not.toHaveProperty('roles')
+      expect(d).not.toHaveProperty('permissions')
+      expect(d).not.toHaveProperty('platformRole')
+    })
+
     it('active=false for expired access token', async () => {
       const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
       const at = t.access_token as string
@@ -1407,6 +1670,33 @@ describe('OAuthProvider', () => {
       expect(d.picture).toBe('https://example.com/alice.png')
       expect(d.email).toBe('alice@example.com')
       expect(d.email_verified).toBe(true)
+    })
+
+    it('returns the session-JWT authorization claims alongside the standard OIDC claims', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-org', verifier)
+      const res = await userinfo(t.access_token as string)
+      expect(res.status).toBe(200)
+      const d = await res.json() as Record<string, unknown>
+      // Standard OIDC claims stay
+      expect(d.sub).toBe('user-org')
+      expect(d.name).toBe('Org Operator')
+      expect(d.preferred_username).toBe('operator')
+      expect(d.email).toBe('operator@example.com')
+      expect(d.email_verified).toBe(true)
+      // Authorization claims — org_id kept, org/roles/permissions/platformRole added
+      expect(d.org_id).toBe('org_platform')
+      expect(d.org).toEqual({ id: 'org_platform', name: 'Platform Org', domains: ['example.com'] })
+      expect(d.roles).toEqual(['admin', 'operator'])
+      expect(d.permissions).toEqual(['sdb:operate', 'sdb:read'])
+      expect(d.platformRole).toBe('superadmin')
+    })
+
+    it('does not emit platformRole or org for an identity without a snapshot', async () => {
+      const t = await getAuthCodeTokens(provider, clientId, redir, 'user-1', verifier)
+      const d = await (await userinfo(t.access_token as string)).json() as Record<string, unknown>
+      expect(d).not.toHaveProperty('org')
+      expect(d).not.toHaveProperty('roles')
+      expect(d).not.toHaveProperty('platformRole')
     })
 
     it('401 for missing Authorization header', async () => {

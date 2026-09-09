@@ -472,6 +472,15 @@ export class IdentityServiceImpl implements IdentityWriter {
       verified: (raw['verified'] as boolean | undefined) ?? false,
       level: (raw['level'] as CapabilityLevel | undefined) ?? 0,
       claimStatus: (raw['claimStatus'] as ClaimStatus | undefined) ?? 'unclaimed',
+      // Org membership + login-time authorization snapshot. Written by the
+      // WorkOS callback (worker/routes/auth.ts); read back by
+      // /oauth/userinfo and /oauth/introspect so opaque access tokens can
+      // carry the same authorization claims as the session JWT.
+      organizationId: raw['organizationId'] as string | undefined,
+      organizationName: raw['organizationName'] as string | undefined,
+      organizationDomains: raw['organizationDomains'] as string[] | undefined,
+      roles: raw['roles'] as string[] | undefined,
+      permissions: raw['permissions'] as string[] | undefined,
       frozen: (raw['frozen'] as boolean | undefined) ?? false,
       frozenAt: raw['frozenAt'] as number | undefined,
       githubUserId: raw['githubUserId'] as string | undefined,

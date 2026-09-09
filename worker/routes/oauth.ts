@@ -8,7 +8,9 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
-import { OAuthProvider } from '../../src/sdk/oauth/provider'
+import { OAuthProvider, authorizationClaims } from '../../src/sdk/oauth/provider'
+import type { IdentityInfo } from '../../src/sdk/oauth/provider'
+import type { Identity } from '../../src/sdk/types'
 import {
   generateCSRFToken,
   buildCSRFCookie,
@@ -45,6 +47,36 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
     set.add(host)
   }
   return set
+}
+
+// ── Identity → claims source ────────────────────────────────────────────────
+//
+// Opaque access tokens carry no payload, so /oauth/userinfo and
+// /oauth/introspect must resolve authorization claims from the identity
+// record. This maps a DO `Identity` to the provider's `IdentityInfo` with
+// the SAME sourcing the session JWT uses (worker/routes/auth.ts):
+//   - org {id,name,domains}, roles, permissions: the WorkOS login snapshot
+//     persisted on the identity by /api/callback
+//   - platformRole: 'superadmin' iff the org is PLATFORM_ORG_ID
+export function toIdentityInfo(env: Pick<Env, 'PLATFORM_ORG_ID'>, identity: Identity | Record<string, unknown>): IdentityInfo {
+  const i = identity as Identity & { emailVerified?: boolean }
+  const platformOrgId = env.PLATFORM_ORG_ID
+  const isSuperadmin = !!(platformOrgId && i.organizationId && i.organizationId === platformOrgId)
+  return {
+    id: i.id,
+    name: i.name,
+    handle: i.handle,
+    email: i.email,
+    emailVerified: i.emailVerified ?? i.verified ?? false,
+    image: i.image,
+    level: i.level,
+    organizationId: i.organizationId,
+    organizationName: i.organizationName,
+    organizationDomains: i.organizationDomains,
+    roles: i.roles,
+    permissions: i.permissions,
+    ...(isSuperadmin ? { platformRole: 'superadmin' as const } : {}),
+  }
 }
 
 // ── Helper ──────────────────────────────────────────────────────────────────
@@ -97,7 +129,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
       const identityStub = getStubForIdentity(c.env, id)
       const identity = await identityStub.getIdentity(id)
       if (!identity) return null
-      return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string; level?: number }
+      return toIdentityInfo(c.env, identity)
     },
     signingKeyManager,
     // ADR-0007: enable trusted-account mode only when the allowlist is non-empty.
@@ -328,12 +360,18 @@ app.get('/oauth/userinfo', async (c) => {
     return c.json({ error: 'invalid_token', error_description: 'Identity not found' }, 401)
   }
 
+  // Standard OIDC claims, plus the same authorization claims the session
+  // JWT carries (org {id,name,domains}, roles, permissions, platformRole)
+  // so relying parties can gate opaque device-flow/CLI tokens on more than
+  // org membership. `org_id` is kept for existing consumers.
+  const info = toIdentityInfo(c.env, identity)
   return c.json({
     sub: identity.id || tokenData.identityId,
     name: identity.name,
     email: identity.email,
-    email_verified: identity.verified ?? false,
+    email_verified: info.emailVerified ?? false,
     org_id: identity.organizationId,
+    ...authorizationClaims(info),
   })
 })
 
