@@ -49,6 +49,7 @@
 // ============================================================================
 
 import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+import { FIRST_PARTY_CLI_CLIENT_IDS, isFirstPartyCliClient } from './clients'
 
 export interface OAuthConfig {
   issuer: string
@@ -1139,8 +1140,28 @@ export class OAuthProvider {
     }
 
     // ── Verify client ───────────────────────────────────────────────────
+    // A refresh token is bound to the client that issued it. The single
+    // exception is the first-party CLI family (see `resolveCliFamilyRefresh`):
+    // those CLIs share one on-disk token store, so a member may refresh a
+    // token minted by another member. Every other cross-client refresh —
+    // confidential clients, web clients, unknown clients — is invalid_grant.
+    let scopes = tokenData.scopes
+    let crossClientIssuer: string | undefined
     if (tokenData.clientId !== clientId) {
-      return oauthError('invalid_grant', 'Refresh token was not issued to this client')
+      const requestingClient = await this.resolveCliFamilyRefresh(tokenData.clientId, clientId)
+      if (!requestingClient) {
+        return oauthError('invalid_grant', 'Refresh token was not issued to this client')
+      }
+      crossClientIssuer = tokenData.clientId
+
+      // Scopes never widen across the family: keep the issued scopes, narrowed
+      // to what the requesting client is allowed. Fail before rotation so a
+      // rejected request does not burn the caller's refresh token.
+      const allowed = new Set(requestingClient.scopes)
+      scopes = tokenData.scopes.filter((scope) => allowed.has(scope))
+      if (scopes.length === 0) {
+        return oauthError('invalid_scope', 'Requesting client is not allowed any of the issued scopes')
+      }
     }
 
     // ── Verify client secret for confidential clients ───────────────────
@@ -1188,11 +1209,29 @@ export class OAuthProvider {
       revoked: true,
     } satisfies RefreshToken)
 
+    if (crossClientIssuer !== undefined) {
+      await this.safeEmitAudit({
+        event: 'oauth.refresh.cross_client',
+        actor: tokenData.identityId,
+        target: refreshTokenId,
+        metadata: {
+          issuingClientId: crossClientIssuer,
+          requestingClientId: clientId,
+          identityId: tokenData.identityId,
+          family: tokenData.family,
+          issuedScopes: tokenData.scopes,
+          scopes,
+        },
+      })
+    }
+
     // ── Issue new token pair (same family for rotation tracking) ─────────
+    // Bound to the REQUESTING client: after a family refresh the new pair
+    // belongs to the requester, so the family rule is transitive by design.
     return this.issueTokenPair({
       clientId,
       identityId: tokenData.identityId,
-      scopes: tokenData.scopes,
+      scopes,
       family: tokenData.family,
       resource: tokenData.resource,
       effectiveIssuer: tokenData.effectiveIssuer,
@@ -1547,6 +1586,36 @@ export class OAuthProvider {
     if (!clientId) return null
     const client = await this.storage.get<OAuthProviderClient>(`client:${clientId}`)
     return client ?? null
+  }
+
+  /**
+   * First-party CLI family rule for the refresh grant.
+   *
+   * Returns the requesting client's live record when BOTH the issuing and
+   * the requesting client are members of the first-party CLI family, and
+   * null otherwise. Membership is two-fold, and both halves must hold:
+   *
+   *   1. both ids are in `FIRST_PARTY_CLI_CLIENT_IDS` — the explicit set
+   *      derived from the seed registry (`DEFAULT_OAUTH_CLIENTS`) by shape,
+   *      never by id prefix; and
+   *   2. both live `client:<id>` records still satisfy
+   *      `isFirstPartyCliClient` (trusted, `token_endpoint_auth_method:
+   *      none`, no secret, device_code grant) — so an operator edit that
+   *      makes a CLI confidential or untrusted removes it from the family
+   *      without a redeploy, and a missing record fails closed.
+   */
+  private async resolveCliFamilyRefresh(
+    issuingClientId: string,
+    requestingClientId: string,
+  ): Promise<OAuthProviderClient | null> {
+    if (!FIRST_PARTY_CLI_CLIENT_IDS.has(issuingClientId)) return null
+    if (!FIRST_PARTY_CLI_CLIENT_IDS.has(requestingClientId)) return null
+    const [issuing, requesting] = await Promise.all([
+      this.getClient(issuingClientId),
+      this.getClient(requestingClientId),
+    ])
+    if (!isFirstPartyCliClient(issuing) || !isFirstPartyCliClient(requesting)) return null
+    return requesting
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

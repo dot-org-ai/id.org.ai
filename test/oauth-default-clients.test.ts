@@ -6,7 +6,13 @@
  * that lived there worth keeping.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { seedDefaultClients, DEFAULT_OAUTH_CLIENTS } from '../src/sdk/oauth/clients'
+import {
+  seedDefaultClients,
+  DEFAULT_OAUTH_CLIENTS,
+  DEVICE_CODE_GRANT_TYPE,
+  FIRST_PARTY_CLI_CLIENT_IDS,
+  isFirstPartyCliClient,
+} from '../src/sdk/oauth/clients'
 
 function createMockStorage() {
   const store = new Map<string, unknown>()
@@ -83,5 +89,32 @@ describe('seedDefaultClients', () => {
     for (const expected of DEFAULT_OAUTH_CLIENTS) {
       expect(store.get(`client:${expected.id}`)).toBeDefined()
     }
+  })
+})
+
+describe('first-party CLI family', () => {
+  it('is derived from the registry by shape: trusted + public + device_code', () => {
+    const expected = DEFAULT_OAUTH_CLIENTS
+      .filter((c) => c.trusted && c.tokenEndpointAuthMethod === 'none' && c.grantTypes.includes(DEVICE_CODE_GRANT_TYPE))
+      .map((c) => c.id)
+    expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual(expected.sort())
+    expect([...FIRST_PARTY_CLI_CLIENT_IDS].sort()).toEqual(['auto_dev_cli', 'id_org_ai_cli', 'oauth_do_cli'])
+  })
+
+  it('excludes the trusted web clients (no device_code grant)', () => {
+    for (const id of ['id_org_ai_dash', 'id_org_ai_headlessly', 'auto_dev_web', 'saas_studio_dash']) {
+      expect(FIRST_PARTY_CLI_CLIENT_IDS.has(id)).toBe(false)
+    }
+  })
+
+  it('isFirstPartyCliClient is structural, not name-based', () => {
+    const cli = { trusted: true, tokenEndpointAuthMethod: 'none', grantTypes: [DEVICE_CODE_GRANT_TYPE] }
+    expect(isFirstPartyCliClient(cli)).toBe(true)
+    expect(isFirstPartyCliClient({ ...cli, trusted: false })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, tokenEndpointAuthMethod: 'client_secret_post' })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, secret: 'hashed' })).toBe(false)
+    expect(isFirstPartyCliClient({ ...cli, grantTypes: ['authorization_code'] })).toBe(false)
+    expect(isFirstPartyCliClient(null)).toBe(false)
+    expect(isFirstPartyCliClient(undefined)).toBe(false)
   })
 })
