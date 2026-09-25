@@ -71,14 +71,16 @@ export function isAllowedOrigin(origin: string): boolean {
  * Allows: relative paths, any https: URL (workers.do zone has thousands of custom hostnames).
  * Rejects: protocol-relative URLs (//evil.com), javascript: URIs, data: URIs.
  *
- * Note: The login flow is CSRF-protected (state token in DO), and the auth cookie is
- * HttpOnly + scoped to .headless.ly, so absolute URL redirects cannot steal credentials.
- * We only block injection vectors, not open redirects to https: targets.
+ * This is a syntactic check only. The login/callback/logout routes additionally
+ * restrict targets to the flow's own origin via `sameOriginRedirect`.
  */
 export function isSafeRedirectUrl(url: string): boolean {
   if (!url) return false
-  // Relative paths are safe (but reject protocol-relative `//evil.com`)
-  if (url.startsWith('/') && !url.startsWith('//')) return true
+  // Browsers strip tab/CR/LF from URLs, so `/\t/evil.com` would become `//evil.com`.
+  if (/[\t\n\r]/.test(url)) return false
+  // Relative paths are safe (but reject protocol-relative `//evil.com` and `/\evil.com`,
+  // which browsers normalise to `//evil.com`)
+  if (url.startsWith('/')) return url[1] !== '/' && url[1] !== '\\'
   // Absolute URLs: only allow http(s)
   try {
     const parsed = new URL(url)
@@ -86,6 +88,32 @@ export function isSafeRedirectUrl(url: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Resolve a post-login / post-logout redirect target against the origin that
+ * owns the flow. Only a relative path, or an absolute URL whose origin equals
+ * `origin`, is accepted; anything else (another host, `//evil.com`,
+ * `/\evil.com`, `javascript:`) yields `fallback`.
+ *
+ * The URL is resolved with the WHATWG parser — the same normalisation a browser
+ * applies to a `Location` header — so backslash and whitespace tricks are judged
+ * by where the browser would actually go, not by how the string looks.
+ * No domain list is involved: the only accepted origin is the flow's own.
+ */
+export function sameOriginRedirect(url: string | null | undefined, origin: string, fallback = '/'): string {
+  if (!url || !isSafeRedirectUrl(url)) return fallback
+  let base: URL
+  let resolved: URL
+  try {
+    base = new URL(origin)
+    resolved = new URL(url, base)
+  } catch {
+    return fallback
+  }
+  if (resolved.origin !== base.origin) return fallback
+  // Keep relative inputs relative (the caller's host decides the origin).
+  return url.startsWith('/') ? `${resolved.pathname}${resolved.search}${resolved.hash}` : resolved.href
 }
 
 /**

@@ -8,7 +8,15 @@ import { Hono } from 'hono'
 import * as jose from 'jose'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
-import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
+import {
+  parseCookieValue,
+  buildAuthCookieHeaders,
+  buildClearAuthCookieHeaders,
+  getRootDomain,
+  buildLoginNonceCookie,
+  buildClearLoginNonceCookie,
+  readLoginNonce,
+} from '../utils/cookies'
 import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
@@ -27,9 +35,37 @@ import {
   listUserOrgMemberships,
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
-import { isSafeRedirectUrl } from '../../src/sdk/csrf'
+import { sameOriginRedirect } from '../../src/sdk/csrf'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+/** TTL of a login ceremony (csrf record + nonce cookie), seconds. */
+const LOGIN_TTL = 300
+
+/** Server-side record of a login ceremony, written by /login, keyed by the csrf value in `state`. */
+interface LoginFlowRecord {
+  csrf: string
+  /** The origin that served /login — as this worker saw it. The only origin the flow may complete on. */
+  origin?: string
+  /** Post-login target, already restricted to `origin`. */
+  continue?: string
+  /** SHA-256 of the `__Host-auth_nonce` cookie value set on `origin` by /login. */
+  nonceHash?: string
+  createdAt: number
+}
+
+/** One-time code handed to `origin`/callback by /api/callback. */
+interface AuthCodeRecord {
+  jwt: string
+  continueUrl: string
+  origin?: string
+  nonceHash?: string
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 // ── WorkOS Login Flow (no auth required) ─────────────────────────────────────
 // Human authentication via WorkOS AuthKit (SSO, social login, MFA).
@@ -41,15 +77,21 @@ app.get('/login', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
+  // The origin of a login flow is whatever host served this /login request, as this
+  // worker saw it: the tenant host when a front Worker forwards over its service
+  // binding, id.org.ai on a direct hit. No list of domains is consulted.
+  const requestOrigin = new URL(c.req.url).origin
+
+  // Post-login target: a relative path or an absolute URL on this same origin only.
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/dash/profile'
-  const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/dash/profile'
+  const continueUrl = sameOriginRedirect(rawContinue, requestOrigin, '/dash/profile')
 
   // If the user already has a valid session, skip WorkOS and redirect to continue URL.
   // This prevents conflicts when e.g. CLI device flow redirects here while user is logged in,
   // or when WorkOS has its own active session that conflicts with a new auth request.
   const identityId = await resolveIdentityId(c.req.raw, c.env)
   if (identityId) {
-    const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${new URL(c.req.url).origin}${continueUrl}`
+    const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${requestOrigin}${continueUrl}`
     return c.redirect(redirectTo, 302)
   }
 
@@ -67,25 +109,33 @@ app.get('/login', async (c) => {
   }
 
   const csrf = crypto.randomUUID()
+  // Browser-binding secret: lives only in a host-only cookie on requestOrigin; the
+  // server keeps its hash. /callback on requestOrigin must present it.
+  const nonce = crypto.randomUUID()
 
-  // Capture the requesting origin so the callback can redirect back and set the cookie
-  // on the correct domain (e.g. headless.ly, not id.org.ai).
-  const requestOrigin = new URL(c.req.url).origin
-  const state = encodeLoginState(csrf, continueUrl, requestOrigin)
+  // `state` is opaque: it carries only the csrf key. The origin and continue URL are
+  // recorded server-side and are never read back from `state`.
+  const state = encodeLoginState(csrf)
 
-  // Store CSRF token for validation on callback (5 min TTL)
   const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const record: LoginFlowRecord = {
+    csrf,
+    origin: requestOrigin,
+    continue: continueUrl,
+    nonceHash: await sha256Hex(nonce),
+    createdAt: Date.now(),
+  }
   await oauthStub.oauthStorageOp({
     op: 'put',
     key: `login-csrf:${csrf}`,
-    value: { csrf, createdAt: Date.now() },
-    options: { expirationTtl: 300 },
+    value: record,
+    options: { expirationTtl: LOGIN_TTL },
   })
 
   // Always use the canonical id.org.ai callback URL for WorkOS redirect.
   // When the request comes from a different domain (e.g. headless.ly via service binding),
   // we can't use that domain's callback URL because it's not registered in WorkOS.
-  // The requesting origin is stored in state.origin for the cross-origin bounce after auth.
+  // The requesting origin is recorded server-side (login-csrf record) for the cross-origin bounce.
   const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev']
   const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
   const redirectUri = `${callbackOrigin}/api/callback`
@@ -94,14 +144,11 @@ app.get('/login', async (c) => {
   // (happens during AuthKit's internal org selection flow)
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
-  const stateFlags = `HttpOnly; Path=/api/callback; SameSite=Lax; Max-Age=300${isSecure ? '; Secure' : ''}`
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: authUrl,
-      'Set-Cookie': `_auth_state=${state}; ${stateFlags}`,
-    },
-  })
+  const stateFlags = `HttpOnly; Path=/api/callback; SameSite=Lax; Max-Age=${LOGIN_TTL}${isSecure ? '; Secure' : ''}`
+  const headers = new Headers({ Location: authUrl })
+  headers.append('Set-Cookie', `_auth_state=${state}; ${stateFlags}`)
+  headers.append('Set-Cookie', buildLoginNonceCookie(nonce, { secure: isSecure, maxAge: LOGIN_TTL }))
+  return new Response(null, { status: 302, headers })
 })
 
 // ── /callback — Origin callback: exchange one-time auth code for JWT cookie ──
@@ -121,22 +168,35 @@ app.get('/callback', async (c) => {
   if (!stored.value) {
     return errorResponse(c, 400, ErrorCode.InvalidGrant, 'Invalid or expired auth code')
   }
-  // Consume one-time code
+  // Consume one-time code (before any check: a code presented in the wrong place is burned)
   await oauthStub.oauthStorageOp({ op: 'delete', key: `auth-code:${authCode}` })
 
-  const { jwt, continueUrl } = stored.value as { jwt: string; continueUrl: string }
-
-  // Set cookie on the requesting domain (e.g. apis.do)
+  const { jwt, continueUrl, origin: boundOrigin, nonceHash } = stored.value as AuthCodeRecord
   const reqUrl = new URL(c.req.url)
   const isSecure = reqUrl.protocol === 'https:'
+
+  // The code redeems only on the origin that served /login. A hit on the public
+  // id.org.ai host can therefore redeem only id.org.ai-origin flows.
+  if (!boundOrigin || boundOrigin !== reqUrl.origin) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Auth code was issued for a different origin')
+  }
+
+  // ...and only in the browser that began the login there (host-only nonce cookie).
+  const nonce = readLoginNonce(c.req.header('cookie') || '', isSecure)
+  if (!nonce || !nonceHash || (await sha256Hex(nonce)) !== nonceHash) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Login was not started in this browser — please sign in again')
+  }
+
+  // Set cookie on the requesting domain (e.g. apis.do)
   const domain = getRootDomain(reqUrl.hostname)
   const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
 
-  const redirectTo = isSafeRedirectUrl(continueUrl) ? continueUrl : '/'
+  const redirectTo = sameOriginRedirect(continueUrl, reqUrl.origin, '/')
   const headers = new Headers({ Location: redirectTo })
   for (const cookie of cookieHeaders) {
     headers.append('Set-Cookie', cookie)
   }
+  headers.append('Set-Cookie', buildClearLoginNonceCookie({ secure: isSecure }))
   return new Response(null, { status: 302, headers })
 })
 
@@ -238,6 +298,14 @@ app.get('/api/callback', async (c) => {
   if (!csrfData.value) {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token — please try logging in again')
   }
+  const flow = csrfData.value as LoginFlowRecord
+
+  // The flow's origin comes from the record /login wrote — never from `state`, which
+  // is client-controlled. A record without one (written before this change) can only
+  // complete here, on the origin serving this callback.
+  const currentOrigin = new URL(c.req.url).origin
+  const flowOrigin = flow.origin || currentOrigin
+  const continueUrl = sameOriginRedirect(flow.continue ?? '/', flowOrigin, '/')
 
   // Exchange code with WorkOS (or retrieve stored auth result from org selection)
   let authResult: WorkOSAuthResult
@@ -378,26 +446,27 @@ app.get('/api/callback', async (c) => {
       permissions: authResult.user.permissions,
       ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
     },
-    { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
+    // aud = the origin the session was minted for. Verifiers that pin only the
+    // issuer keep working; ones that want host binding can now check it.
+    { issuer: 'https://id.org.ai', audience: flowOrigin, expiresIn: 30 * 24 * 3600 },
   )
-
-  const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? decoded.continue || '/' : '/'
 
   // ── Cross-origin redirect: bounce to the requesting domain to set cookie ─
   // If the login was initiated from a different domain (e.g. apis.do), we can't
   // set the cookie from oauth.do. Store a one-time code and redirect to the
   // origin's /callback so the cookie is set on the correct domain.
-  const currentOrigin = new URL(c.req.url).origin
-  if (decoded.origin && decoded.origin !== currentOrigin) {
+  if (flowOrigin !== currentOrigin) {
     const oneTimeCode = crypto.randomUUID()
+    const codeRecord: AuthCodeRecord = { jwt, continueUrl, origin: flowOrigin, nonceHash: flow.nonceHash }
     await oauthStub.oauthStorageOp({
       op: 'put',
       key: `auth-code:${oneTimeCode}`,
-      value: { jwt, continueUrl },
+      value: codeRecord,
       options: { expirationTtl: 60 },
     })
 
-    const callbackUrl = new URL('/callback', decoded.origin)
+    // Bounce to the RECORDED origin; the code is bound to it and to the login's nonce.
+    const callbackUrl = new URL('/callback', flowOrigin)
     callbackUrl.searchParams.set('_auth_code', oneTimeCode)
     return c.redirect(callbackUrl.toString(), 302)
   }
@@ -412,6 +481,7 @@ app.get('/api/callback', async (c) => {
   for (const cookie of cookieHeaders) {
     headers.append('Set-Cookie', cookie)
   }
+  headers.append('Set-Cookie', buildClearLoginNonceCookie({ secure: isSecure }))
   return new Response(null, { status: 302, headers })
 })
 
@@ -429,9 +499,8 @@ app.get('/logout', async (c) => {
     // Non-fatal — proceed with cookie clearing
   }
 
-  const rawReturnUrl = c.req.query('return_url') || '/'
-  const returnUrl = isSafeRedirectUrl(rawReturnUrl) ? rawReturnUrl : '/'
   const reqUrl = new URL(c.req.url)
+  const returnUrl = sameOriginRedirect(c.req.query('return_url') || '/', reqUrl.origin, '/')
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
   const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
@@ -638,7 +707,8 @@ app.post('/api/session/organization', async (c) => {
         permissions: payload.permissions as string[] | undefined,
         ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
       },
-      { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
+      // aud = the origin whose cookie this re-minted session replaces
+      { issuer: 'https://id.org.ai', audience: new URL(c.req.url).origin, expiresIn: 30 * 24 * 3600 },
     )
 
     // Set updated cookie

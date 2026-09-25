@@ -146,27 +146,31 @@ app.get('/oauth/authorize', async (c) => {
   // Lazily seed web OAuth clients on first authorize request
   await oauthStub.ensureWebClients()
 
-  // Skip CSRF wrapping for service binding callers — the proxy handles its own security
-  const isServiceBinding = !!c.req.header('X-Issuer')
-  // ADR-0007: also skip for the canonical trusted-account client. Trusted-
-  // account clients have `client.trusted === true`, which makes provider.ts
-  // (handleAuthorize, ~line 582) bypass the consent page and call
-  // issueAuthorizationCode directly — there's no consent POST round-trip
-  // where a wrapped state would be unwrapped, so the wrapped value would
-  // leak straight through to the consumer's better-auth callback and fail
-  // CSRF on that side. better-auth (and any standards-conformant OAuth
-  // client) compares the returned `state` against the one it sent and
-  // rejects on mismatch. Same failure mode as 08abc13 fixed for ChatGPT
-  // via the X-Issuer path; same fix shape.
+  // ADR-0007: the canonical trusted-account client never sees a consent page.
+  // `client.trusted === true` makes provider.ts (handleAuthorize) bypass consent and
+  // call issueAuthorizationCode directly, so its state must pass through untouched:
+  // better-auth (and any standards-conformant OAuth client) compares the returned
+  // `state` against the one it sent and rejects on mismatch.
   const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
   const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
+  const provider = getOAuthProvider(c)
 
-  if (isServiceBinding || isTrustedAccount) {
-    const provider = getOAuthProvider(c)
+  if (isTrustedAccount) {
     return provider.handleAuthorize(c.req.raw, identityId)
   }
 
-  // Generate CSRF token for the consent form (browser-direct requests only)
+  // Resolve the request with the client's state untouched first. Only a consent
+  // page needs a CSRF-bound form; a login redirect, an error redirect or an issued
+  // code must carry the client's own `state` unmodified. (This replaces the old
+  // "X-Issuer header present ⇒ service binding ⇒ skip CSRF" shortcut: the header
+  // is client-supplied and proves nothing about where a request came from.)
+  const direct = await provider.handleAuthorize(c.req.raw, identityId)
+  const isConsentPage = direct.status === 200 && (direct.headers.get('content-type') || '').includes('text/html')
+  if (!isConsentPage) {
+    return direct
+  }
+
+  // Consent page: generate a CSRF token for the consent form
   const csrfToken = generateCSRFToken()
   // Store the CSRF token in the oauth DO's storage via RPC
   await oauthStub.oauthStorageOp({
@@ -187,7 +191,6 @@ app.get('/oauth/authorize', async (c) => {
     headers: c.req.raw.headers,
   })
 
-  const provider = getOAuthProvider(c)
   const response = await provider.handleAuthorize(modifiedRequest, identityId)
 
   // Set the CSRF cookie on the response
@@ -197,18 +200,11 @@ app.get('/oauth/authorize', async (c) => {
   return newResponse
 })
 
-// Authorization Consent Submission — CSRF validated (skipped for service binding)
+// Authorization Consent Submission — CSRF validated
 app.post('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
     return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'Authentication required to submit authorization consent')
-  }
-
-  // Skip CSRF validation for service binding callers — the proxy handles its own security
-  const isServiceBinding = !!c.req.header('X-Issuer')
-  if (isServiceBinding) {
-    const provider = getOAuthProvider(c)
-    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
   }
 
   // Extract CSRF token from cookie
@@ -227,10 +223,12 @@ app.post('/oauth/authorize', async (c) => {
   }
 
   let formCSRF: string | null = null
+  let originalState: string | undefined
   if (formState) {
     const decoded = decodeStateWithCSRF(formState)
     if (decoded) {
       formCSRF = decoded.csrf
+      originalState = decoded.originalState
     }
   }
 
@@ -264,9 +262,31 @@ app.post('/oauth/authorize', async (c) => {
   // Consume the token (one-time use)
   await oauthStub.oauthStorageOp({ op: 'delete', key: `csrf:${cookieCSRF}` })
 
+  // Hand the provider the client's ORIGINAL state, so the redirect back to the
+  // client carries exactly the state it sent (not the CSRF wrapper).
   const provider = getOAuthProvider(c)
-  return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
+  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId)
 })
+
+/** Rebuild a consent POST with `state` replaced by the client's original state. */
+async function withOriginalState(request: Request, contentType: string, originalState: string | undefined): Promise<Request> {
+  const headers = new Headers(request.headers)
+  headers.delete('content-length')
+  if (contentType.includes('application/json')) {
+    const body = (await request.json()) as Record<string, unknown>
+    if (originalState === undefined) delete body.state
+    else body.state = originalState
+    return new Request(request.url, { method: 'POST', headers, body: JSON.stringify(body) })
+  }
+  const form = await request.formData()
+  const params = new URLSearchParams()
+  for (const [key, value] of form.entries()) {
+    if (key !== 'state' && typeof value === 'string') params.append(key, value)
+  }
+  if (originalState !== undefined) params.set('state', originalState)
+  headers.set('content-type', 'application/x-www-form-urlencoded')
+  return new Request(request.url, { method: 'POST', headers, body: params.toString() })
+}
 
 // Token Endpoint
 app.post('/oauth/token', async (c) => {
