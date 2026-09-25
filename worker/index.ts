@@ -37,6 +37,7 @@ import {
   identityStubMiddleware,
 } from './middleware/tenant'
 import { oauthRoutes, getOAuthProvider } from './routes/oauth'
+import { resolveEffectiveIssuer } from '../src/sdk/oauth/provider'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import type { VerifyTokenResult } from '../src/sdk/auth'
@@ -653,8 +654,7 @@ app.get('/me', async (c) => {
 
 app.get('/.well-known/openid-configuration', (c) => {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  const issuer = resolveEffectiveIssuer(c.req.raw, provider.issuer)
   return c.json({
     issuer,
     authorization_endpoint: `${issuer}/oauth/authorize`,
@@ -680,8 +680,7 @@ app.get('/.well-known/openid-configuration', (c) => {
 
 app.get('/.well-known/oauth-authorization-server', (c) => {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  const issuer = resolveEffectiveIssuer(c.req.raw, provider.issuer)
   return c.json(
     {
       issuer,
@@ -734,8 +733,7 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 // authorization server is this origin's issuer.
 function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  const issuer = resolveEffectiveIssuer(c.req.raw, provider.issuer)
   const origin = new URL(c.req.url).origin
   return c.json({
     resource: mcpResourceUri(origin),

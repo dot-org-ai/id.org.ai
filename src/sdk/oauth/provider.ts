@@ -329,6 +329,29 @@ export type OAuthAuditEmit = (event: {
   userAgent?: string
 }) => Promise<void> | void
 
+/**
+ * Resolve the issuer for a request.
+ *
+ * A multi-tenant front Worker may ask for its own issuer with an `X-Issuer`
+ * header. The header is client-supplied, so it is honoured only when it names
+ * the origin the request itself arrived on (as this worker sees it — the
+ * caller's own host when it forwards over a service binding). It is never proof
+ * that a request came over a binding, and a direct request to the public host
+ * cannot use it to mint tokens with an arbitrary `iss`. No domain list is used.
+ */
+export function resolveEffectiveIssuer(request: Request | undefined, defaultIssuer: string): string {
+  const xIssuer = request?.headers.get('X-Issuer')
+  if (request && xIssuer) {
+    try {
+      const claimed = new URL(xIssuer)
+      if (claimed.origin === new URL(request.url).origin) return xIssuer.replace(/\/$/, '')
+    } catch {
+      /* invalid URL, fall through */
+    }
+  }
+  return defaultIssuer
+}
+
 export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
@@ -341,18 +364,9 @@ export class OAuthProvider {
     return this.config.issuer
   }
 
-  /** Resolve effective issuer — respects X-Issuer header for multi-tenant MCP servers */
+  /** Resolve effective issuer — see {@link resolveEffectiveIssuer}. */
   getEffectiveIssuer(request?: Request): string {
-    if (request) {
-      const xIssuer = request.headers.get('X-Issuer')
-      if (xIssuer) {
-        try {
-          new URL(xIssuer)
-          return xIssuer.replace(/\/$/, '')
-        } catch { /* invalid URL, fall through */ }
-      }
-    }
-    return this.config.issuer
+    return resolveEffectiveIssuer(request, this.config.issuer)
   }
 
   constructor(options: {

@@ -93,3 +93,29 @@ export function getRootDomain(hostname: string): string | null {
   // For three+ part domains (dashboard.headless.ly), extract the root.
   return '.' + lastTwo // headless.ly → .headless.ly, dashboard.headless.ly → .headless.ly
 }
+
+// ── Login nonce cookie (browser binding for the login ceremony) ─────────
+// Set by /login on the host that served it, required by /callback on that same
+// host. `__Host-` makes it host-only (no Domain, Path=/, Secure), so a sibling
+// subdomain cannot plant or read it. Plain-http dev hosts cannot use the
+// `__Host-` prefix, so they fall back to an unprefixed host-only cookie.
+
+export const LOGIN_NONCE_COOKIE = '__Host-auth_nonce'
+const LOGIN_NONCE_COOKIE_INSECURE = 'auth_nonce'
+
+function loginNonceCookieName(secure: boolean): string {
+  return secure ? LOGIN_NONCE_COOKIE : LOGIN_NONCE_COOKIE_INSECURE
+}
+
+export function buildLoginNonceCookie(nonce: string, opts: { secure: boolean; maxAge: number }): string {
+  return `${loginNonceCookieName(opts.secure)}=${nonce}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${opts.maxAge}${opts.secure ? '; Secure' : ''}`
+}
+
+export function buildClearLoginNonceCookie(opts: { secure: boolean }): string {
+  return buildLoginNonceCookie('', { secure: opts.secure, maxAge: 0 })
+}
+
+export function readLoginNonce(cookieHeader: string, secure: boolean): string | null {
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${loginNonceCookieName(secure)}=([^;]*)`))
+  return match && match[1] ? decodeURIComponent(match[1]) : null
+}
