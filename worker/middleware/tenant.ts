@@ -95,6 +95,33 @@ export async function resolveIdentityId(request: Request, env: Env): Promise<str
 }
 
 /**
+ * How the browser session in the `auth` cookie was established: the `amr`,
+ * `idp` and `auth_time` claims /api/callback (or the magic-link flow) signed
+ * into it. Undefined when there is no verifiable cookie or it carries none
+ * (sessions minted before these claims existed).
+ */
+export async function readSessionSignIn(
+  request: Request,
+  env: Env,
+): Promise<{ amr?: string[]; idp?: string; authTime?: number } | undefined> {
+  const cookie = request.headers.get('cookie')
+  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
+  if (!jwt) return undefined
+  try {
+    const manager = getSigningKeyManager(env)
+    const jwks = await manager.getJWKS()
+    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const amr = Array.isArray(payload.amr) ? payload.amr.filter((x): x is string => typeof x === 'string') : undefined
+    const idp = typeof payload.idp === 'string' ? payload.idp : undefined
+    const authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined
+    if (!amr?.length && !idp && !authTime) return undefined
+    return { ...(amr?.length ? { amr } : {}), ...(idp ? { idp } : {}), ...(authTime ? { authTime } : {}) }
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Resolve the identity ID from a claim token via KV.
  */
 export async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<string | null> {
