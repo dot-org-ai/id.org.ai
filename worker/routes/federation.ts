@@ -7,7 +7,7 @@
  *   GET  /federation/microsoft/callback   ← Entra
  *   GET  /federation/email                → the fallback page
  *   POST /federation/email/send           → put a code in the mailbox
- *   POST /federation/email/verify         → check it
+ *   POST /federation/email/verify         → check it (same browser, same send)
  *   GET  /federation/status               → which paths are live (JSON)
  *
  * "One way out" is the load-bearing part: both paths end at
@@ -24,7 +24,8 @@ import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
-import { buildAuthCookieHeaders, getRootDomain } from '../utils/cookies'
+import { buildAuthCookieHeaders, getRootDomain, parseCookieValue } from '../utils/cookies'
+import { reserveCodeGuess, resetCodeGuesses, clientIpOf } from '../utils/code-guard'
 import {
   startMicrosoftAuth,
   exchangeMicrosoftCode,
@@ -175,6 +176,54 @@ async function takeTransaction(env: Env, state: string): Promise<MicrosoftAuthSt
   if (!tx) return null
   if (typeof tx.expiresAt !== 'number' || tx.expiresAt < Date.now()) return null
   return tx
+}
+
+// ── Email-code send transactions ──────────────────────────────────────────
+
+/**
+ * A verify is bound to the send that put the code in the mailbox, in the
+ * browser that asked for it (security review S1): /send stores a transaction
+ * for the address and sets an HttpOnly, SameSite=Strict cookie naming it;
+ * /verify refuses without that cookie, for another address, or once the
+ * transaction has expired or spent its guesses. The shared per-address and
+ * per-IP guess budgets (worker/utils/code-guard.ts) sit on top.
+ */
+const EMAIL_TX_COOKIE = '__fec'
+const EMAIL_TX_TTL_MS = 10 * 60 * 1000
+const EMAIL_TX_MAX_GUESSES = 5
+
+interface EmailCodeTransaction {
+  email: string
+  expiresAt: number
+}
+
+function randomTxId(): string {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function emailTxCookie(requestUrl: string, txId: string, maxAgeSec: number): string {
+  const secure = new URL(requestUrl).protocol === 'https:'
+  return `${EMAIL_TX_COOKIE}=${txId}; Path=/federation/email; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSec}${secure ? '; Secure' : ''}`
+}
+
+async function loadEmailTransaction(env: Env, txId: string): Promise<EmailCodeTransaction | null> {
+  if (!/^[0-9a-f]{48}$/.test(txId)) return null
+  const stub = getStubForIdentity(env, FEDERATION_SHARD)
+  const tx = (await stub.oauthStorageOp({ op: 'get', key: `fed-email-tx:${txId}` })).value as EmailCodeTransaction | undefined
+  if (!tx) return null
+  if (typeof tx.expiresAt !== 'number' || tx.expiresAt < Date.now()) {
+    await endEmailTransaction(env, txId)
+    return null
+  }
+  return tx
+}
+
+async function endEmailTransaction(env: Env, txId: string): Promise<void> {
+  const stub = getStubForIdentity(env, FEDERATION_SHARD)
+  await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx:${txId}` })
+  await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx-guesses:${txId}` })
 }
 
 function throttleStoreFor(env: Env): ThrottleStore {
@@ -423,6 +472,17 @@ app.post('/federation/email/send', async (c) => {
     return errorResponse(c, 502, ErrorCode.ServerError, message)
   }
 
+  // A new code is out: open the transaction /verify must present, and give
+  // the address a fresh guess budget.
+  const txId = randomTxId()
+  await getStubForIdentity(c.env, FEDERATION_SHARD).oauthStorageOp({
+    op: 'put',
+    key: `fed-email-tx:${txId}`,
+    value: { email, expiresAt: Date.now() + EMAIL_TX_TTL_MS } satisfies EmailCodeTransaction,
+  })
+  await resetCodeGuesses(c.env, email)
+  c.header('Set-Cookie', emailTxCookie(c.req.url, txId, EMAIL_TX_TTL_MS / 1000), { append: true })
+
   // Deliberately does not reveal whether the address exists anywhere — the
   // response is identical for a real mailbox and a typo'd one.
   return c.json({ sent: true })
@@ -448,6 +508,27 @@ app.post('/federation/email/verify', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Enter the 6-digit code from your email')
   }
 
+  // ── The guess must belong to a send, in this browser, within budget ──
+  const txId = parseCookieValue(c.req.header('cookie') || '', EMAIL_TX_COOKIE) || ''
+  const tx = txId ? await loadEmailTransaction(c.env, txId) : null
+  if (!tx || tx.email !== email) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Request a code for this address, then enter it in this browser')
+  }
+  const txGuess = await getStubForIdentity(c.env, FEDERATION_SHARD).consumeBudget({
+    key: `fed-email-tx-guesses:${txId}`,
+    max: EMAIL_TX_MAX_GUESSES,
+    windowMs: EMAIL_TX_TTL_MS,
+  })
+  if (!txGuess.allowed) {
+    await endEmailTransaction(c.env, txId)
+    return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code.')
+  }
+  const reservation = await reserveCodeGuess(c.env, email, clientIpOf(c.req.raw))
+  if (!reservation.ok) {
+    c.header('Retry-After', String(reservation.retryAfterSec))
+    return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code, or try again later.')
+  }
+
   let verification
   try {
     verification = await channel.verify(email, code)
@@ -459,6 +540,10 @@ app.post('/federation/email/verify', async (c) => {
     return errorResponse(c, 502, ErrorCode.ServerError, 'Verification failed — please request a new code')
   }
 
+  // One use: the transaction is spent, and the address's guess budget starts afresh.
+  await endEmailTransaction(c.env, txId)
+  await resetCodeGuesses(c.env, email)
+
   const principal = emailCodePrincipal(email, verification)
   const redirect = await issueFederatedSession(c.env, c.req.url, principal, continueUrl)
 
@@ -466,6 +551,7 @@ app.post('/federation/email/verify', async (c) => {
   // the browser would follow inside the fetch.
   const headers = new Headers({ 'Content-Type': 'application/json' })
   for (const cookie of redirect.headers.getSetCookie()) headers.append('Set-Cookie', cookie)
+  headers.append('Set-Cookie', emailTxCookie(c.req.url, '', 0))
   return new Response(JSON.stringify({ ok: true, continue: continueUrl, assurance: 'email-code' }), {
     status: 200,
     headers,

@@ -25,6 +25,7 @@ const CLIENT_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 interface FakeDo {
   store: Map<string, unknown>
   oauthStorageOp(op: { op: string; key?: string; value?: unknown; options?: unknown }): Promise<Record<string, unknown>>
+  consumeBudget(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; count: number; retryAfterSec: number }>
   getIdentity(id: string): Promise<unknown>
 }
 
@@ -41,6 +42,19 @@ function makeStub(): FakeDo {
       if (op.op === 'delete' && op.key) return { deleted: store.delete(op.key) }
       if (op.op === 'list') return { entries: Array.from(store.entries()) }
       throw new Error(`unknown op ${op.op}`)
+    },
+    // Same contract as IdentityDO.consumeBudget; a Map update is synchronous,
+    // so this fake is atomic as the real one is.
+    async consumeBudget({ key, max, windowMs }) {
+      const now = Date.now()
+      const cur = store.get(key) as { count: number; windowStartedAt: number } | undefined
+      if (!cur || now - cur.windowStartedAt >= windowMs) {
+        store.set(key, { count: 1, windowStartedAt: now })
+        return { allowed: 1 <= max, count: 1, retryAfterSec: 0 }
+      }
+      if (cur.count >= max) return { allowed: false, count: cur.count, retryAfterSec: Math.ceil((cur.windowStartedAt + windowMs - now) / 1000) }
+      store.set(key, { count: cur.count + 1, windowStartedAt: cur.windowStartedAt })
+      return { allowed: true, count: cur.count + 1, retryAfterSec: 0 }
     },
     async getIdentity(id: string) {
       return store.get(`identity:${id}`) ?? null
@@ -94,15 +108,26 @@ function get(app: ReturnType<typeof makeApp>, path: string, env: Env, init: Requ
   return app.fetch(new Request(`https://id.org.ai${path}`, { redirect: 'manual', ...init }), env)
 }
 
-function postJson(app: ReturnType<typeof makeApp>, path: string, body: unknown, env: Env) {
+function postJson(app: ReturnType<typeof makeApp>, path: string, body: unknown, env: Env, headers: Record<string, string> = {}) {
   return app.fetch(
     new Request(`https://id.org.ai${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
     }),
     env,
   )
+}
+
+/**
+ * Ask for a code the way the page does and return the send-transaction cookie
+ * that /federation/email/verify requires. `fetch` must be the test's mock.
+ */
+async function sendCode(app: ReturnType<typeof makeApp>, env: Env, email: string, mockFetch: ReturnType<typeof vi.fn>): Promise<string> {
+  mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: 'ma_1' }), { headers: { 'Content-Type': 'application/json' } }))
+  const res = await postJson(app, '/federation/email/send', { email }, env)
+  expect(res.status).toBe(200)
+  return res.headers.getSetCookie().find((c) => c.startsWith('__fec='))!.split(';')[0]!
 }
 
 // ── GET /federation/status ────────────────────────────────────────────────
@@ -437,18 +462,21 @@ describe('POST /federation/email/verify', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('verifies the code, writes an email-code identity at L1, and sets the cookie', async () => {
+    const stub = makeStub()
+    const env = makeEnv(stub)
+    const app = makeApp()
+    const tx = await sendCode(app, env, 'alice@zebra.com', mockFetch)
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ user: { id: 'user_01H', first_name: 'Alice', last_name: 'Anders' } }), {
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-    const stub = makeStub()
-    const env = makeEnv(stub)
     const res = await postJson(
-      makeApp(),
+      app,
       '/federation/email/verify',
       { email: 'Alice@Zebra.com', code: '123456', continue: '/deck' },
       env,
+      { cookie: tx },
     )
 
     expect(res.status).toBe(200)
@@ -471,14 +499,17 @@ describe('POST /federation/email/verify', () => {
   })
 
   it('401s on a wrong code without minting anything', async () => {
+    const stub = makeStub()
+    const env = makeEnv(stub)
+    const app = makeApp()
+    const tx = await sendCode(app, env, 'alice@zebra.com', mockFetch)
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ code: 'invalid_one_time_code' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       }),
     )
-    const stub = makeStub()
-    const res = await postJson(makeApp(), '/federation/email/verify', { email: 'alice@zebra.com', code: '000000' }, makeEnv(stub))
+    const res = await postJson(app, '/federation/email/verify', { email: 'alice@zebra.com', code: '000000' }, env, { cookie: tx })
     expect(res.status).toBe(401)
     expect(stub.store.get('identity:human:email:alice@zebra.com')).toBeUndefined()
   })
@@ -490,14 +521,18 @@ describe('POST /federation/email/verify', () => {
   })
 
   it('refuses an off-site continue URL', async () => {
+    const env = makeEnv(makeStub())
+    const app = makeApp()
+    const tx = await sendCode(app, env, 'alice@zebra.com', mockFetch)
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ user: { id: 'user_01H' } }), { headers: { 'Content-Type': 'application/json' } }),
     )
     const res = await postJson(
-      makeApp(),
+      app,
       '/federation/email/verify',
       { email: 'alice@zebra.com', code: '123456', continue: 'https://evil.example/x' },
-      makeEnv(makeStub()),
+      env,
+      { cookie: tx },
     )
     expect(((await res.json()) as any).continue).toBe('/')
   })
