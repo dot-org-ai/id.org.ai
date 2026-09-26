@@ -12,6 +12,7 @@ import { dispatchTool } from '../../src/sdk/mcp/tools'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 import { mcpWwwAuthenticate } from '../utils/mcp-resource'
+import { requestOriginOf } from '../../src/sdk/csrf'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -21,7 +22,7 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
  * MCP clients at the protected-resource metadata (→ authorization server).
  */
 function unauthorizedChallenge(c: any, id?: string | number) {
-  c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
+  c.header('WWW-Authenticate', mcpWwwAuthenticate(requestOriginOf(c.req.url)))
   return c.json(
     {
       jsonrpc: '2.0',
@@ -30,7 +31,7 @@ function unauthorizedChallenge(c: any, id?: string | number) {
         code: -32001,
         message: 'Authentication required — this MCP endpoint is an OAuth 2.1 protected resource',
         data: {
-          resource_metadata: `${new URL(c.req.url).origin}/.well-known/oauth-protected-resource`,
+          resource_metadata: `${requestOriginOf(c.req.url)}/.well-known/oauth-protected-resource`,
         },
       },
     },
@@ -349,7 +350,7 @@ app.post('/mcp', async (c) => {
 
     // L1+ tools require a DO stub (authenticated identity)
     if (requiredLevel >= 1 && !stub) {
-      c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
+      c.header('WWW-Authenticate', mcpWwwAuthenticate(requestOriginOf(c.req.url)))
       return c.json(
         {
           jsonrpc: '2.0',

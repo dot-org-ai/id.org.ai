@@ -24,6 +24,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { corsMiddleware, originValidationMiddleware } from './middleware/origin'
+import { requestOriginOf } from '../src/sdk/csrf'
 import * as jose from 'jose'
 import { IdentityDO } from '../src/server/do/Identity'
 import type { IdentityStub } from '../src/server/do/Identity'
@@ -47,6 +48,7 @@ import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, ca
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
 import { federationRoutes } from './routes/federation'
+import { magicLinkRoutes, startMagicLink, type MagicLinkResult } from './routes/magic-link'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -284,6 +286,32 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
     // For JWTs: cache was already cleared above
     return true
+  }
+
+  // ── sendMagicLink ───────────────────────────────────────────────────
+  // Magic-link sign-in for a worker in this account (worker/routes/magic-link.ts):
+  //   env.OAUTH.sendMagicLink({ email, continue, clientId?, origin? })
+  //     → { ok: true, sent, verify_url, expires_in }
+  //     | { ok: false, status, error, error_description, retryAfterSec? }
+  // An RPC method is reachable only through a service binding to this
+  // entrypoint, never from the public internet, so the binding is the
+  // credential (POST /api/magic-link, the public door, takes only listed
+  // confidential clients). `clientId` (optional) lends a registered client's
+  // redirect origins to `continue`; `origin` (optional) is the calling
+  // worker's own origin, on which `continue` may also land. The magic-link
+  // path's per-address send budget (`code-send:ml:<email>`, shared with HTTP,
+  // not with /federation/email/send) and the hourly caps apply as on HTTP.
+
+  async sendMagicLink(input: { email: string; continue?: string; clientId?: string; origin?: string }): Promise<MagicLinkResult> {
+    if (!this.env.WORKOS_API_KEY || !this.env.WORKOS_CLIENT_ID) {
+      return { ok: false, status: 503, error: 'temporarily_unavailable', error_description: 'WorkOS is not configured' }
+    }
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    return startMagicLink(
+      this.env,
+      { email: str(input?.email) ?? '', continue: str(input?.continue) },
+      { kind: 'binding', clientId: str(input?.clientId), origin: str(input?.origin) },
+    )
   }
 
   // ── JWT Verification (private) ──────────────────────────────────────
@@ -671,7 +699,7 @@ app.get('/.well-known/openid-configuration', (c) => {
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
 
@@ -735,7 +763,7 @@ function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
   const xIssuer = c.req.header('X-Issuer')
   const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   return c.json({
     resource: mcpResourceUri(origin),
     authorization_servers: [issuer],
@@ -774,6 +802,10 @@ app.route('', authVerifyRoutes)
 // ── Auth Routes (login, callback, logout, session, widget-token) ─────────────
 // Mounted before authenticateRequest — these routes handle their own auth.
 app.route('', authRoutes)
+// Magic-link sign-in for relying parties (POST /api/magic-link, /magic-link/:flow).
+// Mounted before the /api/* authenticateRequest middleware: the caller
+// authenticates as an OAuth client (client_secret) or a service binding.
+app.route('', magicLinkRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
 

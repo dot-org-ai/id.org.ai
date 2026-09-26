@@ -11,6 +11,7 @@ import {
   workosMagicAuthChannel,
   emailCodePrincipal,
   allowEmailCodeSend,
+  codeSendKey,
   isPlausibleEmail,
   isPlausibleCode,
   normalizeEmail,
@@ -22,15 +23,25 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-/** In-memory ThrottleStore — the same seam the worker backs with the DO. */
-function memoryStore(): ThrottleStore {
+/**
+ * In-memory ThrottleStore — the same seam the worker backs with
+ * IdentityDO.consumeBudget. The Map is read and written with no await between,
+ * so it is atomic as the Durable Object is.
+ */
+function memoryStore(): ThrottleStore & { map: Map<string, { count: number; windowStartedAt: number }> } {
   const map = new Map<string, { count: number; windowStartedAt: number }>()
   return {
-    async get(key) {
-      return map.get(key)
-    },
-    async put(key, value) {
-      map.set(key, value)
+    map,
+    async consume({ key, max, windowMs }) {
+      const now = Date.now()
+      const cur = map.get(key)
+      if (!cur || now - cur.windowStartedAt >= windowMs) {
+        map.set(key, { count: 1, windowStartedAt: now })
+        return { allowed: 1 <= max }
+      }
+      if (cur.count >= max) return { allowed: false, retryAfterSec: Math.ceil((cur.windowStartedAt + windowMs - now) / 1000) }
+      map.set(key, { count: cur.count + 1, windowStartedAt: cur.windowStartedAt })
+      return { allowed: true }
     },
   }
 }
@@ -87,6 +98,24 @@ describe('allowEmailCodeSend', () => {
     const store = memoryStore()
     await allowEmailCodeSend(store, 'alice@zebra.com', { max: 1 })
     expect(await allowEmailCodeSend(store, 'bob@zebra.com', { max: 1 })).toBe(true)
+  })
+
+  it('20 parallel sends to one address: at most 5 allowed', async () => {
+    const store = memoryStore()
+    const results = await Promise.all(Array.from({ length: 20 }, () => allowEmailCodeSend(store, 'alice@zebra.com')))
+    expect(results.filter(Boolean).length).toBe(5)
+  })
+
+  it('spends from its own path\'s per-address key (fed by default); the paths never share one', async () => {
+    const store = memoryStore()
+    await allowEmailCodeSend(store, ' Alice@Zebra.com ')
+    expect(codeSendKey('ALICE@zebra.com')).toBe('code-send:fed:alice@zebra.com')
+    expect(codeSendKey('ALICE@zebra.com', 'ml')).toBe('code-send:ml:alice@zebra.com')
+    expect(store.map.get('code-send:fed:alice@zebra.com')?.count).toBe(1)
+    // Spending the fed budget leaves the ml budget whole.
+    for (let i = 0; i < 4; i++) await allowEmailCodeSend(store, 'alice@zebra.com')
+    expect(await allowEmailCodeSend(store, 'alice@zebra.com')).toBe(false)
+    expect(await allowEmailCodeSend(store, 'alice@zebra.com', { path: 'ml' })).toBe(true)
   })
 
   it('reopens the budget after the window elapses', async () => {
@@ -154,7 +183,7 @@ describe('workosMagicAuthChannel.verify', () => {
     const [url, options] = mockFetch.mock.calls[0]
     expect(url).toBe('https://api.workos.com/user_management/authenticate')
     const body = new URLSearchParams(options.body as string)
-    expect(body.get('grant_type')).toBe('urn:workos:oauth:grant-type:magic-auth')
+    expect(body.get('grant_type')).toBe('urn:workos:oauth:grant-type:magic-auth:code')
     expect(body.get('email')).toBe('alice@zebra.com')
     expect(body.get('code')).toBe('123456')
     expect(result.subject).toBe('user_01H')

@@ -208,6 +208,15 @@ export interface IdentityStub {
   ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
 
+  // Atomic get-and-delete: answers the value to exactly one caller, however
+  // many race. See IdentityDO.takeOnce.
+  takeOnce(input: { key: string }): Promise<{ value: unknown }>
+
+  // Atomic fixed-window counter: increments `key` and reports whether the
+  // post-increment count is within `max` for the current `windowMs` window.
+  // A refused call does not increment. See IdentityDO.consumeBudget.
+  consumeBudget(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; count: number; retryAfterSec: number }>
+
   // AAP host-registration atomicity (ax-p18): atomically claims host_id ->
   // tenantId. Callers route this through a DO instance dedicated to the
   // host_id being claimed (see aapHostClaimShardKey in worker/routes/aap.ts)

@@ -7,7 +7,7 @@
  *   GET  /federation/microsoft/callback   ← Entra
  *   GET  /federation/email                → the fallback page
  *   POST /federation/email/send           → put a code in the mailbox
- *   POST /federation/email/verify         → check it
+ *   POST /federation/email/verify         → check it (same browser, same send)
  *   GET  /federation/status               → which paths are live (JSON)
  *
  * "One way out" is the load-bearing part: both paths end at
@@ -24,7 +24,9 @@ import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
-import { buildAuthCookieHeaders, getRootDomain } from '../utils/cookies'
+import { buildAuthCookieHeaders, getRootDomain, parseCookieValue } from '../utils/cookies'
+import { reserveCodeGuess, resetCodeGuesses, reserveCodeSend, clientIpOf } from '../utils/code-guard'
+import { canonicalHostname, requestOriginOf } from '../utils/relying-parties'
 import {
   startMicrosoftAuth,
   exchangeMicrosoftCode,
@@ -38,12 +40,10 @@ import type { MicrosoftAuthState, MicrosoftConfig, MicrosoftVerifyDeps } from '.
 import {
   workosMagicAuthChannel,
   emailCodePrincipal,
-  allowEmailCodeSend,
   isPlausibleEmail,
   isPlausibleCode,
   normalizeEmail,
 } from '../../src/sdk/federation/email-code'
-import type { ThrottleStore } from '../../src/sdk/federation/email-code'
 import { FederationError, levelCeilingForAssurance } from '../../src/sdk/federation/types'
 import type { FederatedPrincipal } from '../../src/sdk/federation/types'
 import { renderEmailCodePage } from '../views/email-code'
@@ -86,7 +86,7 @@ const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev
 
 export function microsoftConfigFor(env: Env, requestUrl: string): MicrosoftConfig | undefined {
   if (!env.MICROSOFT_CLIENT_ID) return undefined
-  const requestOrigin = new URL(requestUrl).origin
+  const requestOrigin = requestOriginOf(requestUrl)
   const origin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
   return {
     clientId: env.MICROSOFT_CLIENT_ID,
@@ -137,14 +137,20 @@ export function safeContinue(raw: string | undefined, env: Env): string {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '/'
 
-  const host = parsed.hostname.toLowerCase()
+  if (parsed.username || parsed.password) return '/'
+
+  // Compared, and returned, in canonical spelling (lowercase, no trailing dot).
+  const host = canonicalHostname(parsed.hostname)
   const extra = (env.FEDERATION_CONTINUE_HOSTS ?? '')
     .split(',')
-    .map((h) => h.trim().toLowerCase())
+    .map((h) => canonicalHostname(h.trim()))
     .filter(Boolean)
 
   const allowed = host === 'org.ai' || host.endsWith('.org.ai') || extra.includes(host)
-  return allowed ? url : '/'
+  if (!allowed) return '/'
+  if (host === parsed.hostname) return url
+  parsed.hostname = host
+  return parsed.href
 }
 
 function emailChannelFor(env: Env) {
@@ -177,17 +183,52 @@ async function takeTransaction(env: Env, state: string): Promise<MicrosoftAuthSt
   return tx
 }
 
-function throttleStoreFor(env: Env): ThrottleStore {
+// ── Email-code send transactions ──────────────────────────────────────────
+
+/**
+ * A verify is bound to the send that put the code in the mailbox, in the
+ * browser that asked for it (security review S1): /send stores a transaction
+ * for the address and sets an HttpOnly, SameSite=Strict cookie naming it;
+ * /verify refuses without that cookie, for another address, or once the
+ * transaction has expired or spent its guesses. The shared per-address and
+ * per-IP guess budgets (worker/utils/code-guard.ts) sit on top.
+ */
+const EMAIL_TX_COOKIE = '__fec'
+const EMAIL_TX_TTL_MS = 10 * 60 * 1000
+const EMAIL_TX_MAX_GUESSES = 5
+
+interface EmailCodeTransaction {
+  email: string
+  expiresAt: number
+}
+
+function randomTxId(): string {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function emailTxCookie(requestUrl: string, txId: string, maxAgeSec: number): string {
+  const secure = new URL(requestUrl).protocol === 'https:'
+  return `${EMAIL_TX_COOKIE}=${txId}; Path=/federation/email; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSec}${secure ? '; Secure' : ''}`
+}
+
+async function loadEmailTransaction(env: Env, txId: string): Promise<EmailCodeTransaction | null> {
+  if (!/^[0-9a-f]{48}$/.test(txId)) return null
   const stub = getStubForIdentity(env, FEDERATION_SHARD)
-  return {
-    async get(key) {
-      const stored = await stub.oauthStorageOp({ op: 'get', key })
-      return stored.value as { count: number; windowStartedAt: number } | undefined
-    },
-    async put(key, value) {
-      await stub.oauthStorageOp({ op: 'put', key, value })
-    },
+  const tx = (await stub.oauthStorageOp({ op: 'get', key: `fed-email-tx:${txId}` })).value as EmailCodeTransaction | undefined
+  if (!tx) return null
+  if (typeof tx.expiresAt !== 'number' || tx.expiresAt < Date.now()) {
+    await endEmailTransaction(env, txId)
+    return null
   }
+  return tx
+}
+
+async function endEmailTransaction(env: Env, txId: string): Promise<void> {
+  const stub = getStubForIdentity(env, FEDERATION_SHARD)
+  await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx:${txId}` })
+  await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx-guesses:${txId}` })
 }
 
 // ── The single exit: mint an id.org.ai identity + session ─────────────────
@@ -277,7 +318,7 @@ app.get('/federation/status', (c) => {
     microsoft: {
       configured: isMicrosoftConfigured(ms),
       tenant: c.env.MICROSOFT_TENANT || MICROSOFT_DEFAULT_TENANT,
-      redirectUri: ms?.redirectUri ?? `${new URL(c.req.url).origin}/federation/microsoft/callback`,
+      redirectUri: ms?.redirectUri ?? `${requestOriginOf(c.req.url)}/federation/microsoft/callback`,
       allowedTenants: allowedTenants(c.env) ?? null,
       confidentialClient: !!c.env.MICROSOFT_CLIENT_SECRET,
     },
@@ -410,8 +451,14 @@ app.post('/federation/email/send', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Enter a valid work email address')
   }
 
-  const allowed = await allowEmailCodeSend(throttleStoreFor(c.env), email)
-  if (!allowed) {
+  // One atomic reservation from this path's send budget for the address
+  // (`code-send:fed:<email>`, worker/utils/code-guard.ts): each send restarts
+  // this path's guess budget, so sends must be bounded however they race.
+  // The budget is this public path's own, so a flood here cannot lock the
+  // address out of magic-link sign-in.
+  const sendBudget = await reserveCodeSend(c.env, email, 'fed')
+  if (!sendBudget.ok) {
+    c.header('Retry-After', String(sendBudget.retryAfterSec))
     return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many codes requested — try again later')
   }
 
@@ -422,6 +469,17 @@ app.post('/federation/email/send', async (c) => {
     console.log(`[federation/email] send failed for ${email}: ${(err as Error).message}`)
     return errorResponse(c, 502, ErrorCode.ServerError, message)
   }
+
+  // A new code is out: open the transaction /verify must present, and give
+  // the address a fresh guess budget.
+  const txId = randomTxId()
+  await getStubForIdentity(c.env, FEDERATION_SHARD).oauthStorageOp({
+    op: 'put',
+    key: `fed-email-tx:${txId}`,
+    value: { email, expiresAt: Date.now() + EMAIL_TX_TTL_MS } satisfies EmailCodeTransaction,
+  })
+  await resetCodeGuesses(c.env, email, 'fed')
+  c.header('Set-Cookie', emailTxCookie(c.req.url, txId, EMAIL_TX_TTL_MS / 1000), { append: true })
 
   // Deliberately does not reveal whether the address exists anywhere — the
   // response is identical for a real mailbox and a typo'd one.
@@ -448,6 +506,27 @@ app.post('/federation/email/verify', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Enter the 6-digit code from your email')
   }
 
+  // ── The guess must belong to a send, in this browser, within budget ──
+  const txId = parseCookieValue(c.req.header('cookie') || '', EMAIL_TX_COOKIE) || ''
+  const tx = txId ? await loadEmailTransaction(c.env, txId) : null
+  if (!tx || tx.email !== email) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'Request a code for this address, then enter it in this browser')
+  }
+  const txGuess = await getStubForIdentity(c.env, FEDERATION_SHARD).consumeBudget({
+    key: `fed-email-tx-guesses:${txId}`,
+    max: EMAIL_TX_MAX_GUESSES,
+    windowMs: EMAIL_TX_TTL_MS,
+  })
+  if (!txGuess.allowed) {
+    await endEmailTransaction(c.env, txId)
+    return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code.')
+  }
+  const reservation = await reserveCodeGuess(c.env, email, clientIpOf(c.req.raw), 'fed')
+  if (!reservation.ok) {
+    c.header('Retry-After', String(reservation.retryAfterSec))
+    return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code, or try again later.')
+  }
+
   let verification
   try {
     verification = await channel.verify(email, code)
@@ -459,6 +538,10 @@ app.post('/federation/email/verify', async (c) => {
     return errorResponse(c, 502, ErrorCode.ServerError, 'Verification failed — please request a new code')
   }
 
+  // One use: the transaction is spent, and the address's guess budget starts afresh.
+  await endEmailTransaction(c.env, txId)
+  await resetCodeGuesses(c.env, email, 'fed')
+
   const principal = emailCodePrincipal(email, verification)
   const redirect = await issueFederatedSession(c.env, c.req.url, principal, continueUrl)
 
@@ -466,6 +549,7 @@ app.post('/federation/email/verify', async (c) => {
   // the browser would follow inside the fetch.
   const headers = new Headers({ 'Content-Type': 'application/json' })
   for (const cookie of redirect.headers.getSetCookie()) headers.append('Set-Cookie', cookie)
+  headers.append('Set-Cookie', emailTxCookie(c.req.url, '', 0))
   return new Response(JSON.stringify({ ok: true, continue: continueUrl, assurance: 'email-code' }), {
     status: 200,
     headers,

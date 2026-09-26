@@ -26,7 +26,7 @@
  * A deliberate consequence: WorkOS owns the code (generation, TTL, attempt
  * limiting). We do not mint or store a code ourselves — there is exactly one
  * place a code can be checked, so there is no second implementation to get
- * wrong. What we DO own is per-email send throttling (see `SendThrottle`),
+ * wrong. What we DO own is per-email send throttling (`allowEmailCodeSend`),
  * because nothing upstream stops a stranger pointing our send endpoint at
  * someone else's inbox.
  *
@@ -69,45 +69,77 @@ export interface EmailCodeChannel {
 // ── Send throttling ───────────────────────────────────────────────────────
 
 /**
- * Minimal storage port for throttle counters — the worker backs this with the
- * IdentityDO, tests back it with a Map.
+ * Storage port for the send budget: a fixed-window counter that increments
+ * and checks in ONE atomic step, answering `allowed` when the count after the
+ * increment is within `max`. The worker backs it with
+ * IdentityDO.consumeBudget; tests back it with a Map updated synchronously.
+ *
+ * It is deliberately not a get/put pair: a read followed by a separate write
+ * lets N parallel sends all read the same count and all pass.
  */
 export interface ThrottleStore {
-  get(key: string): Promise<{ count: number; windowStartedAt: number } | undefined>
-  put(key: string, value: { count: number; windowStartedAt: number }): Promise<void>
+  consume(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; retryAfterSec?: number }>
 }
 
+/**
+ * Which sign-in path a send belongs to. Each path has its own per-address
+ * counter, so a flood on one path (the public federation form, say) cannot
+ * spend the other's budget and lock a person out of it.
+ *
+ *   fed  POST /federation/email/send, the public email-code fallback
+ *   ml   POST /api/magic-link (listed clients) and AuthService.sendMagicLink
+ */
+export type CodeSendPath = 'fed' | 'ml'
+
 export interface SendThrottleOptions {
+  /** The path whose budget this send spends. Default `fed` (this module's own fallback). */
+  path?: CodeSendPath
   /** Max sends per window per email. Default 5. */
   max?: number
   /** Window length in ms. Default 1 hour. */
   windowMs?: number
 }
 
+/** The default send budget: 5 codes per address per hour, per path. */
+export const CODE_SENDS_PER_EMAIL = { max: 5, windowMs: 60 * 60 * 1000 } as const
+
 /**
- * Enforce a per-email send budget. Returns `false` when the caller must refuse
- * to send. Keyed on the normalised email so casing games do not buy extra
+ * The per-address send counter of one path: `code-send:fed:<email>` or
+ * `code-send:ml:<email>`. The paths are split so that anyone able to reach
+ * the public federation form cannot exhaust the budget a relying party's
+ * magic-link sign-in needs (and the other way round). Each path's sends are
+ * bounded on their own, and so are the resets of that path's guess budget
+ * (worker/utils/code-guard.ts).
+ */
+export function codeSendKey(email: string, path: CodeSendPath = 'fed'): string {
+  return `code-send:${path}:${normalizeEmail(email)}`
+}
+
+/**
+ * Reserve one send to `email` from its budget. The caller sends only when
+ * `allowed`. Keyed on the normalised email so casing games do not buy extra
  * sends.
  */
+export async function reserveEmailCodeSend(
+  store: ThrottleStore,
+  email: string,
+  options: SendThrottleOptions = {},
+): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const r = await store.consume({
+    key: codeSendKey(email, options.path ?? 'fed'),
+    max: options.max ?? CODE_SENDS_PER_EMAIL.max,
+    windowMs: options.windowMs ?? CODE_SENDS_PER_EMAIL.windowMs,
+  })
+  return { allowed: r.allowed, retryAfterSec: r.allowed ? 0 : Math.max(1, r.retryAfterSec ?? 1) }
+}
+
+/** `reserveEmailCodeSend`, answering only whether the send may go ahead. */
 export async function allowEmailCodeSend(
   store: ThrottleStore,
   email: string,
   options: SendThrottleOptions = {},
 ): Promise<boolean> {
-  const max = options.max ?? 5
-  const windowMs = options.windowMs ?? 60 * 60 * 1000
-  const key = `emailcode-throttle:${normalizeEmail(email)}`
-  const now = Date.now()
-
-  const current = await store.get(key)
-  if (!current || now - current.windowStartedAt >= windowMs) {
-    await store.put(key, { count: 1, windowStartedAt: now })
-    return true
-  }
-  if (current.count >= max) return false
-
-  await store.put(key, { count: current.count + 1, windowStartedAt: current.windowStartedAt })
-  return true
+  return (await reserveEmailCodeSend(store, email, options)).allowed
 }
 
 // ── WorkOS Magic Auth transport ───────────────────────────────────────────
@@ -167,7 +199,9 @@ export function workosMagicAuthChannel(config: WorkOSMagicAuthConfig): EmailCode
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          grant_type: 'urn:workos:oauth:grant-type:magic-auth',
+          // WorkOS's documented grant for a Magic Auth code (the bare `…:magic-auth`
+          // is not a grant type; WorkOS answered 400, which read as a wrong code).
+          grant_type: 'urn:workos:oauth:grant-type:magic-auth:code',
           client_id: config.clientId,
           client_secret: config.apiKey,
           email: normalizeEmail(email),

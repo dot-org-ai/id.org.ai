@@ -134,6 +134,9 @@ describe('C. email-code fallback (full loop)', () => {
       body: JSON.stringify({ email: TEST_MAILBOX }),
     })
     expect(sendRes.status).toBe(200)
+    // The verify must come from the browser that asked for the code.
+    const sendCookie = sendRes.headers.getSetCookie().find((c) => c.startsWith('__fec='))?.split(';')[0]
+    expect(sendCookie, 'no send-transaction cookie was set').toBeTruthy()
 
     const mail = await waitForEmail(TEST_MAILBOX, { afterTs: sentAt, timeoutMs: 90_000 })
     const code = extractVerificationCode(mail.text || mail.html)
@@ -141,7 +144,7 @@ describe('C. email-code fallback (full loop)', () => {
 
     const verifyRes = await fetch(`${ID_URL}/federation/email/verify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: sendCookie! },
       body: JSON.stringify({ email: TEST_MAILBOX, code, continue: '/' }),
     })
     expect(verifyRes.status).toBe(200)
@@ -181,7 +184,8 @@ describe('C. email-code fallback (full loop)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: TEST_MAILBOX, code: '000000' }),
     })
-    expect([400, 401]).toContain(res.status)
+    // 403: no send transaction in this "browser", so WorkOS is not even asked.
+    expect([400, 401, 403]).toContain(res.status)
   })
 
   it('throttles repeated sends to the same mailbox', async () => {

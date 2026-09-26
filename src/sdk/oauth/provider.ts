@@ -49,6 +49,7 @@
 // ============================================================================
 
 import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+import { canonicalHostname } from '../csrf'
 
 export interface OAuthConfig {
   issuer: string
@@ -111,6 +112,7 @@ interface AuthorizationCode {
   nonce?: string
   resource?: string
   effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
+  signIn?: SignInContext       // how the person signed in (amr / idp / auth_time)
   expiresAt: number
   createdAt: number
 }
@@ -127,6 +129,7 @@ interface AccessToken {
                                // audience. Enforced by the resource server (e.g.
                                // /mcp) so a token minted for one resource cannot
                                // be replayed against another.
+  signIn?: SignInContext       // how the person signed in, for userinfo amr / idp
 }
 
 // Internal storage type — see OAuthRefreshToken in ./types.ts for canonical API type
@@ -151,6 +154,7 @@ interface RefreshToken {
    * account flows.
    */
   consumerHost?: string
+  signIn?: SignInContext       // carried through rotation so refreshed id_tokens keep amr / idp
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -183,6 +187,28 @@ interface IdentityInfo {
   level?: number
 }
 
+/**
+ * How the person signed in, carried from the id.org.ai session into the tokens
+ * a relying party receives: OIDC `amr` (RFC 8176 style method references, e.g.
+ * `["oauth"]`, `["email_otp"]`, `["magic_link"]`), `idp` (the upstream that
+ * verified them: `github`, `google`, `microsoft`, `apple`, `authkit`,
+ * `magic_link`) and `auth_time` (epoch seconds). All optional: a session that
+ * predates this field, or a non-browser credential, simply carries none.
+ */
+export interface SignInContext {
+  amr?: string[]
+  idp?: string
+  authTime?: number
+}
+
+/** Add amr / idp / auth_time from a sign-in context onto a claims object. */
+export function applySignInClaims(claims: Record<string, unknown>, signIn: SignInContext | undefined): void {
+  if (!signIn) return
+  if (signIn.amr?.length) claims.amr = signIn.amr
+  if (signIn.idp) claims.idp = signIn.idp
+  if (signIn.authTime) claims.auth_time = signIn.authTime
+}
+
 function tierFromLevel(level: number | undefined): string | undefined {
   if (level === undefined || !Number.isInteger(level) || level < 0) return undefined
   return `L${level}`
@@ -212,7 +238,7 @@ export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, un
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }
 }
 
@@ -404,7 +430,7 @@ export class OAuthProvider {
       return false
     }
     if (parsed.hash) return false
-    return this.trustedAccount.allowedDomains.has(parsed.hostname)
+    return this.trustedAccount.allowedDomains.has(canonicalHostname(parsed.hostname))
   }
 
   /**
@@ -546,7 +572,7 @@ export class OAuthProvider {
   // Authorization Endpoint
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async handleAuthorize(request: Request, identityId: string | null): Promise<Response> {
+  async handleAuthorize(request: Request, identityId: string | null, signIn?: SignInContext): Promise<Response> {
     const url = new URL(request.url)
     const params = url.searchParams
 
@@ -559,6 +585,7 @@ export class OAuthProvider {
     const codeChallengeMethod = params.get('code_challenge_method') || undefined
     const nonce = params.get('nonce') || undefined
     const resource = params.get('resource') || undefined
+    const loginHint = params.get('login_hint') || undefined
 
     // ── Validate client ─────────────────────────────────────────────────
     // ADR-0007: trusted-account clients bypass the DCR lookup entirely.
@@ -615,6 +642,8 @@ export class OAuthProvider {
       const effectiveIssuer = this.getEffectiveIssuer(request)
       const loginUrl = new URL('/login', effectiveIssuer)
       loginUrl.searchParams.set('continue', request.url)
+      // OIDC login_hint: prefill the sign-in email at the upstream page.
+      if (loginHint) loginUrl.searchParams.set('login_hint', loginHint)
       return Response.redirect(loginUrl.toString(), 302)
     }
 
@@ -646,6 +675,7 @@ export class OAuthProvider {
       nonce,
       resource,
       effectiveIssuer: this.getEffectiveIssuer(request),
+      signIn,
     })
   }
 
@@ -653,7 +683,7 @@ export class OAuthProvider {
   // Authorization Consent Submission
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async handleAuthorizeConsent(request: Request, identityId: string): Promise<Response> {
+  async handleAuthorizeConsent(request: Request, identityId: string, signIn?: SignInContext): Promise<Response> {
     const body = await parseBody(request)
 
     const clientId = body.client_id
@@ -693,6 +723,7 @@ export class OAuthProvider {
       nonce,
       resource,
       effectiveIssuer: this.getEffectiveIssuer(request),
+      signIn,
     })
   }
 
@@ -912,6 +943,8 @@ export class OAuthProvider {
       claims.email_verified = identity.emailVerified ?? false
     }
 
+    applySignInClaims(claims, tokenData.signIn)
+
     return jsonResponse(claims)
   }
 
@@ -1119,6 +1152,7 @@ export class OAuthProvider {
       resource: codeData.resource,
       effectiveIssuer: codeData.effectiveIssuer,
       consumerHost,
+      signIn: codeData.signIn,
     })
   }
 
@@ -1161,7 +1195,7 @@ export class OAuthProvider {
     //     doesn't actually hold for the refresh grant.
     if (this.isTrustedAccountClient(clientId)) {
       const host = tokenData.consumerHost
-      if (!host || !this.trustedAccount!.allowedDomains.has(host)) {
+      if (!host || !this.trustedAccount!.allowedDomains.has(canonicalHostname(host))) {
         return oauthError(
           'invalid_grant',
           'redirect_uri host is not in the trusted-account allowlist',
@@ -1199,6 +1233,7 @@ export class OAuthProvider {
       // Propagate the consumer host through rotation so subsequent refreshes
       // can keep enforcing the allowlist (ADR-0007).
       consumerHost: tokenData.consumerHost,
+      signIn: tokenData.signIn,
     })
   }
 
@@ -1329,6 +1364,7 @@ export class OAuthProvider {
       nonce?: string
       resource?: string
       effectiveIssuer?: string
+      signIn?: SignInContext
     },
   ): Promise<Response> {
     const codeId = generateId('ac_')
@@ -1346,6 +1382,7 @@ export class OAuthProvider {
       nonce: params.nonce,
       resource: params.resource,
       effectiveIssuer: params.effectiveIssuer,
+      ...(params.signIn && { signIn: params.signIn }),
       expiresAt: now + AUTH_CODE_TTL * 1000,
       createdAt: now,
     }
@@ -1389,7 +1426,7 @@ export class OAuthProvider {
    */
   private extractRedirectUriHost(redirectUri: string): string | undefined {
     try {
-      return new URL(redirectUri).hostname
+      return canonicalHostname(new URL(redirectUri).hostname)
     } catch {
       return undefined
     }
@@ -1432,8 +1469,10 @@ export class OAuthProvider {
      * only; ignored for everything else.
      */
     consumerHost?: string
+    /** How the person signed in; stamped on the id_token and the stored tokens. */
+    signIn?: SignInContext
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, consumerHost } = options
+    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, consumerHost, signIn } = options
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1450,6 +1489,7 @@ export class OAuthProvider {
       // resource server can reject cross-resource replay (carried
       // authorize → code → token, and re-carried through refresh rotation).
       ...(resource !== undefined && { resource }),
+      ...(signIn && { signIn }),
     }
 
     const refreshToken: RefreshToken = {
@@ -1464,6 +1504,7 @@ export class OAuthProvider {
       ...(resource !== undefined && { resource }),
       ...(effectiveIssuer !== undefined && { effectiveIssuer }),
       ...(consumerHost !== undefined && { consumerHost }),
+      ...(signIn && { signIn }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1504,13 +1545,14 @@ export class OAuthProvider {
         if (nonce) claims.nonce = nonce
         if (scopes.includes('email') && identity?.email) {
           claims.email = identity.email
-          if (identity.emailVerified !== undefined) claims.email_verified = identity.emailVerified
+          claims.email_verified = identity.emailVerified ?? false
         }
         if (scopes.includes('profile') && identity?.name) {
           claims.name = identity.name
         }
         const tier = tierFromLevel(identity?.level)
         if (tier) claims.tier = tier
+        applySignInClaims(claims, signIn)
 
         // Compute at_hash (OIDC Core Section 3.1.3.6)
         const tokenHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessTokenId))

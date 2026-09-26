@@ -15,7 +15,16 @@ export default defineWorkersConfig({
           compatibilityFlags: ['nodejs_compat'],
           // Test-only stand-in for the WORKOS_API_KEY secret so login/callback
           // routes don't 503; the WorkOS API itself is mocked via fetchMock.
-          bindings: { WORKOS_API_KEY: 'sk_test_vitest_placeholder' },
+          // LOGIN_CONTINUE_POLICY: production runs `report` (worker/wrangler.jsonc)
+          // while estate callers are listed; the suite pins `enforce`, the
+          // policy's end state. test/continue-policy.test.ts covers `report`.
+          // MAGIC_LINK_CLIENTS: the ids tests seed as allowlisted magic-link
+          // callers (test/relying-party.test.ts, test/magic-link-callers.test.ts).
+          bindings: {
+            WORKOS_API_KEY: 'sk_test_vitest_placeholder',
+            LOGIN_CONTINUE_POLICY: 'enforce',
+            MAGIC_LINK_CLIENTS: Array.from({ length: 20 }, (_, i) => `cid_magiclink_test_${String(i + 1).padStart(2, '0')}`).join(','),
+          },
           kvNamespaces: ['SESSIONS'],
           durableObjects: {
             IDENTITY: 'IdentityDO',

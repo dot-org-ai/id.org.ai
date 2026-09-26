@@ -6,17 +6,19 @@
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
-import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
+import { getStubForIdentity, getSigningKeyManager, readSessionSignIn } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
-import { OAuthProvider } from '../../src/sdk/oauth/provider'
+import { OAuthProvider, applySignInClaims } from '../../src/sdk/oauth/provider'
 import {
   generateCSRFToken,
   buildCSRFCookie,
   encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
+  canonicalHostname,
 } from '../../src/sdk/csrf'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
+import { indexClientOrigins } from '../utils/relying-parties'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -37,7 +39,9 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
   const set = new Set<string>()
   if (!value) return set
   for (const raw of value.split(',')) {
-    const host = raw.trim().toLowerCase()
+    // Canonical spelling (lowercase, no trailing dot), as every host compared
+    // against this set is.
+    const host = canonicalHostname(raw.trim())
     if (!host) continue
     // Defensive: reject obvious mistakes (schemes, paths) so a typo in
     // the env doesn't silently widen the trust boundary.
@@ -97,7 +101,14 @@ export function getOAuthProvider(c: any): OAuthProvider {
       const identityStub = getStubForIdentity(c.env, id)
       const identity = await identityStub.getIdentity(id)
       if (!identity) return null
-      return identity as unknown as { id: string; name?: string; handle?: string; email?: string; emailVerified?: boolean; image?: string; level?: number }
+      // The stored Identity says `verified`; the provider reads `emailVerified`
+      // for the id_token's email_verified claim. Without this mapping the
+      // id_token never carried email_verified at all.
+      const record = identity as unknown as { verified?: boolean; emailVerified?: boolean }
+      return {
+        ...(identity as unknown as { id: string; name?: string; handle?: string; email?: string; image?: string; level?: number }),
+        emailVerified: record.emailVerified ?? record.verified ?? false,
+      }
     },
     signingKeyManager,
     // ADR-0007: enable trusted-account mode only when the allowlist is non-empty.
@@ -133,18 +144,38 @@ app.use('/device', authenticateRequest)
 // ── Dynamic Client Registration (RFC 7591) ──────────────────────────────────
 app.post('/oauth/register', async (c) => {
   const provider = getOAuthProvider(c)
-  return provider.handleRegister(c.req.raw)
+  const response = await provider.handleRegister(c.req.raw)
+  // Remember the client's redirect origins so /login?continue= may return there
+  // (worker/utils/relying-parties.ts). Best effort: registration never fails on it.
+  if (response.status === 201) {
+    try {
+      const registered = (await response.clone().json()) as { client_id?: string; redirect_uris?: string[] }
+      if (registered.client_id && Array.isArray(registered.redirect_uris)) {
+        await indexClientOrigins(c.env, registered.client_id, registered.redirect_uris)
+      }
+    } catch (err) {
+      console.error('[oauth/register] origin index failed:', err instanceof Error ? err.message : err)
+    }
+  }
+  return response
 })
 
 // Authorization Endpoint — CSRF protected
-// On GET: generate a CSRF token, set it as a cookie, and embed it in the state parameter.
-// On POST (consent submission): validate the CSRF token from cookie + form body.
+// On GET: when (and only when) a consent page is shown, generate a CSRF token,
+// set it as a cookie, and embed it in the consent form's state parameter.
+// On POST (consent submission): validate the CSRF token from cookie + form body,
+// then hand the provider the client's ORIGINAL state.
+//
+// The client must always get back exactly the `state` it sent. The wrapped
+// value is internal to the consent round-trip; it never leaves in a redirect.
 app.get('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   // Lazily seed web OAuth clients on first authorize request
   await oauthStub.ensureWebClients()
+  // How the browser session was established → amr / idp / auth_time on the tokens
+  const signIn = identityId ? await readSessionSignIn(c.req.raw, c.env) : undefined
 
   // Skip CSRF wrapping for service binding callers — the proxy handles its own security
   const isServiceBinding = !!c.req.header('X-Issuer')
@@ -163,10 +194,22 @@ app.get('/oauth/authorize', async (c) => {
 
   if (isServiceBinding || isTrustedAccount) {
     const provider = getOAuthProvider(c)
-    return provider.handleAuthorize(c.req.raw, identityId)
+    return provider.handleAuthorize(c.req.raw, identityId, signIn)
   }
 
-  // Generate CSRF token for the consent form (browser-direct requests only)
+  // Resolve the request with the client's state untouched first. Only a consent
+  // page needs the CSRF-bound state; a login redirect, an error redirect or an
+  // issued code (consent already on record) must carry the client's own state.
+  // Wrapping before this point leaked `base64url({csrf, s})` to every
+  // registered client that had already consented, and double-wrapped the state
+  // across the /login round-trip.
+  const direct = await getOAuthProvider(c).handleAuthorize(c.req.raw, identityId, signIn)
+  const isConsentPage = direct.status === 200 && (direct.headers.get('content-type') || '').includes('text/html')
+  if (!isConsentPage) {
+    return direct
+  }
+
+  // Consent page: generate a CSRF token for the consent form (browser-direct requests only)
   const csrfToken = generateCSRFToken()
   // Store the CSRF token in the oauth DO's storage via RPC
   await oauthStub.oauthStorageOp({
@@ -188,7 +231,7 @@ app.get('/oauth/authorize', async (c) => {
   })
 
   const provider = getOAuthProvider(c)
-  const response = await provider.handleAuthorize(modifiedRequest, identityId)
+  const response = await provider.handleAuthorize(modifiedRequest, identityId, signIn)
 
   // Set the CSRF cookie on the response
   const isSecure = new URL(c.req.url).protocol === 'https:'
@@ -204,11 +247,13 @@ app.post('/oauth/authorize', async (c) => {
     return errorResponse(c, 401, ErrorCode.AuthenticationRequired, 'Authentication required to submit authorization consent')
   }
 
+  const signIn = await readSessionSignIn(c.req.raw, c.env)
+
   // Skip CSRF validation for service binding callers — the proxy handles its own security
   const isServiceBinding = !!c.req.header('X-Issuer')
   if (isServiceBinding) {
     const provider = getOAuthProvider(c)
-    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
+    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn)
   }
 
   // Extract CSRF token from cookie
@@ -227,10 +272,12 @@ app.post('/oauth/authorize', async (c) => {
   }
 
   let formCSRF: string | null = null
+  let originalState: string | undefined
   if (formState) {
     const decoded = decodeStateWithCSRF(formState)
     if (decoded) {
       formCSRF = decoded.csrf
+      originalState = decoded.originalState
     }
   }
 
@@ -264,9 +311,31 @@ app.post('/oauth/authorize', async (c) => {
   // Consume the token (one-time use)
   await oauthStub.oauthStorageOp({ op: 'delete', key: `csrf:${cookieCSRF}` })
 
+  // Hand the provider the client's ORIGINAL state, so the redirect back to the
+  // client carries exactly the state it sent (not the CSRF wrapper).
   const provider = getOAuthProvider(c)
-  return provider.handleAuthorizeConsent(c.req.raw, auth.identityId)
+  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn)
 })
+
+/** Rebuild a consent POST with `state` replaced by the client's original state. */
+async function withOriginalState(request: Request, contentType: string, originalState: string | undefined): Promise<Request> {
+  const headers = new Headers(request.headers)
+  headers.delete('content-length')
+  if (contentType.includes('application/json')) {
+    const body = (await request.json()) as Record<string, unknown>
+    if (originalState === undefined) delete body.state
+    else body.state = originalState
+    return new Request(request.url, { method: 'POST', headers, body: JSON.stringify(body) })
+  }
+  const form = await request.formData()
+  const params = new URLSearchParams()
+  for (const [key, value] of form.entries()) {
+    if (key !== 'state' && typeof value === 'string') params.append(key, value)
+  }
+  if (originalState !== undefined) params.set('state', originalState)
+  headers.set('content-type', 'application/x-www-form-urlencoded')
+  return new Request(request.url, { method: 'POST', headers, body: params.toString() })
+}
 
 // Token Endpoint
 app.post('/oauth/token', async (c) => {
@@ -306,7 +375,9 @@ app.get('/oauth/userinfo', async (c) => {
   // Look up the access token in the OAuth DO storage
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const tokenResult = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${tokenId}` })
-  const tokenData = tokenResult.value as { identityId?: string; expiresAt?: number; scopes?: string[] } | undefined
+  const tokenData = tokenResult.value as
+    | { identityId?: string; expiresAt?: number; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
+    | undefined
 
   if (!tokenData) {
     return c.json({ error: 'invalid_token' }, 401)
@@ -328,13 +399,16 @@ app.get('/oauth/userinfo', async (c) => {
     return c.json({ error: 'invalid_token', error_description: 'Identity not found' }, 401)
   }
 
-  return c.json({
+  const claims: Record<string, unknown> = {
     sub: identity.id || tokenData.identityId,
     name: identity.name,
     email: identity.email,
     email_verified: identity.verified ?? false,
     org_id: identity.organizationId,
-  })
+  }
+  // How the person signed in (amr / idp / auth_time), when the token carries it
+  applySignInClaims(claims, tokenData.signIn)
+  return c.json(claims)
 })
 
 // Token Introspection (RFC 7662)
