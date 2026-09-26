@@ -154,7 +154,7 @@ describe('workosMagicAuthChannel.verify', () => {
     const [url, options] = mockFetch.mock.calls[0]
     expect(url).toBe('https://api.workos.com/user_management/authenticate')
     const body = new URLSearchParams(options.body as string)
-    expect(body.get('grant_type')).toBe('urn:workos:oauth:grant-type:magic-auth')
+    expect(body.get('grant_type')).toBe('urn:workos:oauth:grant-type:magic-auth:code')
     expect(body.get('email')).toBe('alice@zebra.com')
     expect(body.get('code')).toBe('123456')
     expect(result.subject).toBe('user_01H')

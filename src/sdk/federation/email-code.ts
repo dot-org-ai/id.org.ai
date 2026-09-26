@@ -167,7 +167,9 @@ export function workosMagicAuthChannel(config: WorkOSMagicAuthConfig): EmailCode
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          grant_type: 'urn:workos:oauth:grant-type:magic-auth',
+          // WorkOS's documented grant for a Magic Auth code (the bare `…:magic-auth`
+          // is not a grant type; WorkOS answered 400, which read as a wrong code).
+          grant_type: 'urn:workos:oauth:grant-type:magic-auth:code',
           client_id: config.clientId,
           client_secret: config.apiKey,
           email: normalizeEmail(email),
