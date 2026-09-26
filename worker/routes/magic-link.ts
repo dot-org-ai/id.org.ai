@@ -2,8 +2,11 @@
  * Magic-link sign-in for relying parties (a Startup's waitlist, api.sb, …).
  *
  *   POST /api/magic-link { email, continue, client_id }
- *     Caller: a registered confidential client (client_secret_basic or
- *     client_secret_post) or a service binding. Asks WorkOS Magic Auth to email
+ *     Caller: a service binding, or a confidential client (client_secret_basic
+ *     or client_secret_post) whose id is listed in MAGIC_LINK_CLIENTS.
+ *     Registration is open, so any other registered client is refused (403):
+ *     otherwise anyone could register a client and relay id.org.ai's sign-in
+ *     emails to any address. Asks WorkOS Magic Auth to email
  *     the person a one-time sign-in code and opens a 10-minute sign-in flow.
  *     Answers 202 { sent, verify_url, expires_in } whether or not an account
  *     exists for that address (WorkOS creates the user when it is new).
@@ -21,7 +24,7 @@
  * origins.
  *
  * Limits: 5 sends per email per hour, 100 per client (or binding host) per
- * hour, 5 code attempts per flow. Every counter is incremented and checked in
+ * hour, 300 in all per hour, 5 code attempts per flow. Every counter is incremented and checked in
  * one Durable Object call (IdentityDO.consumeBudget), before the send or the
  * WorkOS check it guards, so parallel requests cannot overrun a budget. Every
  * guess also spends the per-address and per-IP guess budgets shared with
@@ -55,6 +58,19 @@ const FLOW_TTL_MS = 10 * 60 * 1000
 const MAX_CODE_ATTEMPTS = 5
 const EMAIL_LIMIT = { max: 5, windowMs: 60 * 60 * 1000 }
 const CLIENT_LIMIT = { max: 100, windowMs: 60 * 60 * 1000 }
+/** Every caller together: bounds what id.org.ai's WorkOS account sends per hour. */
+const GLOBAL_LIMIT = { max: 300, windowMs: 60 * 60 * 1000 }
+const GLOBAL_LIMIT_KEY = 'magiclink-rl:global'
+
+/** MAGIC_LINK_CLIENTS: the client ids allowed to call POST /api/magic-link. */
+export function magicLinkClients(env: Env): Set<string> {
+  return new Set(
+    (env.MAGIC_LINK_CLIENTS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  )
+}
 const FLOW_COOKIE = '__mlf'
 
 interface MagicFlow {
@@ -175,6 +191,11 @@ app.post('/api/magic-link', async (c) => {
   } else if (clientId && !client) {
     return c.json({ error: 'invalid_client', error_description: 'Unknown client_id' }, 400)
   }
+  // An authenticated client must also be listed: registration is open.
+  if (!viaBinding && !magicLinkClients(c.env).has(client!.id)) {
+    console.warn(JSON.stringify({ event: 'magic-link.client.refused', client: client!.id }))
+    return c.json({ error: 'unauthorized_client', error_description: 'This client is not enabled for magic-link sign-in' }, 403)
+  }
 
   // ── Input ─────────────────────────────────────────────────────────────
   const email = normalizeEmail(body.email || '')
@@ -202,17 +223,16 @@ app.post('/api/magic-link', async (c) => {
     continueUrl = accepted
   }
 
-  // ── Rate limits: per email, then per caller ──────────────────────────
+  // ── Rate limits: per email, then per caller, then for everyone ───────
   const callerKey = client?.id ?? `binding:${new URL(c.req.url).host}`
   const emailWait = await consumeBudget(c.env, `magiclink-rl:email:${email}`, EMAIL_LIMIT)
   const clientWait = emailWait ? 0 : await consumeBudget(c.env, `magiclink-rl:client:${callerKey}`, CLIENT_LIMIT)
-  const wait = emailWait || clientWait
+  const globalWait = emailWait || clientWait ? 0 : await consumeBudget(c.env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
+  const wait = emailWait || clientWait || globalWait
   if (wait) {
-    return c.json(
-      { error: 'rate_limited', error_description: emailWait ? 'Too many sign-in emails for this address; try later' : 'Too many sign-in emails from this client; try later' },
-      429,
-      { 'Retry-After': String(wait) },
-    )
+    const why = emailWait ? 'for this address' : clientWait ? 'from this client' : 'right now'
+    if (globalWait) console.warn(JSON.stringify({ event: 'magic-link.global-cap', client: callerKey }))
+    return c.json({ error: 'rate_limited', error_description: `Too many sign-in emails ${why}; try later` }, 429, { 'Retry-After': String(wait) })
   }
 
   // ── Send (WorkOS emails the code) ────────────────────────────────────

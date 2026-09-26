@@ -63,6 +63,11 @@
     // empty or every host in it is listed above. POST /api/magic-link always
     // enforces.
     "LOGIN_CONTINUE_POLICY": "report",
+    // OAuth clients that may call POST /api/magic-link (comma-separated
+    // client ids). Registration is open, so any other registered client is
+    // refused (403); service bindings need no listing.
+    //   cid_6024fce7… — api.sb's web client (confidential, client_secret_basic)
+    "MAGIC_LINK_CLIENTS": "cid_6024fce72d8ce25066e6e876361ea3d7e12d8f4dc23566a8",
 
     // ── Upstream Microsoft federation (worker/routes/federation.ts) ─────────
     // Multi-tenant Entra app registration. The client ID is public by design
