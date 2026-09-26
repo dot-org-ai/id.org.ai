@@ -489,6 +489,21 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     throw new Error(`Unknown storage operation: ${op.op}`)
   }
 
+  // ─── One-time values (RPC) ────────────────────────────────────────────
+  //
+  // Read a key and delete it in ONE call, answering the value to exactly one
+  // caller. The `_auth_code` redemption at /callback used to get over one RPC
+  // and delete over another, so N parallel redemptions of one code all read
+  // it and all minted a session. As in consumeBudget below, the delete follows
+  // the read with no other await between them, and the input gate holds every
+  // other event until the read settles, so a second call sees the key gone.
+  async takeOnce(input: { key: string }): Promise<{ value: unknown }> {
+    const value = await this.ctx.storage.get(input.key)
+    if (value === undefined) return { value: undefined }
+    await this.ctx.storage.delete(input.key)
+    return { value }
+  }
+
   // ─── Fixed-window budgets (RPC) ───────────────────────────────────────
   //
   // Increment-and-check in ONE call. The route used to read the counter over

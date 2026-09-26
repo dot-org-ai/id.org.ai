@@ -884,11 +884,13 @@ export function decodeLoginState(state: string): { csrf: string; continue?: stri
   try {
     const padded = state.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - (state.length % 4)) % 4)
     const payload = JSON.parse(atob(padded))
-    if (!payload.csrf) return null
+    // Unsigned input: every field is checked for type. A non-string csrf is
+    // not a state (an array `[csrf]` would otherwise stringify to a real key).
+    if (!payload || typeof payload !== 'object' || typeof payload.csrf !== 'string' || !payload.csrf) return null
     return {
       csrf: payload.csrf,
-      continue: payload.continue,
-      origin: payload.origin,
+      ...(typeof payload.continue === 'string' ? { continue: payload.continue } : {}),
+      ...(typeof payload.origin === 'string' ? { origin: payload.origin } : {}),
       ...(typeof payload.provider === 'string' ? { provider: payload.provider } : {}),
     }
   } catch {
