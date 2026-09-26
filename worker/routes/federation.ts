@@ -451,10 +451,12 @@ app.post('/federation/email/send', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Enter a valid work email address')
   }
 
-  // One atomic reservation from the address's send budget, shared with
-  // POST /api/magic-link (worker/utils/code-guard.ts): each send restarts the
-  // address's guess budget, so sends must be bounded however they race.
-  const sendBudget = await reserveCodeSend(c.env, email)
+  // One atomic reservation from this path's send budget for the address
+  // (`code-send:fed:<email>`, worker/utils/code-guard.ts): each send restarts
+  // this path's guess budget, so sends must be bounded however they race.
+  // The budget is this public path's own, so a flood here cannot lock the
+  // address out of magic-link sign-in.
+  const sendBudget = await reserveCodeSend(c.env, email, 'fed')
   if (!sendBudget.ok) {
     c.header('Retry-After', String(sendBudget.retryAfterSec))
     return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many codes requested — try again later')
@@ -476,7 +478,7 @@ app.post('/federation/email/send', async (c) => {
     key: `fed-email-tx:${txId}`,
     value: { email, expiresAt: Date.now() + EMAIL_TX_TTL_MS } satisfies EmailCodeTransaction,
   })
-  await resetCodeGuesses(c.env, email)
+  await resetCodeGuesses(c.env, email, 'fed')
   c.header('Set-Cookie', emailTxCookie(c.req.url, txId, EMAIL_TX_TTL_MS / 1000), { append: true })
 
   // Deliberately does not reveal whether the address exists anywhere — the
@@ -519,7 +521,7 @@ app.post('/federation/email/verify', async (c) => {
     await endEmailTransaction(c.env, txId)
     return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code.')
   }
-  const reservation = await reserveCodeGuess(c.env, email, clientIpOf(c.req.raw))
+  const reservation = await reserveCodeGuess(c.env, email, clientIpOf(c.req.raw), 'fed')
   if (!reservation.ok) {
     c.header('Retry-After', String(reservation.retryAfterSec))
     return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many attempts. Request a new code, or try again later.')
@@ -538,7 +540,7 @@ app.post('/federation/email/verify', async (c) => {
 
   // One use: the transaction is spent, and the address's guess budget starts afresh.
   await endEmailTransaction(c.env, txId)
-  await resetCodeGuesses(c.env, email)
+  await resetCodeGuesses(c.env, email, 'fed')
 
   const principal = emailCodePrincipal(email, verification)
   const redirect = await issueFederatedSession(c.env, c.req.url, principal, continueUrl)

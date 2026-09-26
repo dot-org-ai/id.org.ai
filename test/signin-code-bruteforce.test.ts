@@ -10,8 +10,10 @@
  *   - a verify must present the send transaction's cookie (same browser, same
  *     address, within 10 minutes), which allows 5 guesses;
  *   - every guess, on this route and on POST /magic-link/:flow, reserves one
- *     of 5 guesses per address per 15 minutes (a new send starts it afresh)
- *     and one of 50 per IP per hour, atomically, before WorkOS is asked.
+ *     of 5 guesses per address per 15 minutes on its own path (a new send on
+ *     that path starts it afresh; round 4 split the paths so a flood of the
+ *     public federation form cannot lock anyone out of magic-link) and one of
+ *     50 per IP per hour across both paths, atomically, before WorkOS is asked.
  *
  * Runs the real worker (SELF, real IdentityDO); only WorkOS is faked, and the
  * fake counts every code check.
@@ -154,7 +156,7 @@ describe('S1: guesses at one address are capped', () => {
     expect(results.filter((r) => r.status === 429).length).toBe(20 - workos.checks)
   })
 
-  it('the budget is shared with /magic-link/:flow', async () => {
+  it('the per-address budget is per path: spending it here leaves /magic-link/:flow its own', async () => {
     const email = 'shared@example.com'
     const workos = fakeWorkOS((e) => e === email)
     // A magic-link flow for the address (opened over a service binding)...
@@ -163,20 +165,22 @@ describe('S1: guesses at one address are capped', () => {
     const path = new URL(sent.verify_url).pathname
     const flowCookie = (await SELF.fetch(`${BASE}${path}`)).headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
 
-    // ...then the federation path spends the address's five guesses...
+    // ...then the federation path spends its five guesses at the address...
     const cookie = await send(email)
     for (let i = 0; i < 5; i++) expect((await verify(email, wrong(i), cookie)).status).toBe(401)
     expect(workos.checks).toBe(5)
 
-    // ...so the flow's first guess is refused without asking WorkOS.
+    // ...which does not touch the magic-link path's: the flow's code is
+    // checked, and signs the person in.
+    const checks = workos.checks
     const res = await SELF.fetch(`${BASE}${path}`, {
       method: 'POST',
       redirect: 'manual',
       headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: flowCookie, 'cf-connecting-ip': '192.0.2.10' },
       body: `code=${GOOD_CODE}`,
     })
-    expect(res.status).toBe(429)
-    expect(workos.checks).toBe(5)
+    expect(res.status).toBe(302)
+    expect(workos.checks).toBe(checks + 1)
   })
 })
 

@@ -106,11 +106,16 @@ describe('allowEmailCodeSend', () => {
     expect(results.filter(Boolean).length).toBe(5)
   })
 
-  it('spends from the one per-address key every sending route shares', async () => {
+  it('spends from its own path\'s per-address key (fed by default); the paths never share one', async () => {
     const store = memoryStore()
     await allowEmailCodeSend(store, ' Alice@Zebra.com ')
-    expect(codeSendKey('ALICE@zebra.com')).toBe('code-send:alice@zebra.com')
-    expect(store.map.get('code-send:alice@zebra.com')?.count).toBe(1)
+    expect(codeSendKey('ALICE@zebra.com')).toBe('code-send:fed:alice@zebra.com')
+    expect(codeSendKey('ALICE@zebra.com', 'ml')).toBe('code-send:ml:alice@zebra.com')
+    expect(store.map.get('code-send:fed:alice@zebra.com')?.count).toBe(1)
+    // Spending the fed budget leaves the ml budget whole.
+    for (let i = 0; i < 4; i++) await allowEmailCodeSend(store, 'alice@zebra.com')
+    expect(await allowEmailCodeSend(store, 'alice@zebra.com')).toBe(false)
+    expect(await allowEmailCodeSend(store, 'alice@zebra.com', { path: 'ml' })).toBe(true)
   })
 
   it('reopens the budget after the window elapses', async () => {

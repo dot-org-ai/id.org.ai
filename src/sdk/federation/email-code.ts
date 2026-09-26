@@ -81,24 +81,38 @@ export interface ThrottleStore {
   consume(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; retryAfterSec?: number }>
 }
 
+/**
+ * Which sign-in path a send belongs to. Each path has its own per-address
+ * counter, so a flood on one path (the public federation form, say) cannot
+ * spend the other's budget and lock a person out of it.
+ *
+ *   fed  POST /federation/email/send, the public email-code fallback
+ *   ml   POST /api/magic-link (listed clients) and AuthService.sendMagicLink
+ */
+export type CodeSendPath = 'fed' | 'ml'
+
 export interface SendThrottleOptions {
+  /** The path whose budget this send spends. Default `fed` (this module's own fallback). */
+  path?: CodeSendPath
   /** Max sends per window per email. Default 5. */
   max?: number
   /** Window length in ms. Default 1 hour. */
   windowMs?: number
 }
 
-/** The default send budget: 5 codes per address per hour. */
+/** The default send budget: 5 codes per address per hour, per path. */
 export const CODE_SENDS_PER_EMAIL = { max: 5, windowMs: 60 * 60 * 1000 } as const
 
 /**
- * The one per-address send counter. Every route that has a code emailed
- * (the federation fallback and POST /api/magic-link) spends from this key, so
- * the sends to an address, and with them the resets of its guess budget, are
- * bounded in total, not per route.
+ * The per-address send counter of one path: `code-send:fed:<email>` or
+ * `code-send:ml:<email>`. The paths are split so that anyone able to reach
+ * the public federation form cannot exhaust the budget a relying party's
+ * magic-link sign-in needs (and the other way round). Each path's sends are
+ * bounded on their own, and so are the resets of that path's guess budget
+ * (worker/utils/code-guard.ts).
  */
-export function codeSendKey(email: string): string {
-  return `code-send:${normalizeEmail(email)}`
+export function codeSendKey(email: string, path: CodeSendPath = 'fed'): string {
+  return `code-send:${path}:${normalizeEmail(email)}`
 }
 
 /**
@@ -112,7 +126,7 @@ export async function reserveEmailCodeSend(
   options: SendThrottleOptions = {},
 ): Promise<{ allowed: boolean; retryAfterSec: number }> {
   const r = await store.consume({
-    key: codeSendKey(email),
+    key: codeSendKey(email, options.path ?? 'fed'),
     max: options.max ?? CODE_SENDS_PER_EMAIL.max,
     windowMs: options.windowMs ?? CODE_SENDS_PER_EMAIL.windowMs,
   })
