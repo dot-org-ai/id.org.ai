@@ -28,6 +28,28 @@ import {
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
+import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
+import { resolveContinue } from '../utils/relying-parties'
+
+/** Where a sign-in lands when no acceptable `continue` was given. */
+const DEFAULT_CONTINUE = '/dash/profile'
+
+/** An OIDC login_hint we are willing to pass upstream: a plausible email, nothing else. */
+export function sanitizeLoginHint(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  const hint = value.trim()
+  if (hint.length > 320 || !/^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(hint)) return undefined
+  return hint
+}
+
+/** The host of a refused redirect target, for logs (never the full URL). */
+function hostForLog(url: string): string {
+  try {
+    return new URL(url, 'https://id.org.ai').host
+  } catch {
+    return 'unparseable'
+  }
+}
 
 /**
  * What /login stores under `login-csrf:<csrf>`. The login `state` is unsigned
@@ -71,8 +93,21 @@ app.get('/login', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
-  const rawContinue = c.req.query('continue') || c.req.query('redirect_uri') || '/dash/profile'
-  const continueUrl = isSafeRedirectUrl(rawContinue) ? rawContinue : '/dash/profile'
+  // Only relative paths, id.org.ai's own origins, trusted-account domains and
+  // registered clients' redirect origins are accepted (worker/utils/relying-parties.ts).
+  // Anything else — //evil.com, https://evil.com, javascript:, encoded tricks —
+  // falls back to the default rather than becoming an open redirect.
+  const reqOrigin = new URL(c.req.url).origin
+  const rawContinue = c.req.query('continue') || c.req.query('redirect_uri')
+  const acceptedContinue = rawContinue
+    ? await resolveContinue(c.env, rawContinue, { requestOrigin: reqOrigin, clientId: c.req.query('client_id') || undefined })
+    : null
+  if (rawContinue && !acceptedContinue) {
+    console.warn(JSON.stringify({ event: 'login.continue.refused', host: hostForLog(rawContinue) }))
+  }
+  const continueUrl = acceptedContinue ?? DEFAULT_CONTINUE
+  // OIDC login_hint (also forwarded by /oauth/authorize): prefill the email upstream.
+  const loginHint = sanitizeLoginHint(c.req.query('login_hint'))
 
   // If the user already has a valid session, skip WorkOS and redirect to continue URL.
   // This prevents conflicts when e.g. CLI device flow redirects here while user is logged in,
@@ -95,7 +130,7 @@ app.get('/login', async (c) => {
   if (!safeProvider) {
     // When our own Entra app is configured, the Microsoft button points at
     // /federation/microsoft/start instead of AuthKit — see routes/federation.ts.
-    return renderProviderPicker(continueUrl, { microsoftFederation: !!c.env.MICROSOFT_CLIENT_ID })
+    return renderProviderPicker(continueUrl, { microsoftFederation: !!c.env.MICROSOFT_CLIENT_ID, loginHint })
   }
 
   const csrf = crypto.randomUUID()
@@ -103,7 +138,7 @@ app.get('/login', async (c) => {
   // Capture the requesting origin so the callback can redirect back and set the cookie
   // on the correct domain (e.g. headless.ly, not id.org.ai).
   const requestOrigin = new URL(c.req.url).origin
-  const state = encodeLoginState(csrf, continueUrl, requestOrigin)
+  const state = encodeLoginState(csrf, continueUrl, requestOrigin, safeProvider)
 
   // Store the CSRF token for validation on callback, WITH the continue URL and
   // origin this request resolved. The state handed to WorkOS is unsigned
@@ -124,7 +159,7 @@ app.get('/login', async (c) => {
   const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev']
   const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
   const redirectUri = `${callbackOrigin}/api/callback`
-  const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider)
+  const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider, loginHint)
   // Store state in cookie so we can recover it if WorkOS drops the state param
   // (happens during AuthKit's internal org selection flow)
   const reqUrl = new URL(c.req.url)
@@ -325,6 +360,30 @@ app.get('/api/callback', async (c) => {
   // Now consume CSRF token (auth succeeded, no more retries needed)
   await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
 
+  return finishWorkOSSignIn(c, authResult, {
+    requestedProvider: decoded.provider,
+    continueUrl: isSafeRedirectUrl(boundContinue) ? boundContinue : '/',
+    origin: boundOrigin,
+  })
+})
+
+/**
+ * Complete a WorkOS sign-in: provision or refresh the human identity, sign the
+ * id.org.ai session JWT (with how they signed in: `amr`, `idp`, `auth_time`),
+ * set the cookie (directly, or through the requesting origin's /callback) and
+ * redirect to `continueUrl`. Shared by /api/callback and the magic-link flow.
+ *
+ * `continueUrl` must already have passed the caller's redirect policy.
+ */
+export async function finishWorkOSSignIn(
+  c: any,
+  authResult: WorkOSAuthResult,
+  opts: { requestedProvider?: string; continueUrl: string; origin?: string },
+): Promise<Response> {
+  const oauthStub = getStubForIdentity(c.env, 'oauth')
+  const apiKey = c.env.WORKOS_API_KEY as string
+  const signInMethod = describeWorkOSSignIn(authResult.authentication_method, opts.requestedProvider)
+
   // Fetch full WorkOS user profile + org info in parallel
   let orgId = authResult.user.organization_id || authResult.organization_id
   const [workosUser, initialOrgInfo] = await Promise.all([
@@ -433,18 +492,22 @@ app.get('/api/callback', async (c) => {
       roles: authResult.user.roles,
       permissions: authResult.user.permissions,
       ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
+      // How they signed in, for relying parties (OIDC amr / idp / auth_time)
+      ...(signInMethod.amr ? { amr: signInMethod.amr } : {}),
+      ...(signInMethod.idp ? { idp: signInMethod.idp } : {}),
+      auth_time: Math.floor(Date.now() / 1000),
     },
     { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
 
-  const continueUrl = isSafeRedirectUrl(boundContinue) ? boundContinue : '/'
+  const continueUrl = opts.continueUrl
 
   // ── Cross-origin redirect: bounce to the requesting domain to set cookie ─
   // If the login was initiated from a different domain (e.g. apis.do), we can't
   // set the cookie from oauth.do. Store a one-time code and redirect to the
   // origin's /callback so the cookie is set on the correct domain.
   const currentOrigin = new URL(c.req.url).origin
-  if (boundOrigin && boundOrigin !== currentOrigin) {
+  if (opts.origin && opts.origin !== currentOrigin) {
     const oneTimeCode = crypto.randomUUID()
     await oauthStub.oauthStorageOp({
       op: 'put',
@@ -453,7 +516,7 @@ app.get('/api/callback', async (c) => {
       options: { expirationTtl: 60 },
     })
 
-    const callbackUrl = new URL('/callback', boundOrigin)
+    const callbackUrl = new URL('/callback', opts.origin)
     callbackUrl.searchParams.set('_auth_code', oneTimeCode)
     return c.redirect(callbackUrl.toString(), 302)
   }
@@ -469,7 +532,7 @@ app.get('/api/callback', async (c) => {
     headers.append('Set-Cookie', cookie)
   }
   return new Response(null, { status: 302, headers })
-})
+}
 
 // ── Logout ────────────────────────────────────────────────────────────────────
 
@@ -693,6 +756,10 @@ app.post('/api/session/organization', async (c) => {
         roles: payload.roles as string[] | undefined,
         permissions: payload.permissions as string[] | undefined,
         ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
+        // Switching org is not a new sign-in: keep how and when they signed in
+        ...(Array.isArray(payload.amr) ? { amr: payload.amr as string[] } : {}),
+        ...(typeof payload.idp === 'string' ? { idp: payload.idp } : {}),
+        ...(typeof payload.auth_time === 'number' ? { auth_time: payload.auth_time } : {}),
       },
       { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
     )

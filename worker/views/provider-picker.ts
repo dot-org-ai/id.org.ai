@@ -17,6 +17,11 @@ export interface ProviderPickerOptions {
    * consent. When false the button keeps its previous AuthKit behaviour.
    */
   microsoftFederation?: boolean
+  /**
+   * OIDC login_hint (already sanitised by /login): prefills the email at the
+   * upstream page, whichever button is picked.
+   */
+  loginHint?: string
 }
 
 export function renderProviderPicker(continueUrl: string, options: ProviderPickerOptions = {}): Response {
@@ -35,10 +40,15 @@ export function renderProviderPicker(continueUrl: string, options: ProviderPicke
   }
 
   const qs = continueUrl !== '/' ? `?continue=${encodeURIComponent(continueUrl)}` : ''
+  const hint = options.loginHint ? `login_hint=${encodeURIComponent(options.loginHint)}` : ''
   const buttons = providers.map((p) => {
-    const href = p.href
-      ? `${p.href}${qs ? '?continue=' + encodeURIComponent(continueUrl) : ''}`
-      : `/login?provider=${p.id}${qs ? '&continue=' + encodeURIComponent(continueUrl) : ''}`
+    let href: string
+    if (p.href) {
+      const params = [qs ? 'continue=' + encodeURIComponent(continueUrl) : '', hint].filter(Boolean).join('&')
+      href = params ? `${p.href}?${params}` : p.href
+    } else {
+      href = `/login?provider=${p.id}${qs ? '&continue=' + encodeURIComponent(continueUrl) : ''}${hint ? '&' + hint : ''}`
+    }
     return `
     <a href="${href}" class="provider-btn">
       <span class="provider-icon">${p.icon}</span>
