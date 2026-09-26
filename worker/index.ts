@@ -46,6 +46,7 @@ import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
+import { magicLinkRoutes } from './routes/magic-link'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -672,7 +673,7 @@ app.get('/.well-known/openid-configuration', (c) => {
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
 
@@ -775,6 +776,10 @@ app.route('', authVerifyRoutes)
 // ── Auth Routes (login, callback, logout, session, widget-token) ─────────────
 // Mounted before authenticateRequest — these routes handle their own auth.
 app.route('', authRoutes)
+// Magic-link sign-in for relying parties (POST /api/magic-link, /magic-link/:flow).
+// Mounted before the /api/* authenticateRequest middleware: the caller
+// authenticates as an OAuth client (client_secret) or a service binding.
+app.route('', magicLinkRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
 
