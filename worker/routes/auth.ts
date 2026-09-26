@@ -29,6 +29,36 @@ import {
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 
+/**
+ * What /login stores under `login-csrf:<csrf>`. The login `state` is unsigned
+ * base64 JSON that anyone can decode and re-encode, so the destination and the
+ * cookie-bounce origin are bound HERE, server-side, and /api/callback uses
+ * these values. Taking them from the state let a forged state (a real csrf
+ * from the attacker's own /login, plus `origin: https://evil.example`) send
+ * the victim's one-time `_auth_code` to the attacker's /callback, where it
+ * redeems for the victim's session cookie.
+ */
+export interface LoginCsrfRecord {
+  csrf: string
+  createdAt: number
+  continue: string
+  origin: string
+}
+
+export function loginCsrfRecord(csrf: string, continueUrl: string, origin: string): LoginCsrfRecord {
+  return { csrf, createdAt: Date.now(), continue: continueUrl, origin }
+}
+
+/**
+ * How long a login transaction stays redeemable. DO storage ignores
+ * `expirationTtl`, so this is enforced on read. Generous enough for an AuthKit
+ * sign-up with email verification plus the org picker.
+ */
+export const LOGIN_CSRF_MAX_AGE_MS = 30 * 60 * 1000
+
+/** How long a cross-origin `_auth_code` stays redeemable (enforced on read). */
+export const AUTH_CODE_MAX_AGE_MS = 60 * 1000
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 // ── WorkOS Login Flow (no auth required) ─────────────────────────────────────
@@ -73,12 +103,15 @@ app.get('/login', async (c) => {
   const requestOrigin = new URL(c.req.url).origin
   const state = encodeLoginState(csrf, continueUrl, requestOrigin)
 
-  // Store CSRF token for validation on callback (5 min TTL)
+  // Store the CSRF token for validation on callback, WITH the continue URL and
+  // origin this request resolved. The state handed to WorkOS is unsigned
+  // base64 JSON, so /api/callback takes these from here, never from the state
+  // (see LoginCsrfRecord).
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   await oauthStub.oauthStorageOp({
     op: 'put',
     key: `login-csrf:${csrf}`,
-    value: { csrf, createdAt: Date.now() },
+    value: loginCsrfRecord(csrf, continueUrl, requestOrigin),
     options: { expirationTtl: 300 },
   })
 
@@ -124,7 +157,12 @@ app.get('/callback', async (c) => {
   // Consume one-time code
   await oauthStub.oauthStorageOp({ op: 'delete', key: `auth-code:${authCode}` })
 
-  const { jwt, continueUrl } = stored.value as { jwt: string; continueUrl: string }
+  const { jwt, continueUrl, expiresAt } = stored.value as { jwt: string; continueUrl: string; expiresAt?: number }
+  // DO storage ignores expirationTtl: enforce the one-minute lifetime here. A
+  // code without expiresAt predates this check and is not honoured.
+  if (typeof expiresAt !== 'number' || expiresAt < Date.now()) {
+    return errorResponse(c, 400, ErrorCode.InvalidGrant, 'Invalid or expired auth code')
+  }
 
   // Set cookie on the requesting domain (e.g. apis.do)
   const reqUrl = new URL(c.req.url)
@@ -235,14 +273,30 @@ app.get('/api/callback', async (c) => {
 
   // Validate CSRF but don't consume yet — org picker flow may need it again
   const csrfData = await oauthStub.oauthStorageOp({ op: 'get', key: `login-csrf:${decoded.csrf}` })
-  if (!csrfData.value) {
+  const csrfRecord = csrfData.value as Partial<LoginCsrfRecord> | undefined
+  if (!csrfRecord || typeof csrfRecord.createdAt !== 'number' || Date.now() - csrfRecord.createdAt > LOGIN_CSRF_MAX_AGE_MS) {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token — please try logging in again')
   }
+  // Destination and bounce origin come from the server-side record, never the
+  // (unsigned) state. A record written before they were bound gets no
+  // cross-origin bounce and only a same-site relative continue from the state.
+  const bound = typeof csrfRecord.continue === 'string' && typeof csrfRecord.origin === 'string'
+  const legacyContinue = decoded.continue || '/'
+  const boundContinue = bound
+    ? csrfRecord.continue!
+    : legacyContinue.startsWith('/') && !legacyContinue.startsWith('//') && !legacyContinue.startsWith('/\\')
+      ? legacyContinue
+      : '/'
+  const boundOrigin = bound ? csrfRecord.origin : undefined
 
   // Exchange code with WorkOS (or retrieve stored auth result from org selection)
   let authResult: WorkOSAuthResult
   if (authResultKey) {
-    // Coming back from org picker — retrieve stored auth result
+    // Coming back from org picker — retrieve stored auth result. Only keys
+    // /api/org-select wrote: the parameter must not read arbitrary storage.
+    if (!/^auth-result:[0-9a-f-]{36}$/.test(authResultKey)) {
+      return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid org selection reference')
+    }
     const stored = await oauthStub.oauthStorageOp({ op: 'get', key: authResultKey })
     if (!stored.value) {
       return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Expired org selection — please try logging in again')
@@ -381,23 +435,23 @@ app.get('/api/callback', async (c) => {
     { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
 
-  const continueUrl = isSafeRedirectUrl(decoded.continue || '/') ? decoded.continue || '/' : '/'
+  const continueUrl = isSafeRedirectUrl(boundContinue) ? boundContinue : '/'
 
   // ── Cross-origin redirect: bounce to the requesting domain to set cookie ─
   // If the login was initiated from a different domain (e.g. apis.do), we can't
   // set the cookie from oauth.do. Store a one-time code and redirect to the
   // origin's /callback so the cookie is set on the correct domain.
   const currentOrigin = new URL(c.req.url).origin
-  if (decoded.origin && decoded.origin !== currentOrigin) {
+  if (boundOrigin && boundOrigin !== currentOrigin) {
     const oneTimeCode = crypto.randomUUID()
     await oauthStub.oauthStorageOp({
       op: 'put',
       key: `auth-code:${oneTimeCode}`,
-      value: { jwt, continueUrl },
+      value: { jwt, continueUrl, expiresAt: Date.now() + AUTH_CODE_MAX_AGE_MS },
       options: { expirationTtl: 60 },
     })
 
-    const callbackUrl = new URL('/callback', decoded.origin)
+    const callbackUrl = new URL('/callback', boundOrigin)
     callbackUrl.searchParams.set('_auth_code', oneTimeCode)
     return c.redirect(callbackUrl.toString(), 302)
   }
