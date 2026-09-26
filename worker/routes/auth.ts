@@ -370,6 +370,31 @@ app.get('/api/callback', async (c) => {
   })
 })
 
+/** Loopback hosts a local dev server runs on over plain http. */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '[::1]'
+}
+
+/**
+ * The origin to set the session cookie on after sign-in, in canonical spelling.
+ *
+ * id.org.ai, oauth.do, headless.ly and apis.do answer plain http without
+ * redirecting to https, so a login can start on `http://host`. /api/callback
+ * always runs on https://id.org.ai, and the one-time `_auth_code` it would
+ * hand to that origin must never travel over http. An http origin on a public
+ * host is therefore upgraded to `https://host` (default port): the same site,
+ * reached securely. When that is the origin /api/callback is running on
+ * (http://id.org.ai -> https://id.org.ai) the cookie is set directly, with no
+ * bounce and no code. Loopback dev hosts serve no https and stay as they are.
+ */
+function secureBounceOrigin(origin: string | undefined): string | null {
+  const canonical = origin ? canonicalOrigin(origin) : null
+  if (!canonical) return null
+  const u = new URL(canonical)
+  if (u.protocol !== 'http:' || isLoopbackHost(u.hostname)) return canonical
+  return `https://${u.hostname}`
+}
+
 /**
  * Complete a WorkOS sign-in: provision or refresh the human identity, sign the
  * id.org.ai session JWT (with how they signed in: `amr`, `idp`, `auth_time`),
@@ -511,10 +536,11 @@ export async function finishWorkOSSignIn(
   // origin's /callback so the cookie is set on the correct domain.
   // Both origins in canonical spelling (lowercase host, no trailing dot).
   const currentOrigin = requestOriginOf(c.req.url)
-  const bounceOrigin = opts.origin ? canonicalOrigin(opts.origin) : null
+  const bounceOrigin = secureBounceOrigin(opts.origin)
   if (bounceOrigin && bounceOrigin !== currentOrigin) {
     // The code is a bearer credential for a 30-day session: it travels only
-    // to an https origin. A login started over plain http gets no code.
+    // to an https origin. secureBounceOrigin already upgraded every http
+    // origin it can; what is left on http (loopback dev hosts) gets no code.
     if (new URL(bounceOrigin).protocol !== 'https:') {
       console.warn(JSON.stringify({ event: 'auth.bounce.refused-insecure-origin', host: new URL(bounceOrigin).host }))
       return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Sign-in must start over https — open the site with https:// and sign in again')
