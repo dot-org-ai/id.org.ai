@@ -21,7 +21,9 @@
  * origins.
  *
  * Limits: 5 sends per email per hour, 100 per client (or binding host) per
- * hour, 5 code attempts per flow.
+ * hour, 5 code attempts per flow. Every counter is incremented and checked in
+ * one Durable Object call (IdentityDO.consumeBudget), before the send or the
+ * WorkOS check it guards, so parallel requests cannot overrun a budget.
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
@@ -57,7 +59,6 @@ interface MagicFlow {
   clientId?: string
   createdAt: number
   expiresAt: number
-  attempts: number
 }
 
 export function normalizeEmail(email: string): string {
@@ -83,20 +84,20 @@ function storage(env: Env) {
 
 /**
  * Fixed-window counter. Returns the seconds to wait when over budget, else 0.
- * The counters live in the oauth Durable Object, whose storage calls are
- * serialised, so two concurrent sends cannot both read a stale count for long.
+ * Increment and check happen in one call inside the oauth Durable Object, so
+ * concurrent callers cannot both pass on a stale count.
  */
 async function consumeBudget(env: Env, key: string, limit: { max: number; windowMs: number }): Promise<number> {
-  const s = storage(env)
-  const now = Date.now()
-  const current = await s.get<{ count: number; windowStartedAt: number }>(key)
-  if (!current || now - current.windowStartedAt >= limit.windowMs) {
-    await s.put(key, { count: 1, windowStartedAt: now })
-    return 0
-  }
-  if (current.count >= limit.max) return Math.ceil((current.windowStartedAt + limit.windowMs - now) / 1000)
-  await s.put(key, { count: current.count + 1, windowStartedAt: current.windowStartedAt })
-  return 0
+  const r = await getStubForIdentity(env, 'oauth').consumeBudget({ key, max: limit.max, windowMs: limit.windowMs })
+  return r.allowed ? 0 : r.retryAfterSec
+}
+
+const attemptsKey = (flowId: string) => `magic-flow-attempts:${flowId}`
+
+/** End a flow: the flow record and its attempt counter. */
+async function endFlow(env: Env, flowId: string): Promise<void> {
+  await storage(env).delete(`magic-flow:${flowId}`)
+  await storage(env).delete(attemptsKey(flowId))
 }
 
 function parseBasicAuth(header: string | undefined): { clientId: string; clientSecret: string } | null {
@@ -237,7 +238,6 @@ app.post('/api/magic-link', async (c) => {
     ...(client ? { clientId: client.id } : {}),
     createdAt: now,
     expiresAt: now + FLOW_TTL_MS,
-    attempts: 0,
   } satisfies MagicFlow)
 
   return c.json(
@@ -256,8 +256,8 @@ async function loadFlow(env: Env, flowId: string): Promise<MagicFlow | null> {
   if (!/^[0-9a-f]{48}$/.test(flowId)) return null
   const flow = await storage(env).get<MagicFlow>(`magic-flow:${flowId}`)
   if (!flow) return null
-  if (flow.expiresAt < Date.now() || flow.attempts >= MAX_CODE_ATTEMPTS) {
-    await storage(env).delete(`magic-flow:${flowId}`)
+  if (flow.expiresAt < Date.now()) {
+    await endFlow(env, flowId)
     return null
   }
   return flow
@@ -332,8 +332,18 @@ app.post('/magic-link/:flow', async (c) => {
     return page('Sign in', codeForm(flowId, flow, { error: 'Enter the 6-digit code from the email.' }), 400)
   }
 
-  // Count the attempt before asking WorkOS, so parallel guesses cannot exceed the budget.
-  await storage(c.env).put(`magic-flow:${flowId}`, { ...flow, attempts: flow.attempts + 1 } satisfies MagicFlow)
+  // Count the attempt before asking WorkOS, atomically: the Durable Object
+  // increments and checks in one call, so of N parallel guesses at most
+  // MAX_CODE_ATTEMPTS reach WorkOS; the rest end the flow unasked.
+  const attempt = await getStubForIdentity(c.env, 'oauth').consumeBudget({
+    key: attemptsKey(flowId),
+    max: MAX_CODE_ATTEMPTS,
+    windowMs: FLOW_TTL_MS,
+  })
+  if (!attempt.allowed) {
+    await endFlow(c.env, flowId)
+    return expiredPage()
+  }
 
   let authResult: WorkOSAuthResult
   try {
@@ -345,7 +355,7 @@ app.post('/magic-link/:flow', async (c) => {
     if (err && typeof err === 'object' && (err as { code?: unknown }).code === 'organization_selection_required') {
       // Hand over to the regular org picker → /api/org-select → /api/callback,
       // with a login state that remembers this was a magic link.
-      await storage(c.env).delete(`magic-flow:${flowId}`)
+      await endFlow(c.env, flowId)
       const csrf = crypto.randomUUID()
       const origin = new URL(c.req.url).origin
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
@@ -359,8 +369,10 @@ app.post('/magic-link/:flow', async (c) => {
     }
     const status = (err as { status?: number }).status
     if (status === 400 || status === 401 || status === 403 || status === 404) {
-      const left = MAX_CODE_ATTEMPTS - (flow.attempts + 1)
-      if (left <= 0) return expiredPage()
+      if (attempt.count >= MAX_CODE_ATTEMPTS) {
+        await endFlow(c.env, flowId)
+        return expiredPage()
+      }
       return page('Sign in', codeForm(flowId, flow, { error: 'That code is not valid or has expired.' }), 400)
     }
     console.error('[magic-link] WorkOS authenticate failed:', err instanceof Error ? err.message : err)
@@ -368,7 +380,7 @@ app.post('/magic-link/:flow', async (c) => {
   }
 
   // One use: the flow is gone once it signs someone in.
-  await storage(c.env).delete(`magic-flow:${flowId}`)
+  await endFlow(c.env, flowId)
 
   const response = await finishWorkOSSignIn(c, authResult, { requestedProvider: 'magic_link', continueUrl: flow.continue })
   const out = new Response(response.body, response)
