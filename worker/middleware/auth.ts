@@ -18,6 +18,7 @@ import { validateWorkOSApiKey } from '../../src/sdk/workos/apikey'
 import { getStubForIdentity } from './tenant'
 import { mcpResourceUri, mcpWwwAuthenticate, isMcpPath, canonicalizeResourceUri } from '../utils/mcp-resource'
 import type { IdentityStub } from '../../src/server/do/Identity'
+import { requestOriginOf } from '../../src/sdk/csrf'
 
 /**
  * OAuth 2.1 resource-server validation for opaque `at_` access tokens
@@ -51,7 +52,7 @@ async function tryOAuthAccessToken(c: any): Promise<Response | boolean> {
   if (!authz?.startsWith('Bearer at_')) return false
 
   const url = new URL(c.req.url)
-  const origin = url.origin
+  const origin = requestOriginOf(c.req.url)
   const onMcp = isMcpPath(url.pathname)
 
   // at_ tokens carry a resource-bound audience that is only enforced on
@@ -146,7 +147,7 @@ export async function authenticateRequest(c: any, next: () => Promise<void>) {
 
   const mcpUnauthorized = () => {
     if (isMcpPath(new URL(c.req.url).pathname)) {
-      c.header('WWW-Authenticate', mcpWwwAuthenticate(new URL(c.req.url).origin))
+      c.header('WWW-Authenticate', mcpWwwAuthenticate(requestOriginOf(c.req.url)))
     }
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired credentials')
   }

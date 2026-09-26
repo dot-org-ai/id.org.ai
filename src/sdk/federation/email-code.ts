@@ -26,7 +26,7 @@
  * A deliberate consequence: WorkOS owns the code (generation, TTL, attempt
  * limiting). We do not mint or store a code ourselves — there is exactly one
  * place a code can be checked, so there is no second implementation to get
- * wrong. What we DO own is per-email send throttling (see `SendThrottle`),
+ * wrong. What we DO own is per-email send throttling (`allowEmailCodeSend`),
  * because nothing upstream stops a stranger pointing our send endpoint at
  * someone else's inbox.
  *
@@ -69,12 +69,16 @@ export interface EmailCodeChannel {
 // ── Send throttling ───────────────────────────────────────────────────────
 
 /**
- * Minimal storage port for throttle counters — the worker backs this with the
- * IdentityDO, tests back it with a Map.
+ * Storage port for the send budget: a fixed-window counter that increments
+ * and checks in ONE atomic step, answering `allowed` when the count after the
+ * increment is within `max`. The worker backs it with
+ * IdentityDO.consumeBudget; tests back it with a Map updated synchronously.
+ *
+ * It is deliberately not a get/put pair: a read followed by a separate write
+ * lets N parallel sends all read the same count and all pass.
  */
 export interface ThrottleStore {
-  get(key: string): Promise<{ count: number; windowStartedAt: number } | undefined>
-  put(key: string, value: { count: number; windowStartedAt: number }): Promise<void>
+  consume(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; retryAfterSec?: number }>
 }
 
 export interface SendThrottleOptions {
@@ -84,30 +88,44 @@ export interface SendThrottleOptions {
   windowMs?: number
 }
 
+/** The default send budget: 5 codes per address per hour. */
+export const CODE_SENDS_PER_EMAIL = { max: 5, windowMs: 60 * 60 * 1000 } as const
+
 /**
- * Enforce a per-email send budget. Returns `false` when the caller must refuse
- * to send. Keyed on the normalised email so casing games do not buy extra
+ * The one per-address send counter. Every route that has a code emailed
+ * (the federation fallback and POST /api/magic-link) spends from this key, so
+ * the sends to an address, and with them the resets of its guess budget, are
+ * bounded in total, not per route.
+ */
+export function codeSendKey(email: string): string {
+  return `code-send:${normalizeEmail(email)}`
+}
+
+/**
+ * Reserve one send to `email` from its budget. The caller sends only when
+ * `allowed`. Keyed on the normalised email so casing games do not buy extra
  * sends.
  */
+export async function reserveEmailCodeSend(
+  store: ThrottleStore,
+  email: string,
+  options: SendThrottleOptions = {},
+): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const r = await store.consume({
+    key: codeSendKey(email),
+    max: options.max ?? CODE_SENDS_PER_EMAIL.max,
+    windowMs: options.windowMs ?? CODE_SENDS_PER_EMAIL.windowMs,
+  })
+  return { allowed: r.allowed, retryAfterSec: r.allowed ? 0 : Math.max(1, r.retryAfterSec ?? 1) }
+}
+
+/** `reserveEmailCodeSend`, answering only whether the send may go ahead. */
 export async function allowEmailCodeSend(
   store: ThrottleStore,
   email: string,
   options: SendThrottleOptions = {},
 ): Promise<boolean> {
-  const max = options.max ?? 5
-  const windowMs = options.windowMs ?? 60 * 60 * 1000
-  const key = `emailcode-throttle:${normalizeEmail(email)}`
-  const now = Date.now()
-
-  const current = await store.get(key)
-  if (!current || now - current.windowStartedAt >= windowMs) {
-    await store.put(key, { count: 1, windowStartedAt: now })
-    return true
-  }
-  if (current.count >= max) return false
-
-  await store.put(key, { count: current.count + 1, windowStartedAt: current.windowStartedAt })
-  return true
+  return (await reserveEmailCodeSend(store, email, options)).allowed
 }
 
 // ── WorkOS Magic Auth transport ───────────────────────────────────────────

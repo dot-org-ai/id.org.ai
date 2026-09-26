@@ -58,12 +58,61 @@ export const ALLOWED_ORIGIN_PATTERNS = [
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
 ]
 
+// ============================================================================
+// Hostname canonicalisation
+// ============================================================================
+
 /**
- * Check if an origin is in the allowlist.
+ * The canonical spelling of a hostname for trust and redirect decisions:
+ * lowercase, with any trailing dot removed. `id.org.ai.` (the fully-qualified
+ * spelling) and `ID.org.AI` name the same host as `id.org.ai`, and Cloudflare
+ * routes public traffic on the trailing-dot name to this worker with the dot
+ * still in `request.url`. Every comparison of a host against a list must go
+ * through this, so no spelling of a name is treated differently from another.
+ */
+export function canonicalHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, '')
+}
+
+/**
+ * The canonical origin (`scheme://host[:port]`) of a URL or origin string,
+ * with the host through `canonicalHostname`; null when it does not parse or
+ * has no host.
+ */
+export function canonicalOrigin(urlOrOrigin: string): string | null {
+  let u: URL
+  try {
+    u = new URL(urlOrOrigin)
+  } catch {
+    return null
+  }
+  if (!u.hostname) return null
+  const host = canonicalHostname(u.hostname)
+  if (!host) return null
+  return `${u.protocol}//${host}${u.port ? `:${u.port}` : ''}`
+}
+
+/**
+ * The canonical origin of the request being served: what trust and redirect
+ * decisions (login state, cross-origin bounce, continue policy, audiences,
+ * advertised issuers) use in place of `new URL(request.url).origin`, which
+ * keeps a trailing dot.
+ */
+export function requestOriginOf(requestUrl: string): string {
+  return canonicalOrigin(requestUrl) ?? new URL(requestUrl).origin
+}
+
+/**
+ * Check if an origin is in the allowlist. The origin is compared in its
+ * canonical spelling (lowercase host, no trailing dot).
  */
 export function isAllowedOrigin(origin: string): boolean {
-  if (!origin) return false
-  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))
+  // An Origin is scheme://host[:port] and nothing else: no path, query,
+  // fragment or userinfo may ride along into the comparison.
+  if (!origin || !/^[a-z][a-z0-9+.-]*:\/\/[^/?#@\s\\]+$/i.test(origin)) return false
+  const canonical = canonicalOrigin(origin)
+  if (!canonical) return false
+  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(canonical))
 }
 
 /**

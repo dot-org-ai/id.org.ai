@@ -11,6 +11,7 @@ import {
   workosMagicAuthChannel,
   emailCodePrincipal,
   allowEmailCodeSend,
+  codeSendKey,
   isPlausibleEmail,
   isPlausibleCode,
   normalizeEmail,
@@ -22,15 +23,25 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-/** In-memory ThrottleStore — the same seam the worker backs with the DO. */
-function memoryStore(): ThrottleStore {
+/**
+ * In-memory ThrottleStore — the same seam the worker backs with
+ * IdentityDO.consumeBudget. The Map is read and written with no await between,
+ * so it is atomic as the Durable Object is.
+ */
+function memoryStore(): ThrottleStore & { map: Map<string, { count: number; windowStartedAt: number }> } {
   const map = new Map<string, { count: number; windowStartedAt: number }>()
   return {
-    async get(key) {
-      return map.get(key)
-    },
-    async put(key, value) {
-      map.set(key, value)
+    map,
+    async consume({ key, max, windowMs }) {
+      const now = Date.now()
+      const cur = map.get(key)
+      if (!cur || now - cur.windowStartedAt >= windowMs) {
+        map.set(key, { count: 1, windowStartedAt: now })
+        return { allowed: 1 <= max }
+      }
+      if (cur.count >= max) return { allowed: false, retryAfterSec: Math.ceil((cur.windowStartedAt + windowMs - now) / 1000) }
+      map.set(key, { count: cur.count + 1, windowStartedAt: cur.windowStartedAt })
+      return { allowed: true }
     },
   }
 }
@@ -87,6 +98,19 @@ describe('allowEmailCodeSend', () => {
     const store = memoryStore()
     await allowEmailCodeSend(store, 'alice@zebra.com', { max: 1 })
     expect(await allowEmailCodeSend(store, 'bob@zebra.com', { max: 1 })).toBe(true)
+  })
+
+  it('20 parallel sends to one address: at most 5 allowed', async () => {
+    const store = memoryStore()
+    const results = await Promise.all(Array.from({ length: 20 }, () => allowEmailCodeSend(store, 'alice@zebra.com')))
+    expect(results.filter(Boolean).length).toBe(5)
+  })
+
+  it('spends from the one per-address key every sending route shares', async () => {
+    const store = memoryStore()
+    await allowEmailCodeSend(store, ' Alice@Zebra.com ')
+    expect(codeSendKey('ALICE@zebra.com')).toBe('code-send:alice@zebra.com')
+    expect(store.map.get('code-send:alice@zebra.com')?.count).toBe(1)
   })
 
   it('reopens the budget after the window elapses', async () => {

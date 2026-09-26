@@ -11,11 +11,10 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock } from 'cloudflare:test'
+import { authService } from './helpers/auth-service'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
-/** A host outside the public routes: the request arrives as a service binding. */
-const BINDING = 'https://internal.example'
 const PARALLEL = 20
 const BUDGET = 5
 
@@ -59,14 +58,10 @@ function countWrongCodeChecks(email: string): { n: number } {
 }
 
 async function openFlow(email: string): Promise<{ path: string; cookie: string }> {
-  const res = await SELF.fetch(`${BINDING}/api/magic-link`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
-  })
-  expect(res.status).toBe(202)
-  const { verify_url } = (await res.json()) as { verify_url: string }
-  const path = new URL(verify_url).pathname
+  // Opened over the service binding (AuthService.sendMagicLink).
+  const res = await authService().sendMagicLink({ email })
+  if (!res.ok) throw new Error(`sendMagicLink: ${res.status} ${res.error}`)
+  const path = new URL(res.verify_url).pathname
   const page = await SELF.fetch(`${BASE}${path}`)
   expect(page.status).toBe(200)
   const cookie = page.headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
@@ -110,16 +105,8 @@ describe('S2: the magic-link code budget holds under parallel guesses', () => {
   it(`${PARALLEL} parallel sends to one address reach WorkOS at most ${BUDGET} times`, async () => {
     const email = 'flood@example.com'
     const sends = countSends(email)
-    const results = await Promise.all(
-      Array.from({ length: PARALLEL }, () =>
-        SELF.fetch(`${BINDING}/api/magic-link`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email }),
-        }),
-      ),
-    )
-    const statuses = results.map((r) => r.status)
+    const results = await Promise.all(Array.from({ length: PARALLEL }, () => authService().sendMagicLink({ email })))
+    const statuses = results.map((r) => (r.ok ? 202 : r.status))
     expect(sends.n).toBeLessThanOrEqual(BUDGET)
     expect(statuses.filter((s) => s === 202).length).toBe(sends.n)
     expect(statuses.filter((s) => s === 429).length).toBe(PARALLEL - sends.n)

@@ -1,15 +1,29 @@
 /**
  * Magic-link sign-in for relying parties (a Startup's waitlist, api.sb, …).
  *
+ * Two ways to ask for one; both end in `startMagicLink` below:
+ *
  *   POST /api/magic-link { email, continue, client_id }
- *     Caller: a service binding, or a confidential client (client_secret_basic
- *     or client_secret_post) whose id is listed in MAGIC_LINK_CLIENTS.
- *     Registration is open, so any other registered client is refused (403):
- *     otherwise anyone could register a client and relay id.org.ai's sign-in
- *     emails to any address. Asks WorkOS Magic Auth to email
- *     the person a one-time sign-in code and opens a 10-minute sign-in flow.
- *     Answers 202 { sent, verify_url, expires_in } whether or not an account
- *     exists for that address (WorkOS creates the user when it is new).
+ *     Caller: a confidential client (client_secret_basic or
+ *     client_secret_post) whose id is listed in MAGIC_LINK_CLIENTS, and
+ *     nobody else. An unauthenticated caller gets 401; an authenticated but
+ *     unlisted client gets 403 (registration is open, so otherwise anyone
+ *     could register a client and relay id.org.ai's sign-in emails to any
+ *     address). No trust is inferred from the request's host: public traffic
+ *     arrives on `id.org.ai.` as well as `id.org.ai`, so a host outside a
+ *     list proves nothing.
+ *
+ *   env.OAUTH.sendMagicLink({ email, continue, clientId, origin })
+ *     Caller: a worker in the account with a service binding to the
+ *     AuthService entrypoint (worker/index.ts). An RPC method is reachable
+ *     only through a binding, never from the public internet, so the binding
+ *     itself is the credential. `origin` is the calling worker's own origin,
+ *     on which `continue` may also land.
+ *
+ *   Either asks WorkOS Magic Auth to email the person a one-time sign-in code
+ *   and opens a 10-minute sign-in flow. The answer is { sent, verify_url,
+ *   expires_in } (HTTP 202) whether or not an account exists for that address
+ *   (WorkOS creates the user when it is new).
  *
  *   GET  /magic-link/:flow[?code=123456]   the sign-in page for that flow
  *   POST /magic-link/:flow  code=123456    checks the code with WorkOS, signs the
@@ -23,13 +37,14 @@
  * (worker/utils/relying-parties.ts), plus the calling client's own redirect
  * origins.
  *
- * Limits: 5 sends per email per hour, 100 per client (or binding host) per
- * hour, 300 in all per hour, 5 code attempts per flow. Every counter is incremented and checked in
- * one Durable Object call (IdentityDO.consumeBudget), before the send or the
- * WorkOS check it guards, so parallel requests cannot overrun a budget. Every
- * guess also spends the per-address and per-IP guess budgets shared with
- * /federation/email/verify (worker/utils/code-guard.ts); a code sent here
- * starts the address's budget afresh.
+ * Limits: 5 sends per email per hour (the counter shared with
+ * /federation/email/send, worker/utils/code-guard.ts), 100 per client (or
+ * binding) per hour, 300 in all per hour, 5 code attempts per flow. Every
+ * counter is incremented and checked in one Durable Object call
+ * (IdentityDO.consumeBudget), before the send or the WorkOS check it guards,
+ * so parallel requests cannot overrun a budget. Every guess also spends the
+ * per-address and per-IP guess budgets shared with /federation/email/verify;
+ * a code sent here starts the address's guess budget afresh.
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
@@ -42,12 +57,12 @@ import {
   encodeLoginState,
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
-import { resolveContinue, isServiceBindingRequest, getRegisteredClient } from '../utils/relying-parties'
+import { resolveContinue, getRegisteredClient, canonicalOrigin, requestOriginOf } from '../utils/relying-parties'
 import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
 import { parseCookieValue } from '../utils/cookies'
-import { reserveCodeGuess, resetCodeGuesses, clientIpOf } from '../utils/code-guard'
+import { reserveCodeGuess, resetCodeGuesses, reserveCodeSend, clientIpOf } from '../utils/code-guard'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -56,7 +71,6 @@ const CANONICAL_ORIGIN = 'https://id.org.ai'
 const DEFAULT_CONTINUE = '/dash/profile'
 const FLOW_TTL_MS = 10 * 60 * 1000
 const MAX_CODE_ATTEMPTS = 5
-const EMAIL_LIMIT = { max: 5, windowMs: 60 * 60 * 1000 }
 const CLIENT_LIMIT = { max: 100, windowMs: 60 * 60 * 1000 }
 /** Every caller together: bounds what id.org.ai's WorkOS account sends per hour. */
 const GLOBAL_LIMIT = { max: 300, windowMs: 60 * 60 * 1000 }
@@ -160,79 +174,89 @@ function maskEmail(email: string): string {
   return `${shown}${'•'.repeat(Math.max(1, Math.min(6, local.length - shown.length)))}@${domain}`
 }
 
-// ── POST /api/magic-link ─────────────────────────────────────────────────────
+// ── Starting a flow (shared by the HTTP route and the RPC method) ─────────
 
-app.post('/api/magic-link', async (c) => {
-  const apiKey = c.env.WORKOS_API_KEY
-  if (!apiKey || !c.env.WORKOS_CLIENT_ID) {
-    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
-  }
+/** Who is asking. Authentication has already happened by the time this exists. */
+export type MagicLinkCaller =
+  /** A confidential client that proved its secret and is in MAGIC_LINK_CLIENTS. */
+  | { kind: 'client'; clientId: string }
+  /**
+   * A worker calling AuthService.sendMagicLink over a service binding. It may
+   * name a registered client (for its redirect origins) and its own origin
+   * (where `continue` may land); neither is needed.
+   */
+  | { kind: 'binding'; clientId?: string; origin?: string }
 
-  const body = await readBody(c.req.raw)
-  const basic = parseBasicAuth(c.req.header('authorization'))
-  const clientId = basic?.clientId || body.client_id || ''
-  const clientSecret = basic?.clientSecret || body.client_secret || ''
-  const viaBinding = isServiceBindingRequest(c.req.raw)
+export interface MagicLinkRequest {
+  email: string
+  /** Where the browser goes after signing in (validated; default /dash/profile). */
+  continue?: string
+}
 
-  // ── Caller authentication ─────────────────────────────────────────────
-  // A confidential client proves itself with its secret. A service binding is
-  // already inside the account; it may name a client (for its redirect
-  // origins) but needs no secret.
-  const client = clientId ? await getRegisteredClient(c.env, clientId) : null
-  if (!viaBinding) {
-    const confidential = !!client?.secret && client.tokenEndpointAuthMethod !== 'none'
-    if (!client || !confidential || !clientSecret || !(await constantTimeEqual(clientSecret, client.secret!))) {
-      return c.json(
-        { error: 'invalid_client', error_description: 'A registered confidential client (client_id + client_secret) or a service binding is required' },
-        401,
-        { 'WWW-Authenticate': 'Basic realm="id.org.ai"' },
-      )
+export type MagicLinkResult =
+  | { ok: true; sent: true; verify_url: string; expires_in: number }
+  | {
+      ok: false
+      status: 400 | 429 | 502 | 503
+      error: 'invalid_request' | 'invalid_client' | 'rate_limited' | 'temporarily_unavailable'
+      error_description: string
+      retryAfterSec?: number
     }
-  } else if (clientId && !client) {
-    return c.json({ error: 'invalid_client', error_description: 'Unknown client_id' }, 400)
+
+/**
+ * Validate the request, spend the budgets, have WorkOS email the code and
+ * open the flow. The caller must already be authenticated: a listed
+ * confidential client (HTTP) or a service binding (RPC).
+ */
+export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: MagicLinkCaller): Promise<MagicLinkResult> {
+  const apiKey = env.WORKOS_API_KEY!
+
+  // A binding may name a client for its redirect origins; it must exist.
+  const client = caller.clientId ? await getRegisteredClient(env, caller.clientId) : null
+  if (caller.clientId && !client) {
+    return { ok: false, status: 400, error: 'invalid_client', error_description: 'Unknown client_id' }
   }
-  // An authenticated client must also be listed: registration is open.
-  if (!viaBinding && !magicLinkClients(c.env).has(client!.id)) {
-    console.warn(JSON.stringify({ event: 'magic-link.client.refused', client: client!.id }))
-    return c.json({ error: 'unauthorized_client', error_description: 'This client is not enabled for magic-link sign-in' }, 403)
+  const bindingOrigin = caller.kind === 'binding' && caller.origin ? canonicalOrigin(caller.origin) : null
+  if (caller.kind === 'binding' && caller.origin && (!bindingOrigin || !/^https?:\/\//.test(bindingOrigin))) {
+    return { ok: false, status: 400, error: 'invalid_request', error_description: 'origin must be an http(s) origin' }
   }
 
   // ── Input ─────────────────────────────────────────────────────────────
-  const email = normalizeEmail(body.email || '')
+  const email = normalizeEmail(typeof req.email === 'string' ? req.email : '')
   if (!isPlausibleEmail(email)) {
-    return c.json({ error: 'invalid_request', error_description: 'email must be an email address' }, 400)
+    return { ok: false, status: 400, error: 'invalid_request', error_description: 'email must be an email address' }
   }
 
-  const rawContinue = body.continue || body.continue_url || ''
+  const rawContinue = typeof req.continue === 'string' ? req.continue : ''
   let continueUrl = DEFAULT_CONTINUE
   if (rawContinue) {
-    let accepted = await resolveContinue(c.env, rawContinue, { requestOrigin: CANONICAL_ORIGIN, clientId: client?.id })
-    // A service binding may also continue to its own host.
-    if (!accepted && viaBinding && !rawContinue.startsWith('/')) {
-      accepted = await resolveContinue(c.env, rawContinue, { requestOrigin: new URL(c.req.url).origin })
+    let accepted = await resolveContinue(env, rawContinue, { requestOrigin: CANONICAL_ORIGIN, clientId: client?.id })
+    // A binding may also continue to its own origin.
+    if (!accepted && bindingOrigin && !rawContinue.startsWith('/')) {
+      accepted = await resolveContinue(env, rawContinue, { requestOrigin: bindingOrigin })
     }
     if (!accepted) {
-      return c.json(
-        {
-          error: 'invalid_request',
-          error_description: "continue must be a relative path, an id.org.ai origin, or one of the client's registered redirect origins",
-        },
-        400,
-      )
+      return {
+        ok: false,
+        status: 400,
+        error: 'invalid_request',
+        error_description: "continue must be a relative path, an id.org.ai origin, or one of the client's registered redirect origins",
+      }
     }
     continueUrl = accepted
   }
 
-  // ── Rate limits: per email, then per caller, then for everyone ───────
-  const callerKey = client?.id ?? `binding:${new URL(c.req.url).host}`
-  const emailWait = await consumeBudget(c.env, `magiclink-rl:email:${email}`, EMAIL_LIMIT)
-  const clientWait = emailWait ? 0 : await consumeBudget(c.env, `magiclink-rl:client:${callerKey}`, CLIENT_LIMIT)
-  const globalWait = emailWait || clientWait ? 0 : await consumeBudget(c.env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
+  // ── Rate limits: per address (shared), then per caller, then for everyone ──
+  const callerKey = client?.id ?? `binding:${bindingOrigin ? new URL(bindingOrigin).host : 'rpc'}`
+  const byEmail = await reserveCodeSend(env, email)
+  const emailWait = byEmail.ok ? 0 : byEmail.retryAfterSec
+  const clientWait = emailWait ? 0 : await consumeBudget(env, `magiclink-rl:client:${callerKey}`, CLIENT_LIMIT)
+  const globalWait = emailWait || clientWait ? 0 : await consumeBudget(env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
   const wait = emailWait || clientWait || globalWait
   if (wait) {
     const why = emailWait ? 'for this address' : clientWait ? 'from this client' : 'right now'
     if (globalWait) console.warn(JSON.stringify({ event: 'magic-link.global-cap', client: callerKey }))
-    return c.json({ error: 'rate_limited', error_description: `Too many sign-in emails ${why}; try later` }, 429, { 'Retry-After': String(wait) })
+    return { ok: false, status: 429, error: 'rate_limited', error_description: `Too many sign-in emails ${why}; try later`, retryAfterSec: wait }
   }
 
   // ── Send (WorkOS emails the code) ────────────────────────────────────
@@ -244,22 +268,23 @@ app.post('/api/magic-link', async (c) => {
     sent = await createWorkOSMagicAuth(apiKey, email)
   } catch (err) {
     console.error('[magic-link] WorkOS unreachable:', err instanceof Error ? err.message : err)
-    return c.json({ error: 'temporarily_unavailable', error_description: 'Could not send the sign-in email; try again' }, 502)
+    return { ok: false, status: 502, error: 'temporarily_unavailable', error_description: 'Could not send the sign-in email; try again' }
   }
   if (!sent.ok) {
     if (sent.status >= 500 || sent.status === 429) {
       console.error(`[magic-link] WorkOS magic_auth failed: ${sent.status}`)
-      return c.json({ error: 'temporarily_unavailable', error_description: 'Could not send the sign-in email; try again' }, 502)
+      return { ok: false, status: 502, error: 'temporarily_unavailable', error_description: 'Could not send the sign-in email; try again' }
     }
     console.warn(JSON.stringify({ event: 'magic-link.send.refused', status: sent.status, client: callerKey }))
   } else {
-    // A new code is out: the address's guess budget starts afresh.
-    await resetCodeGuesses(c.env, email)
+    // A new code is out: the address's guess budget starts afresh. Bounded by
+    // the shared send budget reserved above.
+    await resetCodeGuesses(env, email)
   }
 
   const flowId = randomFlowId()
   const now = Date.now()
-  await storage(c.env).put(`magic-flow:${flowId}`, {
+  await storage(env).put(`magic-flow:${flowId}`, {
     email,
     continue: continueUrl,
     ...(client ? { clientId: client.id } : {}),
@@ -267,14 +292,48 @@ app.post('/api/magic-link', async (c) => {
     expiresAt: now + FLOW_TTL_MS,
   } satisfies MagicFlow)
 
-  return c.json(
-    {
-      sent: true,
-      verify_url: `${CANONICAL_ORIGIN}/magic-link/${flowId}`,
-      expires_in: FLOW_TTL_MS / 1000,
-    },
-    202,
+  return { ok: true, sent: true, verify_url: `${CANONICAL_ORIGIN}/magic-link/${flowId}`, expires_in: FLOW_TTL_MS / 1000 }
+}
+
+// ── POST /api/magic-link ─────────────────────────────────────────────────────
+
+app.post('/api/magic-link', async (c) => {
+  if (!c.env.WORKOS_API_KEY || !c.env.WORKOS_CLIENT_ID) {
+    return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
+  }
+
+  const body = await readBody(c.req.raw)
+  const basic = parseBasicAuth(c.req.header('authorization'))
+  const clientId = basic?.clientId || body.client_id || ''
+  const clientSecret = basic?.clientSecret || body.client_secret || ''
+
+  // ── Caller authentication: a confidential client, by its secret ──────
+  // Only that. Callers inside the account use AuthService.sendMagicLink.
+  const client = clientId ? await getRegisteredClient(c.env, clientId) : null
+  const confidential = !!client?.secret && client.tokenEndpointAuthMethod !== 'none'
+  if (!client || !confidential || !clientSecret || !(await constantTimeEqual(clientSecret, client.secret!))) {
+    return c.json(
+      { error: 'invalid_client', error_description: 'A registered confidential client (client_id + client_secret) is required' },
+      401,
+      { 'WWW-Authenticate': 'Basic realm="id.org.ai"' },
+    )
+  }
+  // ...and it must be listed: registration is open.
+  if (!magicLinkClients(c.env).has(client.id)) {
+    console.warn(JSON.stringify({ event: 'magic-link.client.refused', client: client.id }))
+    return c.json({ error: 'unauthorized_client', error_description: 'This client is not enabled for magic-link sign-in' }, 403)
+  }
+
+  const result = await startMagicLink(
+    c.env,
+    { email: body.email || '', continue: body.continue || body.continue_url || '' },
+    { kind: 'client', clientId: client.id },
   )
+  if (!result.ok) {
+    const headers: Record<string, string> = result.retryAfterSec ? { 'Retry-After': String(result.retryAfterSec) } : {}
+    return c.json({ error: result.error, error_description: result.error_description }, result.status, headers)
+  }
+  return c.json({ sent: result.sent, verify_url: result.verify_url, expires_in: result.expires_in }, 202)
 })
 
 // ── The sign-in page ────────────────────────────────────────────────────────
@@ -393,7 +452,7 @@ app.post('/magic-link/:flow', async (c) => {
       await endFlow(c.env, flowId)
       await resetCodeGuesses(c.env, flow.email)
       const csrf = crypto.randomUUID()
-      const origin = new URL(c.req.url).origin
+      const origin = requestOriginOf(c.req.url)
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
         op: 'put',
         key: `login-csrf:${csrf}`,

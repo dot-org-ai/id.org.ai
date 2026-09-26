@@ -5,18 +5,19 @@
  * registration (RFC 7591) is open: anyone could register a client, then have
  * id.org.ai's WorkOS account mail codes to any address (spam relay, targeted
  * lockout of the address's send budget, and codes relayed into first-party
- * sessions). Now only service bindings and the clients MAGIC_LINK_CLIENTS
- * lists may call it, and all callers together share an hourly send cap.
+ * sessions). Now only the clients MAGIC_LINK_CLIENTS lists may call it over
+ * HTTP, service bindings call AuthService.sendMagicLink (RPC), and all callers
+ * together share an hourly send cap.
  *
  * vitest.config.ts lists cid_magiclink_test_01..20; this file seeds 15..20.
  * Runs the real worker (SELF, real IdentityDO); only WorkOS is faked.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock, env } from 'cloudflare:test'
+import { authService } from './helpers/auth-service'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
-const BINDING = 'https://internal.example'
 const CB = 'https://waitlist.example/auth/cb'
 /** The hourly cap across every caller, and the counter it lives in (worker/routes/magic-link.ts). */
 const GLOBAL_CAP = 300
@@ -110,10 +111,14 @@ describe('S3: POST /api/magic-link callers', () => {
     expect(sends.n).toBe(1)
   })
 
-  it('a service binding is served (202) without a client', async () => {
+  it('a service binding is served over RPC without a client, and may continue to its own origin', async () => {
     const sends = countSends((e) => e.endsWith('@bound.example'))
-    const res = await sendMagicLink({ email: 'grace@bound.example', continue: 'https://internal.example/after' }, {}, BINDING)
-    expect(res.status).toBe(202)
+    const res = await authService().sendMagicLink({ email: 'grace@bound.example', continue: 'https://internal.example/after', origin: 'https://internal.example' })
+    expect(res.ok).toBe(true)
+    expect(sends.n).toBe(1)
+    // Without naming that origin, the same continue is refused.
+    const refused = await authService().sendMagicLink({ email: 'grace@bound.example', continue: 'https://internal.example/after' })
+    expect(refused).toMatchObject({ ok: false, status: 400, error: 'invalid_request' })
     expect(sends.n).toBe(1)
   })
 })
@@ -124,12 +129,12 @@ describe('S3: the hourly cap across every caller', () => {
     // Stand in for an hour's traffic from many callers: one send left.
     await oauth().oauthStorageOp({ op: 'put', key: GLOBAL_KEY, value: { count: GLOBAL_CAP - 1, windowStartedAt: Date.now() } })
 
-    expect((await sendMagicLink({ email: 'last@cap.example' }, {}, BINDING)).status).toBe(202)
+    expect((await authService().sendMagicLink({ email: 'last@cap.example' })).ok).toBe(true)
     expect(sends.n).toBe(1)
 
-    const overBinding = await sendMagicLink({ email: 'over1@cap.example' }, {}, BINDING)
-    expect(overBinding.status).toBe(429)
-    expect(Number(overBinding.headers.get('retry-after'))).toBeGreaterThan(0)
+    const overBinding = await authService().sendMagicLink({ email: 'over1@cap.example' })
+    expect(overBinding).toMatchObject({ ok: false, status: 429 })
+    expect(overBinding.ok === false && overBinding.retryAfterSec).toBeGreaterThan(0)
     const c = await allowlistedClient()
     expect((await sendMagicLink({ email: 'over2@cap.example' }, basic(c))).status).toBe(429)
     expect(sends.n).toBe(1)

@@ -3,7 +3,8 @@
   // Full identity + OAuth 2.1 server. Handles /login, /logout, /callback, /oauth/*, provisioning, etc.
   // Consumed via:
   //   AUTH_HTTP service binding (default fetch) by apps/api, apis.do — for /login, /callback, /oauth/*, etc.
-  //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser, etc.)
+  //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser,
+  //     sendMagicLink, etc.): "services": [{ "binding": "OAUTH", "service": "oauth", "entrypoint": "AuthService" }]
   //   AUTH service binding (RPC) for the AuthIdentity entrypoint — the stable
   //     token-verification seam for builder.domains custom-domain projection:
   //     `env.AUTH.verifyToken(token) -> { valid, identity? }`. Validates ONLY
@@ -65,7 +66,8 @@
     "LOGIN_CONTINUE_POLICY": "report",
     // OAuth clients that may call POST /api/magic-link (comma-separated
     // client ids). Registration is open, so any other registered client is
-    // refused (403); service bindings need no listing.
+    // refused (403). Workers in this account call the RPC method
+    // AuthService.sendMagicLink over an OAUTH binding instead (no listing).
     //   cid_6024fce7… — api.sb's web client (confidential, client_secret_basic)
     "MAGIC_LINK_CLIENTS": "cid_6024fce72d8ce25066e6e876361ea3d7e12d8f4dc23566a8",
 

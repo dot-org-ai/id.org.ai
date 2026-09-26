@@ -76,8 +76,9 @@ export interface Env {
   /**
    * OAuth client ids allowed to call POST /api/magic-link, comma-separated.
    * Registration (RFC 7591) is open, so a registered client is not by itself
-   * trusted to have id.org.ai email sign-in codes; a service binding needs no
-   * listing. Unset = no client may call it.
+   * trusted to have id.org.ai email sign-in codes. Unset = no client may call
+   * it. Workers in the account call AuthService.sendMagicLink (RPC) instead;
+   * HTTP never infers a service binding from the request's host.
    */
   MAGIC_LINK_CLIENTS?: string
 }

@@ -25,7 +25,8 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
 import { buildAuthCookieHeaders, getRootDomain, parseCookieValue } from '../utils/cookies'
-import { reserveCodeGuess, resetCodeGuesses, clientIpOf } from '../utils/code-guard'
+import { reserveCodeGuess, resetCodeGuesses, reserveCodeSend, clientIpOf } from '../utils/code-guard'
+import { canonicalHostname, requestOriginOf } from '../utils/relying-parties'
 import {
   startMicrosoftAuth,
   exchangeMicrosoftCode,
@@ -39,12 +40,10 @@ import type { MicrosoftAuthState, MicrosoftConfig, MicrosoftVerifyDeps } from '.
 import {
   workosMagicAuthChannel,
   emailCodePrincipal,
-  allowEmailCodeSend,
   isPlausibleEmail,
   isPlausibleCode,
   normalizeEmail,
 } from '../../src/sdk/federation/email-code'
-import type { ThrottleStore } from '../../src/sdk/federation/email-code'
 import { FederationError, levelCeilingForAssurance } from '../../src/sdk/federation/types'
 import type { FederatedPrincipal } from '../../src/sdk/federation/types'
 import { renderEmailCodePage } from '../views/email-code'
@@ -87,7 +86,7 @@ const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev
 
 export function microsoftConfigFor(env: Env, requestUrl: string): MicrosoftConfig | undefined {
   if (!env.MICROSOFT_CLIENT_ID) return undefined
-  const requestOrigin = new URL(requestUrl).origin
+  const requestOrigin = requestOriginOf(requestUrl)
   const origin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
   return {
     clientId: env.MICROSOFT_CLIENT_ID,
@@ -138,14 +137,20 @@ export function safeContinue(raw: string | undefined, env: Env): string {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '/'
 
-  const host = parsed.hostname.toLowerCase()
+  if (parsed.username || parsed.password) return '/'
+
+  // Compared, and returned, in canonical spelling (lowercase, no trailing dot).
+  const host = canonicalHostname(parsed.hostname)
   const extra = (env.FEDERATION_CONTINUE_HOSTS ?? '')
     .split(',')
-    .map((h) => h.trim().toLowerCase())
+    .map((h) => canonicalHostname(h.trim()))
     .filter(Boolean)
 
   const allowed = host === 'org.ai' || host.endsWith('.org.ai') || extra.includes(host)
-  return allowed ? url : '/'
+  if (!allowed) return '/'
+  if (host === parsed.hostname) return url
+  parsed.hostname = host
+  return parsed.href
 }
 
 function emailChannelFor(env: Env) {
@@ -224,19 +229,6 @@ async function endEmailTransaction(env: Env, txId: string): Promise<void> {
   const stub = getStubForIdentity(env, FEDERATION_SHARD)
   await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx:${txId}` })
   await stub.oauthStorageOp({ op: 'delete', key: `fed-email-tx-guesses:${txId}` })
-}
-
-function throttleStoreFor(env: Env): ThrottleStore {
-  const stub = getStubForIdentity(env, FEDERATION_SHARD)
-  return {
-    async get(key) {
-      const stored = await stub.oauthStorageOp({ op: 'get', key })
-      return stored.value as { count: number; windowStartedAt: number } | undefined
-    },
-    async put(key, value) {
-      await stub.oauthStorageOp({ op: 'put', key, value })
-    },
-  }
 }
 
 // ── The single exit: mint an id.org.ai identity + session ─────────────────
@@ -326,7 +318,7 @@ app.get('/federation/status', (c) => {
     microsoft: {
       configured: isMicrosoftConfigured(ms),
       tenant: c.env.MICROSOFT_TENANT || MICROSOFT_DEFAULT_TENANT,
-      redirectUri: ms?.redirectUri ?? `${new URL(c.req.url).origin}/federation/microsoft/callback`,
+      redirectUri: ms?.redirectUri ?? `${requestOriginOf(c.req.url)}/federation/microsoft/callback`,
       allowedTenants: allowedTenants(c.env) ?? null,
       confidentialClient: !!c.env.MICROSOFT_CLIENT_SECRET,
     },
@@ -459,8 +451,12 @@ app.post('/federation/email/send', async (c) => {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Enter a valid work email address')
   }
 
-  const allowed = await allowEmailCodeSend(throttleStoreFor(c.env), email)
-  if (!allowed) {
+  // One atomic reservation from the address's send budget, shared with
+  // POST /api/magic-link (worker/utils/code-guard.ts): each send restarts the
+  // address's guess budget, so sends must be bounded however they race.
+  const sendBudget = await reserveCodeSend(c.env, email)
+  if (!sendBudget.ok) {
+    c.header('Retry-After', String(sendBudget.retryAfterSec))
     return errorResponse(c, 429, ErrorCode.RateLimitExceeded, 'Too many codes requested — try again later')
   }
 

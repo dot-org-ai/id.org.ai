@@ -15,6 +15,7 @@ import {
   encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
+  canonicalHostname,
 } from '../../src/sdk/csrf'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { indexClientOrigins } from '../utils/relying-parties'
@@ -38,7 +39,9 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
   const set = new Set<string>()
   if (!value) return set
   for (const raw of value.split(',')) {
-    const host = raw.trim().toLowerCase()
+    // Canonical spelling (lowercase, no trailing dot), as every host compared
+    // against this set is.
+    const host = canonicalHostname(raw.trim())
     if (!host) continue
     // Defensive: reject obvious mistakes (schemes, paths) so a typo in
     // the env doesn't silently widen the trust boundary.
