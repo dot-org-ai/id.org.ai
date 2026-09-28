@@ -473,11 +473,22 @@ app.get('/oauth/userinfo', async (c) => {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const tokenResult = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${tokenId}` })
   const tokenData = tokenResult.value as
-    | { identityId?: string; expiresAt?: number; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
+    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
     | undefined
 
   if (!tokenData) {
     return c.json({ error: 'invalid_token' }, 401)
+  }
+  if (
+    await getOAuthProvider(c).isTokenRevoked({
+      identityId: tokenData.identityId,
+      clientId: tokenData.clientId ?? '',
+      createdAt: tokenData.createdAt ?? 0,
+      grantedAt: tokenData.grantedAt,
+      family: tokenData.family,
+    })
+  ) {
+    return c.json({ error: 'invalid_token', error_description: 'Token has been revoked' }, 401)
   }
 
   if (tokenData.expiresAt && tokenData.expiresAt < Date.now()) {
