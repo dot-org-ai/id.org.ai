@@ -84,6 +84,12 @@ export function getOAuthProvider(c: any): OAuthProvider {
         const result = await stub.oauthStorageOp({ op: 'list', options })
         return new Map(result.entries as Array<[string, T]>)
       },
+      // Read-and-delete in one Durable Object call: authorization codes are
+      // redeemed through this, so a code works exactly once.
+      async take<T = unknown>(key: string): Promise<T | undefined> {
+        const result = await stub.takeOnce({ key })
+        return (result?.value ?? undefined) as T | undefined
+      },
     },
     config: {
       issuer: base,

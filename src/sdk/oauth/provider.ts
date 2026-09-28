@@ -50,6 +50,18 @@
 
 import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
 import { canonicalHostname } from '../csrf'
+import {
+  OIDC_SCOPES,
+  SB_SCOPE_DO,
+  SCOPES_SUPPORTED,
+  SCOPE_DESCRIPTIONS,
+  bindSbScopes,
+  isSbResource,
+  isSbScope,
+  parseResourceIndicators,
+  sameResource,
+  splitScopes,
+} from './delegation'
 
 export interface OAuthConfig {
   issuer: string
@@ -235,9 +247,11 @@ export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, un
     ],
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+    scopes_supported: SCOPES_SUPPORTED,
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
+    // RFC 9207: every authorization response carries `iss`.
+    authorization_response_iss_parameter_supported: true,
     claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }
 }
@@ -248,6 +262,13 @@ type StorageLike = {
   put(key: string, value: unknown, options?: { expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<boolean>
   list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>>
+  /**
+   * Read a key and delete it in one step, answering the value to exactly one
+   * caller (the IdentityDO's `takeOnce`). Used to redeem an authorization code
+   * so two parallel redemptions cannot both succeed. Optional: without it the
+   * provider falls back to get-then-delete.
+   */
+  take?<T = unknown>(key: string): Promise<T | undefined>
 }
 
 // ============================================================================
@@ -575,72 +596,32 @@ export class OAuthProvider {
   async handleAuthorize(request: Request, identityId: string | null, signIn?: SignInContext): Promise<Response> {
     const url = new URL(request.url)
     const params = url.searchParams
+    const iss = this.getEffectiveIssuer(request)
 
-    const clientId = params.get('client_id') || ''
-    const redirectUri = params.get('redirect_uri') || ''
-    const responseType = params.get('response_type') || ''
     const scope = params.get('scope') || 'openid profile email'
     const state = params.get('state') || undefined
     const codeChallenge = params.get('code_challenge') || undefined
-    const codeChallengeMethod = params.get('code_challenge_method') || undefined
     const nonce = params.get('nonce') || undefined
-    const resource = params.get('resource') || undefined
     const loginHint = params.get('login_hint') || undefined
 
-    // ── Validate client ─────────────────────────────────────────────────
-    // ADR-0007: trusted-account clients bypass the DCR lookup entirely.
-    // Their redirect_uri allowlist is host-based and supplied by env config.
-    let client: OAuthProviderClient | null
-    if (this.isTrustedAccountClient(clientId)) {
-      if (!this.isTrustedAccountRedirect(redirectUri)) {
-        return oauthError(
-          'invalid_request',
-          'redirect_uri host is not in the trusted-account allowlist',
-        )
-      }
-      client = this.buildTrustedAccountClient()
-    } else {
-      client = await this.getClient(clientId)
-      if (!client) {
-        return oauthError('invalid_client', 'Unknown client_id')
-      }
-      // Validate redirect URI against the DCR-registered list
-      if (!client.redirectUris.includes(redirectUri)) {
-        return oauthError('invalid_request', 'Invalid redirect_uri')
-      }
-    }
-
-    // ── Validate response_type ──────────────────────────────────────────
-    if (responseType !== 'code') {
-      return this.redirectError(redirectUri, 'unsupported_response_type', 'Only "code" response type is supported', state)
-    }
-
-    // ── Validate grant type includes authorization_code ─────────────────
-    if (!client.grantTypes.includes('authorization_code')) {
-      return this.redirectError(redirectUri, 'unauthorized_client', 'Client is not authorized for authorization_code grant', state)
-    }
-
-    // ── PKCE is mandatory for public clients (OAuth 2.1) ────────────────
-    if (client.tokenEndpointAuthMethod === 'none' && !codeChallenge) {
-      return this.redirectError(redirectUri, 'invalid_request', 'code_challenge is required for public clients (OAuth 2.1)', state)
-    }
-
-    // ── Only S256 is supported ──────────────────────────────────────────
-    if (codeChallenge && codeChallengeMethod && codeChallengeMethod !== 'S256') {
-      return this.redirectError(redirectUri, 'invalid_request', 'Only S256 code_challenge_method is supported', state)
-    }
-
-    // ── Validate requested scopes ───────────────────────────────────────
-    const requestedScopes = scope.split(' ')
-    const invalidScopes = requestedScopes.filter((s) => !client.scopes.includes(s) && !['openid', 'profile', 'email', 'offline_access'].includes(s))
-    if (invalidScopes.length > 0) {
-      return this.redirectError(redirectUri, 'invalid_scope', `Invalid scopes: ${invalidScopes.join(', ')}`, state)
-    }
+    const checked = await this.validateAuthorizationRequest({
+      clientId: params.get('client_id') || '',
+      redirectUri: params.get('redirect_uri') || '',
+      responseType: params.get('response_type') || '',
+      scope,
+      state,
+      codeChallenge,
+      codeChallengeMethod: params.get('code_challenge_method') || undefined,
+      resources: params.getAll('resource'),
+      iss,
+    })
+    if (!checked.ok) return checked.response
+    const { client, redirectUri, scopes: requestedScopes, resource } = checked
+    const clientId = client.id
 
     // ── User must be authenticated ──────────────────────────────────────
     if (!identityId) {
-      const effectiveIssuer = this.getEffectiveIssuer(request)
-      const loginUrl = new URL('/login', effectiveIssuer)
+      const loginUrl = new URL('/login', iss)
       loginUrl.searchParams.set('continue', request.url)
       // OIDC login_hint: prefill the sign-in email at the upstream page.
       if (loginHint) loginUrl.searchParams.set('login_hint', loginHint)
@@ -648,15 +629,19 @@ export class OAuthProvider {
     }
 
     // ── Check existing consent ──────────────────────────────────────────
+    // A first-party (trusted) client skips the consent screen, except for
+    // the sb scopes: delegating api.sb authority is always shown to the
+    // Person once per client (and again on a step-up to more scopes).
     const consentKey = `consent:${identityId}:${clientId}`
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
-    const hasFullConsent = existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
+    const hasFullConsent = !!existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
+    const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
 
-    if (!client.trusted && !hasFullConsent) {
+    if (consentRequired && !hasFullConsent) {
       return this.renderConsentPage(client, {
         clientId,
         redirectUri,
-        scope,
+        scope: requestedScopes.join(' '),
         state,
         codeChallenge,
         codeChallengeMethod: codeChallenge ? 'S256' : undefined,
@@ -674,40 +659,159 @@ export class OAuthProvider {
       state,
       nonce,
       resource,
-      effectiveIssuer: this.getEffectiveIssuer(request),
+      effectiveIssuer: iss,
       signIn,
     })
+  }
+
+  /**
+   * The client and a redirect_uri it may receive a response at. Until both
+   * are known nothing may redirect, so failures answer 400 directly.
+   */
+  private async resolveClientRedirect(
+    clientId: string,
+    redirectUri: string,
+  ): Promise<{ ok: true; client: OAuthProviderClient } | { ok: false; response: Response }> {
+    // ADR-0007: trusted-account clients bypass the DCR lookup entirely.
+    // Their redirect_uri allowlist is host-based and supplied by env config.
+    if (this.isTrustedAccountClient(clientId)) {
+      if (!this.isTrustedAccountRedirect(redirectUri)) {
+        return { ok: false, response: oauthError('invalid_request', 'redirect_uri host is not in the trusted-account allowlist') }
+      }
+      return { ok: true, client: this.buildTrustedAccountClient() }
+    }
+    const client = await this.getClient(clientId)
+    if (!client) {
+      return { ok: false, response: oauthError('invalid_client', 'Unknown client_id') }
+    }
+    // Validate redirect URI against the DCR-registered list
+    if (!redirectUri || !client.redirectUris.includes(redirectUri)) {
+      return { ok: false, response: oauthError('invalid_request', 'Invalid redirect_uri') }
+    }
+    return { ok: true, client }
+  }
+
+  /**
+   * Validate an authorization request: the one at GET /oauth/authorize and,
+   * again, the one the consent form posts back (whose fields came through the
+   * browser and are re-checked, not trusted). Errors before the client and
+   * its redirect_uri are known answer 400 here; after, they redirect to the
+   * client with `error`, `state` and `iss` (RFC 6749 §4.1.2.1, RFC 9207).
+   */
+  private async validateAuthorizationRequest(input: {
+    clientId: string
+    redirectUri: string
+    responseType: string
+    scope: string
+    state?: string
+    codeChallenge?: string
+    codeChallengeMethod?: string
+    resources: Array<string | null | undefined>
+    iss: string
+  }): Promise<
+    | { ok: true; client: OAuthProviderClient; redirectUri: string; scopes: string[]; resource?: string }
+    | { ok: false; response: Response }
+  > {
+    const { clientId, redirectUri, responseType, scope, state, codeChallenge, codeChallengeMethod, resources, iss } = input
+    const fail = (response: Response) => ({ ok: false as const, response })
+    const redirectFail = (error: string, description: string) => fail(this.redirectError(redirectUri, error, description, state, iss))
+
+    // ── Validate client and redirect_uri ────────────────────────────────
+    const resolved = await this.resolveClientRedirect(clientId, redirectUri)
+    if (!resolved.ok) return resolved
+    const { client } = resolved
+    const trustedAccount = this.isTrustedAccountClient(clientId)
+
+    // ── Validate response_type ──────────────────────────────────────────
+    if (responseType !== 'code') {
+      return redirectFail('unsupported_response_type', 'Only "code" response type is supported')
+    }
+
+    // ── Validate grant type includes authorization_code ─────────────────
+    if (!client.grantTypes.includes('authorization_code')) {
+      return redirectFail('unauthorized_client', 'Client is not authorized for authorization_code grant')
+    }
+
+    // ── PKCE is mandatory for public clients (OAuth 2.1) ────────────────
+    if (client.tokenEndpointAuthMethod === 'none' && !codeChallenge) {
+      return redirectFail('invalid_request', 'code_challenge is required for public clients (OAuth 2.1)')
+    }
+
+    // ── Only S256 is supported ──────────────────────────────────────────
+    if (codeChallenge && codeChallengeMethod && codeChallengeMethod !== 'S256') {
+      return redirectFail('invalid_request', 'Only S256 code_challenge_method is supported')
+    }
+
+    // ── Validate requested scopes ───────────────────────────────────────
+    // The OIDC scopes and (for any client but the shared trusted-account
+    // one) the sb scopes are grantable by the Person's consent; anything
+    // else must be in the client's registered scopes.
+    const requestedScopes = splitScopes(scope)
+    const grantable = (s: string) =>
+      client.scopes.includes(s) || (OIDC_SCOPES as readonly string[]).includes(s) || (!trustedAccount && isSbScope(s))
+    const invalidScopes = requestedScopes.filter((s) => !grantable(s) || (trustedAccount && isSbScope(s)))
+    if (invalidScopes.length > 0) {
+      return redirectFail('invalid_scope', `Invalid scopes: ${invalidScopes.join(', ')}`)
+    }
+
+    // ── RFC 8707 resource indicator → the token's audience ──────────────
+    const parsed = parseResourceIndicators(resources)
+    if (!parsed.ok) return redirectFail('invalid_target', parsed.description)
+    const bound = bindSbScopes(requestedScopes, parsed.resource)
+    if (!bound.ok) return redirectFail(bound.error, bound.description)
+
+    return { ok: true, client, redirectUri, scopes: bound.scopes, ...(bound.resource !== undefined && { resource: bound.resource }) }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Authorization Consent Submission
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * The consent form's POST. Every field came back through the browser, so the
+   * request is validated again exactly as at GET /oauth/authorize (client,
+   * redirect_uri, PKCE, scopes, resource) before anything is stored or a code
+   * is issued. `approved`:
+   *   - `true`  — grant the requested scopes;
+   *   - `read`  — grant them without `sb:do` (the Person keeps api.sb
+   *               read-only; the client can step up later);
+   *   - else    — denied.
+   */
   async handleAuthorizeConsent(request: Request, identityId: string, signIn?: SignInContext): Promise<Response> {
     const body = await parseBody(request)
+    const iss = this.getEffectiveIssuer(request)
 
-    const clientId = body.client_id
-    const redirectUri = body.redirect_uri
-    const scope = body.scope || 'openid profile email'
     const state = body.state || undefined
     const codeChallenge = body.code_challenge || undefined
-    const codeChallengeMethod = body.code_challenge_method || undefined
     const nonce = body.nonce || undefined
-    const resource = body.resource || undefined
-    const approved = body.approved === 'true'
 
-    const client = await this.getClient(clientId)
-    if (!client) {
-      return oauthError('invalid_client', 'Unknown client_id')
-    }
-
+    const approved = body.approved === 'true' || body.approved === 'read'
     if (!approved) {
-      return this.redirectError(redirectUri, 'access_denied', 'User denied the authorization request', state)
+      // A denial needs only a client and a redirect_uri it may receive.
+      const resolved = await this.resolveClientRedirect(body.client_id || '', body.redirect_uri || '')
+      if (!resolved.ok) return resolved.response
+      return this.redirectError(body.redirect_uri || '', 'access_denied', 'User denied the authorization request', state, iss)
     }
+
+    const checked = await this.validateAuthorizationRequest({
+      clientId: body.client_id || '',
+      redirectUri: body.redirect_uri || '',
+      // The consent form is only ever rendered for a response_type=code request.
+      responseType: 'code',
+      scope: body.scope || 'openid profile email',
+      state,
+      codeChallenge,
+      codeChallengeMethod: body.code_challenge_method || undefined,
+      resources: [body.resource],
+      iss,
+    })
+    if (!checked.ok) return checked.response
+    const { client, redirectUri, resource } = checked
+
+    const scopes = body.approved === 'read' ? checked.scopes.filter((s) => s !== SB_SCOPE_DO) : checked.scopes
 
     // Store consent
-    const scopes = scope.split(' ')
-    const consentKey = `consent:${identityId}:${clientId}`
+    const consentKey = `consent:${identityId}:${client.id}`
     await this.storage.put(consentKey, {
       scopes,
       createdAt: Date.now(),
@@ -722,7 +826,7 @@ export class OAuthProvider {
       state,
       nonce,
       resource,
-      effectiveIssuer: this.getEffectiveIssuer(request),
+      effectiveIssuer: iss,
       signIn,
     })
   }
@@ -793,6 +897,14 @@ export class OAuthProvider {
 
     const scope = body.scope || client.scopes.join(' ')
     const scopes = scope.split(' ')
+
+    // The device approval page names no scopes, so it cannot be where a Person
+    // delegates api.sb authority: the sb scopes go through /oauth/authorize,
+    // whose consent screen shows them.
+    const sbScopes = scopes.filter(isSbScope)
+    if (sbScopes.length > 0) {
+      return oauthError('invalid_scope', `${sbScopes.join(', ')} cannot be granted through the device flow; use the authorization code flow`)
+    }
 
     const deviceCodeId = generateId('dc_')
     const userCode = generateUserCode()
@@ -978,6 +1090,9 @@ export class OAuthProvider {
           token_type: 'Bearer',
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
+          // RFC 7662 §2.2 `aud`: the resource the token is bound to (RFC 8707).
+          // A resource server MUST check it is itself before honouring the token.
+          ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
         })
       }
@@ -997,6 +1112,7 @@ export class OAuthProvider {
           token_type: 'refresh_token',
           exp: Math.floor(tokenData.expiresAt / 1000),
           iat: Math.floor(tokenData.createdAt / 1000),
+          ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
         })
       }
@@ -1075,8 +1191,13 @@ export class OAuthProvider {
       return oauthError('invalid_request', 'code is required')
     }
 
-    // ── Look up authorization code ──────────────────────────────────────
-    const codeData = await this.storage.get<AuthorizationCode>(`code:${code}`)
+    // ── Look up (and consume) the authorization code ────────────────────
+    // With `take`, the code is read and deleted in one step, so of N parallel
+    // redemptions exactly one sees it (RFC 6749 §4.1.2: a code is single-use).
+    // Any failed check below has then spent the code too.
+    const codeData = this.storage.take
+      ? await this.storage.take<AuthorizationCode>(`code:${code}`)
+      : await this.storage.get<AuthorizationCode>(`code:${code}`)
     if (!codeData) {
       return oauthError('invalid_grant', 'Invalid or expired authorization code')
     }
@@ -1132,6 +1253,11 @@ export class OAuthProvider {
       }
     }
 
+    // ── RFC 8707 at the token endpoint: the resource, if sent, must be the
+    //    one the code was granted for (a client cannot re-target it) ─────
+    const target = this.tokenRequestResource(body, codeData.resource)
+    if (!target.ok) return target.response
+
     // ── Delete authorization code (one-time use) ────────────────────────
     await this.storage.delete(`code:${code}`)
 
@@ -1150,6 +1276,7 @@ export class OAuthProvider {
       scopes: codeData.scopes,
       nonce: codeData.nonce,
       resource: codeData.resource,
+      accessResource: target.resource,
       effectiveIssuer: codeData.effectiveIssuer,
       consumerHost,
       signIn: codeData.signIn,
@@ -1216,6 +1343,10 @@ export class OAuthProvider {
       return oauthError('invalid_grant', 'Refresh token has expired')
     }
 
+    // ── RFC 8707: a resource sent with the refresh must be the grant's ───
+    const target = this.tokenRequestResource(body, tokenData.resource)
+    if (!target.ok) return target.response
+
     // ── Rotate: revoke old refresh token ────────────────────────────────
     await this.storage.put(`refresh:${refreshTokenId}`, {
       ...tokenData,
@@ -1229,12 +1360,35 @@ export class OAuthProvider {
       scopes: tokenData.scopes,
       family: tokenData.family,
       resource: tokenData.resource,
+      accessResource: target.resource,
       effectiveIssuer: tokenData.effectiveIssuer,
       // Propagate the consumer host through rotation so subsequent refreshes
       // can keep enforcing the allowlist (ADR-0007).
       consumerHost: tokenData.consumerHost,
       signIn: tokenData.signIn,
     })
+  }
+
+  /**
+   * RFC 8707 §2.2 at the token endpoint. A `resource` sent with a code or
+   * refresh redemption must be the resource the grant was made for; when the
+   * grant named none, the sent resource becomes this access token's audience.
+   */
+  private tokenRequestResource(
+    body: Record<string, string>,
+    granted: string | undefined,
+  ): { ok: true; resource?: string } | { ok: false; response: Response } {
+    const parsed = parseResourceIndicators([body.resource])
+    if (!parsed.ok) return { ok: false, response: oauthError('invalid_target', parsed.description) }
+    if (parsed.resource === undefined) return { ok: true }
+    if (granted === undefined) return { ok: true, resource: parsed.resource }
+    // An sb grant may be narrowed between api.sb's own audiences (an sb-scoped
+    // request with no resource was bound to https://api.sb by default).
+    if (isSbResource(granted) && isSbResource(parsed.resource)) return { ok: true, resource: parsed.resource }
+    if (!sameResource(parsed.resource, granted)) {
+      return { ok: false, response: oauthError('invalid_target', `this grant is for ${granted}, not ${parsed.resource}`) }
+    }
+    return { ok: true }
   }
 
   private async handleClientCredentialsGrant(
@@ -1262,6 +1416,15 @@ export class OAuthProvider {
     const scope = body.scope || client.scopes.join(' ')
     const scopes = scope.split(' ')
 
+    // The sb scopes delegate a Person's authority; client_credentials has no
+    // Person, so it can never carry them.
+    const sbScopes = scopes.filter(isSbScope)
+    if (sbScopes.length > 0) {
+      return oauthError('invalid_scope', `${sbScopes.join(', ')} need a Person's consent; not available with client_credentials`)
+    }
+    const target = parseResourceIndicators([body.resource])
+    if (!target.ok) return oauthError('invalid_target', target.description)
+
     // Client credentials flow — no user, just the client
     const accessTokenId = generateId('at_')
     const now = Date.now()
@@ -1273,7 +1436,7 @@ export class OAuthProvider {
       expiresAt: now + ACCESS_TOKEN_TTL * 1000,
       createdAt: now,
       // RFC 8707: audience-bind to the requested resource, if any.
-      ...(body.resource !== undefined && { resource: body.resource }),
+      ...(target.resource !== undefined && { resource: target.resource }),
     }
 
     await this.storage.put(`access:${accessTokenId}`, accessToken, {
@@ -1414,6 +1577,10 @@ export class OAuthProvider {
     if (params.state) {
       redirectUrl.searchParams.set('state', params.state)
     }
+    // RFC 9207: name the issuer, so a client talking to several authorization
+    // servers can tell which one answered (mix-up defence). The same value the
+    // metadata's `issuer` carries for this request.
+    redirectUrl.searchParams.set('iss', params.effectiveIssuer || this.config.issuer)
 
     return Response.redirect(redirectUrl.toString(), 302)
   }
@@ -1471,8 +1638,16 @@ export class OAuthProvider {
     consumerHost?: string
     /** How the person signed in; stamped on the id_token and the stored tokens. */
     signIn?: SignInContext
+    /**
+     * The access token's audience when it differs from the grant's: a grant
+     * with no resource whose token request named one (RFC 8707 §2.2). The
+     * refresh token keeps the grant's `resource`.
+     */
+    accessResource?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, resource, effectiveIssuer, consumerHost, signIn } = options
+    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn } = options
+    const resource = options.resource
+    const tokenAudience = options.accessResource ?? resource
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
@@ -1488,7 +1663,7 @@ export class OAuthProvider {
       // RFC 8707: bind the token's audience to the requested resource so the
       // resource server can reject cross-resource replay (carried
       // authorize → code → token, and re-carried through refresh rotation).
-      ...(resource !== undefined && { resource }),
+      ...(tokenAudience !== undefined && { resource: tokenAudience }),
       ...(signIn && { signIn }),
     }
 
@@ -1621,7 +1796,8 @@ export class OAuthProvider {
     redirectUri: string,
     error: string,
     description: string,
-    state?: string,
+    state: string | undefined,
+    iss: string,
   ): Response {
     const url = new URL(redirectUri)
     url.searchParams.set('error', error)
@@ -1629,6 +1805,8 @@ export class OAuthProvider {
     if (state) {
       url.searchParams.set('state', state)
     }
+    // RFC 9207 §2: error responses carry `iss` too.
+    url.searchParams.set('iss', iss)
     return Response.redirect(url.toString(), 302)
   }
 
@@ -1649,22 +1827,36 @@ export class OAuthProvider {
       resource?: string
     },
   ): Response {
-    const scopeDescriptions: Record<string, string> = {
-      openid: 'Verify your identity',
-      profile: 'View your name and profile picture',
-      email: 'View your email address',
-      offline_access: 'Access your data while you are offline',
-    }
-
-    const scopeItems = params.scope
-      .split(' ')
-      .map((s) => `<div class="scope">${scopeDescriptions[s] || s}</div>`)
+    const esc = (v: string) => this.escapeHtml(v)
+    const scopes = splitScopes(params.scope)
+    const delegatesDo = scopes.includes(SB_SCOPE_DO)
+    // Every scope string is escaped: a registered client chooses its own
+    // scope names, and this page is served from id.org.ai's origin.
+    const scopeItems = scopes
+      .map((s) => {
+        const text = esc(SCOPE_DESCRIPTIONS[s] ?? s)
+        if (s === SB_SCOPE_DO) return `<div class="scope write">${text}<div class="note">Changes are made in your name. Choose “Allow read only” to keep api.sb read-only.</div></div>`
+        return `<div class="scope">${text}</div>`
+      })
       .join('\n        ')
+
+    // Name where the answer goes and which resource the access is for, from
+    // values id.org.ai checked (the registered redirect_uri, the RFC 8707
+    // resource), not from the client's self-chosen name.
+    const hostOf = (u: string) => {
+      try {
+        return new URL(u).host
+      } catch {
+        return u
+      }
+    }
+    const returnsTo = hostOf(params.redirectUri)
+    const audience = params.resource ? hostOf(params.resource) : undefined
 
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Authorize ${this.escapeHtml(client.name)} - id.org.ai</title>
+  <title>Authorize ${esc(client.name)} - id.org.ai</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
@@ -1679,37 +1871,43 @@ export class OAuthProvider {
     .scopes { margin-bottom: 24px; }
     .scope { padding: 10px 0; border-bottom: 1px solid #eee; font-size: 0.9375rem; }
     .scope:last-child { border-bottom: none; }
-    .buttons { display: flex; gap: 12px; }
+    .scope.write { font-weight: 600; }
+    .note { font-weight: 400; font-size: 0.8125rem; color: #8a4b00; margin-top: 4px; }
+    .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
     button { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
     button:hover { opacity: 0.85; }
     .allow { background: #111; color: #fff; }
     .deny { background: #f0f0f0; color: #333; }
+    .read { background: #e8eefc; color: #123; }
   </style>
 </head>
 <body>
   <h1>Authorize application</h1>
   <p class="subtitle">Grant access to your id.org.ai account</p>
   <div class="app">
-    ${client.logo ? `<img src="${this.escapeHtml(client.logo)}" alt="">` : ''}
+    ${client.logo ? `<img src="${esc(client.logo)}" alt="">` : ''}
     <div>
-      <div class="app-name">${this.escapeHtml(client.name)}</div>
-      ${client.website ? `<div class="app-url">${this.escapeHtml(client.website)}</div>` : ''}
+      <div class="app-name">${esc(client.name)}</div>
+      ${client.website ? `<div class="app-url">${esc(client.website)}</div>` : ''}
+      <div class="app-url">Returns to ${esc(returnsTo)}</div>
+      ${audience ? `<div class="app-url">Access for ${esc(audience)}</div>` : ''}
     </div>
   </div>
   <div class="scopes">
     ${scopeItems}
   </div>
   <form method="POST" action="/oauth/authorize">
-    <input type="hidden" name="client_id" value="${this.escapeHtml(params.clientId)}">
-    <input type="hidden" name="redirect_uri" value="${this.escapeHtml(params.redirectUri)}">
-    <input type="hidden" name="scope" value="${this.escapeHtml(params.scope)}">
-    ${params.state ? `<input type="hidden" name="state" value="${this.escapeHtml(params.state)}">` : ''}
-    ${params.codeChallenge ? `<input type="hidden" name="code_challenge" value="${this.escapeHtml(params.codeChallenge)}">` : ''}
-    ${params.codeChallengeMethod ? `<input type="hidden" name="code_challenge_method" value="${this.escapeHtml(params.codeChallengeMethod)}">` : ''}
-    ${params.nonce ? `<input type="hidden" name="nonce" value="${this.escapeHtml(params.nonce)}">` : ''}
-    ${params.resource ? `<input type="hidden" name="resource" value="${this.escapeHtml(params.resource)}">` : ''}
+    <input type="hidden" name="client_id" value="${esc(params.clientId)}">
+    <input type="hidden" name="redirect_uri" value="${esc(params.redirectUri)}">
+    <input type="hidden" name="scope" value="${esc(params.scope)}">
+    ${params.state ? `<input type="hidden" name="state" value="${esc(params.state)}">` : ''}
+    ${params.codeChallenge ? `<input type="hidden" name="code_challenge" value="${esc(params.codeChallenge)}">` : ''}
+    ${params.codeChallengeMethod ? `<input type="hidden" name="code_challenge_method" value="${esc(params.codeChallengeMethod)}">` : ''}
+    ${params.nonce ? `<input type="hidden" name="nonce" value="${esc(params.nonce)}">` : ''}
+    ${params.resource ? `<input type="hidden" name="resource" value="${esc(params.resource)}">` : ''}
     <div class="buttons">
       <button type="submit" name="approved" value="false" class="deny">Deny</button>
+      ${delegatesDo ? '<button type="submit" name="approved" value="read" class="read">Allow read only</button>' : ''}
       <button type="submit" name="approved" value="true" class="allow">Allow</button>
     </div>
   </form>
@@ -1717,7 +1915,14 @@ export class OAuthProvider {
 </html>`
 
     return new Response(html, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        // The consent screen must not be framed: a framed "Allow" button can be
+        // clicked by a Person who never saw what it grants (clickjacking).
+        'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': "frame-ancestors 'none'",
+        'Cache-Control': 'no-store',
+      },
     })
   }
 
