@@ -14,7 +14,7 @@
  *   - a code redeems once, through the IdentityDO's takeOnce.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { SELF, fetchMock } from 'cloudflare:test'
+import { SELF, fetchMock, env } from 'cloudflare:test'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
@@ -257,5 +257,88 @@ describe("api.sb's LoginFlows sign-in is unchanged", () => {
     const ui = await SELF.fetch(`${BASE}/oauth/userinfo`, { headers: { authorization: `Bearer ${t.body.access_token}` } })
     expect(ui.status).toBe(200)
     expect(((await ui.json()) as any).email).toMatch(/@example\.com$/)
+  })
+})
+
+describe('review round 1 regressions', () => {
+  it('B1: a sign-in-only grant refreshed with resource=/mcp still gets 401 at /mcp', async () => {
+    const client = await register({ client_name: 'Sign-in RP', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'] })
+    const { verifier, challenge } = await pkce()
+    const cookies = await signIn()
+    const back = await consent(authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's'), cookies)
+    const first = await token({ grant_type: 'authorization_code', code: back.searchParams.get('code')!, redirect_uri: MCP_REDIRECT, client_id: client.client_id, code_verifier: verifier, resource: `${BASE}/mcp` })
+    expect(first.status).toBe(200)
+    expect((await SELF.fetch(`${BASE}/mcp`, { headers: { authorization: `Bearer ${first.body.access_token}` } })).status).toBe(401)
+    const refreshed = await token({ grant_type: 'refresh_token', refresh_token: first.body.refresh_token, client_id: client.client_id, resource: `${BASE}/mcp` })
+    expect(refreshed.status).toBe(200)
+    expect((await introspect(refreshed.body.access_token)).aud).toBeUndefined()
+    const mcp = await SELF.fetch(`${BASE}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${refreshed.body.access_token}`, 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })
+    expect(mcp.status).toBe(401)
+  })
+
+  it('S2: an sb consent POST with X-Issuer still needs the CSRF binding', async () => {
+    const client = await register({ client_name: 'X-Issuer try', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none' })
+    const { challenge } = await pkce()
+    const cookies = await signIn()
+    const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies), 'X-Issuer': 'https://evil.example' },
+      body: new URLSearchParams({ client_id: client.client_id, redirect_uri: MCP_REDIRECT, scope: 'sb:do', resource: 'https://api.sb/mcp', code_challenge: challenge, code_challenge_method: 'S256', approved: 'true' }).toString(),
+    })
+    expect(res.status).toBe(403)
+    expect(await res.text()).toContain('CSRF')
+    // …and the GET with X-Issuer shows a CSRF-bound consent page rather than skipping it.
+    const page = await SELF.fetch(authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's', { scope: 'sb:read', resource: 'https://api.sb/mcp' }), {
+      redirect: 'manual',
+      headers: { cookie: cookieHeader(cookies), 'X-Issuer': 'https://evil.example' },
+    })
+    expect(page.status).toBe(200)
+    expect(setCookies(page).__csrf).toBeTruthy()
+  })
+
+  it('S2: an sb consent cannot be given with an API key or session token, even with the CSRF pair', async () => {
+    const client = await register({ client_name: 'Key holder', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none' })
+    const { challenge } = await pkce()
+    const cookies = await signIn()
+    const url = authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's', { scope: 'sb:do', resource: 'https://api.sb/mcp' })
+    const page = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    const csrf = setCookies(page).__csrf!
+    const fields = consentFields(await page.text())
+    // A real, valid API key of the same Person (what an agent would hold).
+    const me = (await (await SELF.fetch(`${BASE}/me`, { headers: { cookie: cookieHeader(cookies) } })).json()) as { id: string }
+    const identityId = `human:${me.id}`
+    const stub = (env as any).IDENTITY.get((env as any).IDENTITY.idFromName(identityId))
+    const key = (await stub.createApiKey({ name: 'agent key', identityId, scopes: ['read'] })) as { key: string }
+    await (env as any).SESSIONS.put(`apikey:${key.key}`, identityId)
+    for (const extra of [{ 'x-api-key': key.key }, { authorization: `Bearer ${key.key}` }]) {
+      const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: csrf }), ...extra },
+        body: new URLSearchParams({ ...fields, approved: 'true' }).toString(),
+      })
+      expect(res.status).toBe(403)
+      expect(await res.text()).toContain('signed-in browser session')
+    }
+    // The browser session itself still can.
+    const ok = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: csrf }) },
+      body: new URLSearchParams({ ...fields, approved: 'true' }).toString(),
+    })
+    expect(ok.status).toBe(302)
+    expect(new URL(ok.headers.get('location')!).searchParams.get('code')).toBeTruthy()
+  })
+
+  it('P2: a refresh token rotates once under parallel refreshes', async () => {
+    const client = await register({ client_name: 'Parallel refresher', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none' })
+    const { verifier, challenge } = await pkce()
+    const cookies = await signIn()
+    const back = await consent(authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's', { scope: 'openid offline_access' }), cookies)
+    const t = await token({ grant_type: 'authorization_code', code: back.searchParams.get('code')!, redirect_uri: MCP_REDIRECT, client_id: client.client_id, code_verifier: verifier })
+    const results = await Promise.all(Array.from({ length: 5 }, () => token({ grant_type: 'refresh_token', refresh_token: t.body.refresh_token, client_id: client.client_id })))
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1)
   })
 })
