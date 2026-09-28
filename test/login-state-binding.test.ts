@@ -169,18 +169,45 @@ describe('_auth_result reads only org-select keys', () => {
 })
 
 describe('R4-2: an _auth_code only ever travels to an https origin', () => {
-  it('a login started over plain http gets no _auth_code bounce, and no code is minted', async () => {
-    const origin = 'http://internal-rp.example'
-    const state = await startLogin(origin, '/app')
+  async function authCodeCount(): Promise<number> {
+    const listed = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+    return (listed.entries as unknown[]).length
+  }
+
+  it('a login started over plain http on id.org.ai completes: cookie set directly, no code minted', async () => {
+    const state = await startLogin('http://id.org.ai', '/dash/keys')
+    expect(decodeState(state).origin).toBe('http://id.org.ai')
     mockWorkOSAuthenticate()
-    const before = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+    const before = await authCodeCount()
     const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
-    const location = cb.headers.get('location') ?? ''
+    expect(cb.status).toBe(302)
+    const location = cb.headers.get('location')!
     expect(location).not.toContain('_auth_code')
     expect(location.startsWith('http:')).toBe(false)
-    expect(cb.status).toBe(400)
-    const after = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
-    expect((after.entries as unknown[]).length).toBe((before.entries as unknown[]).length)
+    expect(new URL(location, BASE).pathname).toBe('/dash/keys')
+    expect(setCookies(cb).auth).toBeTruthy()
+    expect(await authCodeCount()).toBe(before)
+  })
+
+  it('a login started over plain http on another estate host bounces to its https origin', async () => {
+    const state = await startLogin('http://headless.ly', '/app')
+    expect(decodeState(state).origin).toBe('http://headless.ly')
+    mockWorkOSAuthenticate()
+    const before = await authCodeCount()
+    const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(cb.status).toBe(302)
+    const bounce = new URL(cb.headers.get('location')!)
+    expect(bounce.origin).toBe('https://headless.ly')
+    expect(bounce.pathname).toBe('/callback')
+    const code = bounce.searchParams.get('_auth_code')!
+    expect(code).toBeTruthy()
+    // The one code minted is the one sent to the https origin.
+    expect(await authCodeCount()).toBe(before + 1)
+
+    const redeem = await SELF.fetch(`https://headless.ly/callback?_auth_code=${code}`, { redirect: 'manual' })
+    expect(redeem.status).toBe(302)
+    expect(redeem.headers.get('location')).toBe('/app')
+    expect(setCookies(redeem).auth).toBeTruthy()
   })
 
   it('the same login started over https still bounces', async () => {
@@ -189,9 +216,57 @@ describe('R4-2: an _auth_code only ever travels to an https origin', () => {
     const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
     expect(cb.status).toBe(302)
     const bounce = new URL(cb.headers.get('location')!)
-    expect(bounce.protocol).toBe('https:')
+    expect(bounce.origin).toBe('https://internal-rp.example')
     expect(bounce.searchParams.get('_auth_code')).toBeTruthy()
   })
+
+  it('an https login on id.org.ai itself sets the cookie directly, as before', async () => {
+    const state = await startLogin(BASE, '/dash/keys')
+    mockWorkOSAuthenticate()
+    const before = await authCodeCount()
+    const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(cb.status).toBe(302)
+    expect(cb.headers.get('location')).toBe('/dash/keys')
+    expect(setCookies(cb).auth).toBeTruthy()
+    expect(await authCodeCount()).toBe(before)
+  })
+
+  it('local dev over http://localhost signs in on its own origin, unchanged (non-Secure cookie, no code)', async () => {
+    const dev = 'http://localhost:8787'
+    const state = await startLogin(dev, '/dash/keys')
+    mockWorkOSAuthenticate()
+    const before = await authCodeCount()
+    const cb = await SELF.fetch(`${dev}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(cb.status).toBe(302)
+    expect(cb.headers.get('location')).toBe('/dash/keys')
+    const authLine = cb.headers.getSetCookie().find((line) => line.startsWith('auth='))!
+    expect(authLine).toBeTruthy()
+    expect(authLine).not.toMatch(/;\s*Secure/i)
+    expect(await authCodeCount()).toBe(before)
+  })
+
+  it.each(['http://internal-rp.example', 'http://localhost:3000', 'http://127.0.0.1:3000'])(
+    'no code is ever written for an http target (%s)',
+    async (origin) => {
+      const state = await startLogin(origin, '/app')
+      mockWorkOSAuthenticate()
+      const before = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+      const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+      const location = cb.headers.get('location') ?? ''
+      // Either upgraded to https or not bounced at all, never an http /callback.
+      expect(location.startsWith('http:')).toBe(false)
+      const after = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+      const beforeKeys = new Set((before.entries as [string, unknown][]).map(([k]) => k))
+      const minted = (after.entries as [string, unknown][]).map(([k]) => k).filter((k) => !beforeKeys.has(k))
+      if (location.includes('_auth_code')) {
+        const bounce = new URL(location)
+        expect(bounce.protocol).toBe('https:')
+        expect(minted).toEqual([`auth-code:${bounce.searchParams.get('_auth_code')}`])
+      } else {
+        expect(minted).toEqual([])
+      }
+    },
+  )
 })
 
 describe('R4-3: an _auth_code redeems exactly once, however many redemptions race', () => {
