@@ -9,6 +9,7 @@
  */
 
 import { base64UrlDecode } from './pkce'
+import { unrecognizedCrit } from './access-token-jwt'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Guards (inlined from @dotdo/oauth guards.ts)
@@ -111,6 +112,12 @@ export interface JWTVerifyOptions {
   clockTolerance?: number
   /** Skip expiration check */
   ignoreExpiration?: boolean
+  /**
+   * `crit` header extensions this caller understands (RFC 7515 §4.1.11). A
+   * JWS naming any other critical extension is rejected, so an id.org.ai
+   * access token (`crit: ["aud_bound"]`) never verifies as an identity JWT.
+   */
+  crit?: string[]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -197,6 +204,11 @@ export async function verifyJWT(token: string, options: JWTVerifyOptions = {}): 
       payload = JSON.parse(decodeBase64Url(payloadB64!))
     } catch {
       return { valid: false, error: 'Invalid JWT payload: failed to decode' }
+    }
+
+    // RFC 7515 §4.1.11: reject critical extensions this caller does not understand.
+    if (header && typeof header === 'object' && unrecognizedCrit(header as unknown as Record<string, unknown>, options.crit).length > 0) {
+      return { valid: false, error: 'Unsupported critical header parameter', header, payload }
     }
 
     // Validate algorithm
