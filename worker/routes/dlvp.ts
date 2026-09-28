@@ -130,7 +130,7 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
   const signerFor = (c: DlvpContext): DlvpSigner =>
-    deps.signer ?? signerFromKeyManager(getSigningKeyManager(c.env), origin)
+    deps.signer ?? signerFromKeyManager(getSigningKeyManager(c.env))
 
   // ── POST /dlvp/session — moves 1–2 (open + sign the stateless request-object) ─
   app.post('/dlvp/session', async (c) => {
