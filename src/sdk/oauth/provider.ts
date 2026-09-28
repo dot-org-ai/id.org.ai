@@ -324,16 +324,47 @@ function parseBasicAuth(header: string): { clientId: string; clientSecret: strin
 }
 
 async function parseBody(request: Request): Promise<Record<string, string>> {
+  return (await parseBodyWithRepeats(request)).fields
+}
+
+/**
+ * The request's parameters (string values only: a JSON array or object is
+ * dropped, never passed on as a "string"), and the names of any form
+ * parameter sent more than once (RFC 6749 §3.1: MUST NOT be).
+ */
+async function parseBodyWithRepeats(request: Request): Promise<{ fields: Record<string, string>; repeated: string[] }> {
   const contentType = request.headers.get('content-type') || ''
+  const fields: Record<string, string> = {}
   if (contentType.includes('application/json')) {
-    return request.json() as Promise<Record<string, string>>
+    const json = (await request.json().catch(() => ({}))) as unknown
+    if (json && typeof json === 'object' && !Array.isArray(json)) {
+      for (const [key, value] of Object.entries(json as Record<string, unknown>)) {
+        if (typeof value === 'string') fields[key] = value
+      }
+    }
+    return { fields, repeated: [] }
   }
   const form = await request.formData()
-  const result: Record<string, string> = {}
+  const seen = new Set<string>()
+  const repeated = new Set<string>()
   for (const [key, value] of form.entries()) {
-    if (typeof value === 'string') result[key] = value
+    if (seen.has(key)) repeated.add(key)
+    seen.add(key)
+    if (typeof value === 'string') fields[key] = value
   }
-  return result
+  return { fields, repeated: [...repeated] }
+}
+
+/**
+ * How a consent POST reached the provider, as the route established it. The
+ * sb scopes are granted only when `interactive`: the identity came from the
+ * Person's id.org.ai browser session (the `auth` cookie, not an API key or
+ * session token) and the consent form's CSRF binding was verified. The check
+ * runs on the scopes the provider is about to grant, so no difference in how
+ * the route and the provider read the form can get around it.
+ */
+export interface ConsentContext {
+  interactive: boolean
 }
 
 function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -798,9 +829,15 @@ export class OAuthProvider {
    *               read-only; the client can step up later);
    *   - else    — denied.
    */
-  async handleAuthorizeConsent(request: Request, identityId: string, signIn?: SignInContext): Promise<Response> {
-    const body = await parseBody(request)
+  async handleAuthorizeConsent(request: Request, identityId: string, signIn?: SignInContext, context: ConsentContext = { interactive: false }): Promise<Response> {
+    const { fields: body, repeated } = await parseBodyWithRepeats(request)
     const iss = this.getEffectiveIssuer(request)
+
+    // RFC 6749 §3.1: a parameter sent twice is refused, so no reader of this
+    // form can see a different value from the one granted.
+    if (repeated.length > 0) {
+      return oauthError('invalid_request', `repeated parameter: ${repeated.join(', ')}`)
+    }
 
     const state = body.state || undefined
     const codeChallenge = body.code_challenge || undefined
@@ -828,6 +865,14 @@ export class OAuthProvider {
     })
     if (!checked.ok) return checked.response
     const { client, redirectUri, resource } = checked
+
+    // The sb scopes are delegated only by the Person in their browser.
+    if (checked.scopes.some(isSbScope) && !context.interactive) {
+      return jsonResponse(
+        { error: 'access_denied', error_description: 'api.sb access can only be granted from a signed-in browser session' },
+        403,
+      )
+    }
 
     // "Allow read only": sb:do becomes sb:read (never an empty grant).
     let scopes = checked.scopes

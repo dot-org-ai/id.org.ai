@@ -82,6 +82,8 @@ const CONFIG: OAuthConfig = {
 }
 
 const PERSON = 'human:user_person_1'
+/** The route's verdict for a consent POST made in the Person's browser with the CSRF pair checked. */
+const INTERACTIVE = { interactive: true }
 const REDIRECT = 'https://client.example/cb'
 const VERIFIER = 'delegation-test-verifier-0123456789-abcdefghijklmnop'
 
@@ -157,7 +159,7 @@ async function authorizeThroughConsent(
   if (page.status === 302) return new URL(page.headers.get('location')!)
   expect(page.status).toBe(200)
   const fields = hiddenFields(await page.text())
-  const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, approved }), PERSON)
+  const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, approved }), PERSON, undefined, INTERACTIVE)
   expect(res.status).toBe(302)
   return new URL(res.headers.get('location')!)
 }
@@ -206,6 +208,12 @@ describe('delegation module', () => {
     // One audience per token: two distinct resources are refused, the same one twice is fine.
     expect(parseResourceIndicators(['https://api.sb/mcp', 'https://id.org.ai/mcp'])).toMatchObject({ ok: false })
     expect(parseResourceIndicators(['https://api.sb/mcp', 'https://API.sb/mcp/'])).toMatchObject({ ok: true })
+  })
+
+  it('reserves sb names without catching unrelated scopes', async () => {
+    const { scopeProblem } = await import('../src/sdk/oauth/delegation')
+    expect(scopeProblem(['usb:read', 'files:usb:list', 'jobs:read', 'sb:read', 'sb:do'])).toBeNull()
+    for (const t of ['SB:read', 'sb:admin', 'x,sb:do', 'x:sb:do', 'api.sb:x']) expect(scopeProblem([t]), t).not.toBeNull()
   })
 
   it('binds sb scopes to api.sb only', () => {
@@ -279,7 +287,7 @@ describe('1. RFC 9207 iss in the authorization response', () => {
   })
 
   it('an unknown client or unregistered redirect_uri gets a 400, never a redirect', async () => {
-    const bad = await provider.handleAuthorize(new Request(await authorizeUrl('cid_nope')), PERSON)
+    const bad = await provider.handleAuthorize(new Request(await authorizeUrl('cid_nope')), PERSON, undefined, INTERACTIVE)
     expect(bad.status).toBe(400)
     const wrongRedirect = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { redirect_uri: 'https://evil.example/cb' })), PERSON)
     expect(wrongRedirect.status).toBe(400)
@@ -357,10 +365,13 @@ describe('2. RFC 8707 resource indicators and audience', () => {
     }
   })
 
-  it('resources are stored and reported in canonical form', async () => {
+  it('an api.sb resource is stored in its listed spelling; any other resource as sent', async () => {
     const back = await authorizeThroughConsent(provider, clientId, { scope: 'sb:read', resource: 'https://API.sb./mcp/' })
     const { body } = await redeem(provider, clientId, back.searchParams.get('code')!)
     expect((await introspect(provider, body.access_token)).aud).toBe('https://api.sb/mcp')
+    const back2 = await authorizeThroughConsent(provider, clientId, { resource: 'https://rs.example/API/' })
+    const t2 = (await redeem(provider, clientId, back2.searchParams.get('code')!)).body
+    expect((await introspect(provider, t2.access_token)).aud).toBe('https://rs.example/API/')
   })
 
   it('refresh rotates once: of parallel refreshes with one token, one wins', async () => {
@@ -471,14 +482,14 @@ describe('3. sb:read / sb:do', () => {
 
   it('"Allow read only" on a request for sb:do alone grants sb:read, never an empty scope', async () => {
     const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope: 'sb:do', resource: 'https://api.sb/mcp' })), PERSON)
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(await page.text()), approved: 'read' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(await page.text()), approved: 'read' }), PERSON, undefined, INTERACTIVE)
     const { body } = await redeem(provider, clientId, new URL(res.headers.get('location')!).searchParams.get('code')!)
     expect(body.scope).toBe('sb:read')
   })
 
   it('sb look-alikes and malformed scope tokens are refused everywhere', async () => {
     // authorize
-    for (const scope of ['SB:DO', 'sb:do,sb:read', 'x,sb:do', 'sb:admin', 'openid\tsb:do', 'openid\nsb:do', 'a"b']) {
+    for (const scope of ['SB:DO', 'sb:do,sb:read', 'x,sb:do', 'x:sb:do', 'sb:admin', 'openid\tsb:do', 'openid\nsb:do', 'a"b']) {
       const res = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope })), PERSON)
       expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('invalid_scope')
     }
@@ -548,7 +559,7 @@ describe('3. sb:read / sb:do', () => {
     const html = await page.text()
     expect(html).toContain('Act for you on api.sb')
     expect(html).toContain('Allow read only')
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(html), approved: 'read' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(html), approved: 'read' }), PERSON, undefined, INTERACTIVE)
     const back = new URL(res.headers.get('location')!)
     const { body } = await redeem(provider, clientId, back.searchParams.get('code')!)
     expect(body.scope).toBe('sb:read')
@@ -563,7 +574,7 @@ describe('3. sb:read / sb:do', () => {
     // sb:do: the Person is asked.
     const step = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope: 'sb:read sb:do', resource: 'https://api.sb/mcp' })), PERSON)
     expect(step.status).toBe(200)
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(await step.text()), approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(await step.text()), approved: 'true' }), PERSON, undefined, INTERACTIVE)
     const { body } = await redeem(provider, clientId, new URL(res.headers.get('location')!).searchParams.get('code')!)
     expect(body.scope).toBe('sb:read sb:do')
   })
@@ -662,34 +673,81 @@ describe('the consent POST is validated again', () => {
   })
 
   it('a redirect_uri the client never registered: 400, no code', async () => {
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, redirect_uri: 'https://evil.example/cb', approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, redirect_uri: 'https://evil.example/cb', approved: 'true' }), PERSON, undefined, INTERACTIVE)
     expect(res.status).toBe(400)
     // Denial too: an error is never sent to an unregistered redirect_uri.
-    const deny = await provider.handleAuthorizeConsent(consentBody({ ...fields, redirect_uri: 'https://evil.example/cb', approved: 'false' }), PERSON)
+    const deny = await provider.handleAuthorizeConsent(consentBody({ ...fields, redirect_uri: 'https://evil.example/cb', approved: 'false' }), PERSON, undefined, INTERACTIVE)
     expect(deny.status).toBe(400)
   })
 
   it('a public client with the code_challenge dropped: error, no code', async () => {
     const { code_challenge, code_challenge_method, ...rest } = fields
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...rest, approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...rest, approved: 'true' }), PERSON, undefined, INTERACTIVE)
     const back = new URL(res.headers.get('location')!)
     expect(back.searchParams.get('code')).toBeNull()
     expect(back.searchParams.get('error')).toBe('invalid_request')
   })
 
   it('an sb scope with the resource swapped for another audience: invalid_target', async () => {
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, resource: 'https://evil.example/mcp', approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, resource: 'https://evil.example/mcp', approved: 'true' }), PERSON, undefined, INTERACTIVE)
     expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('invalid_target')
   })
 
   it('a scope added in the form that the client may not have: invalid_scope', async () => {
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, scope: 'openid sb:read admin', approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, scope: 'openid sb:read admin', approved: 'true' }), PERSON, undefined, INTERACTIVE)
     expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('invalid_scope')
   })
 
   it('the form as rendered still works', async () => {
-    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, approved: 'true' }), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, approved: 'true' }), PERSON, undefined, INTERACTIVE)
     expect(new URL(res.headers.get('location')!).searchParams.get('code')).toMatch(/^ac_/)
+  })
+})
+
+describe('sb consent needs the interactive browser context (enforced by the provider)', () => {
+  it('without it, a consent POST for sb scopes is refused; OIDC scopes are unaffected', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope: 'openid sb:read', resource: 'https://api.sb/mcp' })), PERSON)
+    const fields = hiddenFields(await page.text())
+    for (const ctx of [undefined, { interactive: false }]) {
+      const res = await provider.handleAuthorizeConsent(consentBody({ ...fields, approved: 'true' }), PERSON, undefined, ctx)
+      expect(res.status).toBe(403)
+    }
+    const oidc = await provider.handleAuthorizeConsent(consentBody({ ...fields, scope: 'openid profile', resource: '', approved: 'true' }), PERSON, undefined, { interactive: false })
+    expect(new URL(oidc.headers.get('location')!).searchParams.get('code')).toBeTruthy()
+  })
+
+  it('a repeated parameter is refused (RFC 6749 §3.1), so no reader sees a different scope', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId)), PERSON)
+    const fields = hiddenFields(await page.text())
+    const body = new URLSearchParams({ ...fields, approved: 'true' })
+    body.append('scope', 'sb:do')
+    const res = await provider.handleAuthorizeConsent(
+      new Request('https://id.org.ai/oauth/authorize', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() }),
+      PERSON,
+      undefined,
+      INTERACTIVE,
+    )
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as any).error).toBe('invalid_request')
+  })
+
+  it('a JSON consent body with a non-string scope is not a crash', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId)), PERSON)
+    const fields = hiddenFields(await page.text())
+    const res = await provider.handleAuthorizeConsent(
+      new Request('https://id.org.ai/oauth/authorize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...fields, scope: ['sb:do'], approved: 'true' }) }),
+      PERSON,
+      undefined,
+      { interactive: false },
+    )
+    // The array is ignored: the default OIDC scopes, no sb scope, no 500.
+    expect(res.status).toBe(302)
   })
 })
 

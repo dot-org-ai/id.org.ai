@@ -56,6 +56,9 @@ export function isSbScope(scope: string): boolean {
   return (SB_SCOPES as readonly string[]).includes(scope)
 }
 
+/** `sb:` at the start of a token or after a non-alphanumeric (so `usb:read` is not caught). */
+const SB_LOOKALIKE = /(^|[^a-z0-9])sb:/i
+
 /** RFC 6749 §3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E ). */
 const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/
 
@@ -69,7 +72,7 @@ const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/
 export function scopeProblem(tokens: string[]): string | null {
   for (const t of tokens) {
     if (!SCOPE_TOKEN.test(t)) return `invalid scope token: ${JSON.stringify(t)}`
-    if (/sb:/i.test(t) && !isSbScope(t)) return `reserved scope name: ${t} (the sb scopes are exactly sb:read and sb:do)`
+    if (SB_LOOKALIKE.test(t) && !isSbScope(t)) return `reserved scope name: ${t} (the sb scopes are exactly sb:read and sb:do)`
   }
   return null
 }
@@ -137,12 +140,13 @@ export function parseResourceIndicators(values: Array<string | null | undefined>
     distinct.set(canonicalResource(v), v)
   }
   if (distinct.size > 1) return { ok: false, description: 'only one resource per request is supported' }
-  // Stored (and reported as `aud`) in canonical form, so a resource server's
-  // exact `aud` check sees one spelling: an api.sb resource as listed in
-  // SB_RESOURCES, anything else canonicalized.
-  const canonical = [...distinct.keys()][0]!
+  // An api.sb resource is stored (and reported as `aud`) exactly as listed in
+  // SB_RESOURCES, so api.sb's exact `aud` check sees one spelling. Any other
+  // resource is kept as the client sent it (as before), since a third-party
+  // resource server may match its own spelling.
+  const [canonical, asSent] = [...distinct.entries()][0]!
   const sb = SB_RESOURCES.find((r) => canonicalResource(r) === canonical)
-  return { ok: true, resource: sb ?? canonical }
+  return { ok: true, resource: sb ?? asSent }
 }
 
 export type DelegationCheck =
