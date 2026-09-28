@@ -43,23 +43,25 @@ export function sanitizeLoginHint(value: string | null | undefined): string | un
 }
 
 /**
- * What /login stores under `login-csrf:<csrf>`. The login `state` is unsigned
- * base64 JSON that anyone can decode and re-encode, so the destination and the
- * cookie-bounce origin are bound HERE, server-side, and /api/callback uses
- * these values. Taking them from the state let a forged state (a real csrf
- * from the attacker's own /login, plus `origin: https://evil.example`) send
- * the victim's one-time `_auth_code` to the attacker's /callback, where it
- * redeems for the victim's session cookie.
+ * What /login (and the magic-link org-selection hand-off) stores under
+ * `login-csrf:<csrf>`. The login `state` is unsigned base64 JSON that anyone
+ * can decode and re-encode, so the destination and the cookie-bounce origin
+ * are bound HERE, server-side, and /api/callback uses these values. Taking
+ * them from the state let a forged state (a real csrf from the attacker's own
+ * /login, plus `origin: https://evil.example`) send the victim's one-time
+ * `_auth_code` to the attacker's /callback, where it redeems for the victim's
+ * session cookie.
  */
 export interface LoginCsrfRecord {
   csrf: string
   createdAt: number
   continue: string
   origin: string
+  provider?: string
 }
 
-export function loginCsrfRecord(csrf: string, continueUrl: string, origin: string): LoginCsrfRecord {
-  return { csrf, createdAt: Date.now(), continue: continueUrl, origin }
+export function loginCsrfRecord(csrf: string, continueUrl: string, origin: string, provider?: string): LoginCsrfRecord {
+  return { csrf, createdAt: Date.now(), continue: continueUrl, origin, ...(provider ? { provider } : {}) }
 }
 
 /**
@@ -141,7 +143,7 @@ app.get('/login', async (c) => {
   await oauthStub.oauthStorageOp({
     op: 'put',
     key: `login-csrf:${csrf}`,
-    value: loginCsrfRecord(csrf, continueUrl, requestOrigin),
+    value: loginCsrfRecord(csrf, continueUrl, requestOrigin, safeProvider),
     options: { expirationTtl: 300 },
   })
 
@@ -309,15 +311,13 @@ app.get('/api/callback', async (c) => {
   }
   // Destination and bounce origin come from the server-side record, never the
   // (unsigned) state. A record written before they were bound gets no
-  // cross-origin bounce and only a same-site relative continue from the state.
+  // cross-origin bounce and a continue re-checked against the policy.
   const bound = typeof csrfRecord.continue === 'string' && typeof csrfRecord.origin === 'string'
-  const legacyContinue = decoded.continue || '/'
   const boundContinue = bound
     ? csrfRecord.continue!
-    : legacyContinue.startsWith('/') && !legacyContinue.startsWith('//') && !legacyContinue.startsWith('/\\')
-      ? legacyContinue
-      : '/'
+    : ((await resolveBrowserRedirect(c.env, decoded.continue, { requestOrigin: new URL(c.req.url).origin })).url ?? '/')
   const boundOrigin = bound ? csrfRecord.origin : undefined
+  const boundProvider = bound ? csrfRecord.provider : decoded.provider
 
   // Exchange code with WorkOS (or retrieve stored auth result from org selection)
   let authResult: WorkOSAuthResult
@@ -354,7 +354,7 @@ app.get('/api/callback', async (c) => {
   await oauthStub.oauthStorageOp({ op: 'delete', key: `login-csrf:${decoded.csrf}` })
 
   return finishWorkOSSignIn(c, authResult, {
-    requestedProvider: decoded.provider,
+    requestedProvider: boundProvider,
     continueUrl: isSafeRedirectUrl(boundContinue) ? boundContinue : '/',
     origin: boundOrigin,
   })

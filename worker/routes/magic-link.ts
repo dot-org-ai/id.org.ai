@@ -35,7 +35,7 @@ import {
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { resolveContinue, isServiceBindingRequest, getRegisteredClient } from '../utils/relying-parties'
-import { finishWorkOSSignIn } from './auth'
+import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
 import { parseCookieValue } from '../utils/cookies'
@@ -347,13 +347,14 @@ app.post('/magic-link/:flow', async (c) => {
       // with a login state that remembers this was a magic link.
       await storage(c.env).delete(`magic-flow:${flowId}`)
       const csrf = crypto.randomUUID()
+      const origin = new URL(c.req.url).origin
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
         op: 'put',
         key: `login-csrf:${csrf}`,
-        value: { csrf, createdAt: Date.now() },
+        value: loginCsrfRecord(csrf, flow.continue, origin, 'magic_link'),
         options: { expirationTtl: 300 },
       })
-      const state = encodeLoginState(csrf, flow.continue, new URL(c.req.url).origin, 'magic_link')
+      const state = encodeLoginState(csrf, flow.continue, origin, 'magic_link')
       return renderOrgPickerPage(err as OrgSelectionError, state)
     }
     const status = (err as { status?: number }).status
