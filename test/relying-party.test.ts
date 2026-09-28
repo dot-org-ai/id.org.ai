@@ -8,7 +8,8 @@
  *   3. The id_token and userinfo say how the person signed in (amr, idp,
  *      auth_time) and the id_token carries email_verified.
  *   4. POST /api/magic-link: WorkOS Magic Auth sign-in for relying parties
- *      (callers: service bindings and the clients MAGIC_LINK_CLIENTS lists).
+ *      (callers: the clients MAGIC_LINK_CLIENTS lists; service bindings use
+ *      the AuthService.sendMagicLink RPC method).
  *
  * Runs the real worker in-process (SELF, real IdentityDO + KV); only WorkOS is
  * faked (fetchMock).
@@ -16,6 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock, env } from 'cloudflare:test'
 import { describeWorkOSSignIn } from '../src/sdk/workos/upstream'
+import { authService } from './helpers/auth-service'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
@@ -481,7 +483,7 @@ async function sendMagicLink(body: Record<string, unknown>, headers: Record<stri
 }
 
 describe('fix 4: POST /api/magic-link', () => {
-  it('refuses callers that are not a confidential client or a service binding', async () => {
+  it('refuses callers that are not a confidential client', async () => {
     const c = await confidentialClient()
     const pub = await register({ client_name: 'public', redirect_uris: [WAITLIST_CB], token_endpoint_auth_method: 'none' })
     const body = { email: 'ada@example.com', continue: '/dash/profile' }
@@ -492,6 +494,9 @@ describe('fix 4: POST /api/magic-link', () => {
     expect((await sendMagicLink({ ...body, client_id: pub.client_id })).status).toBe(401)
     // A spoofed X-Issuer on a public host is not a service binding.
     expect((await sendMagicLink(body, { 'x-issuer': 'https://internal.example' })).status).toBe(401)
+    // Nor is any host: HTTP never infers binding trust from where it arrived.
+    expect((await sendMagicLink(body, {}, 'https://internal.example')).status).toBe(401)
+    expect((await sendMagicLink(body, {}, 'https://id.org.ai.')).status).toBe(401)
   })
 
   it('sends, answers the same for any address, and never leaks the code', async () => {
@@ -542,10 +547,10 @@ describe('fix 4: POST /api/magic-link', () => {
     expect((await sendMagicLink({ email: 'p100@example.com', client_id: c.id }, { authorization: c.basic })).status).toBe(429)
   })
 
-  it('a service binding may send without a secret', async () => {
+  it('a service binding may send without a secret, over RPC', async () => {
     mockMagicAuthCreate()
-    const r = await sendMagicLink({ email: 'bound@example.com', continue: 'https://internal.example/after' }, {}, 'https://internal.example')
-    expect(r.status).toBe(202)
+    const r = await authService().sendMagicLink({ email: 'bound@example.com', continue: 'https://internal.example/after', origin: 'https://internal.example' })
+    expect(r.ok).toBe(true)
   })
 
   it('clicking through signs the person in (L2, amr magic_link) and continues; the flow works once', async () => {

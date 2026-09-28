@@ -24,6 +24,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { corsMiddleware, originValidationMiddleware } from './middleware/origin'
+import { requestOriginOf } from '../src/sdk/csrf'
 import * as jose from 'jose'
 import { IdentityDO } from '../src/server/do/Identity'
 import type { IdentityStub } from '../src/server/do/Identity'
@@ -46,7 +47,7 @@ import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
-import { magicLinkRoutes } from './routes/magic-link'
+import { magicLinkRoutes, startMagicLink, type MagicLinkResult } from './routes/magic-link'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -286,6 +287,31 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
     // For JWTs: cache was already cleared above
     return true
+  }
+
+  // ── sendMagicLink ───────────────────────────────────────────────────
+  // Magic-link sign-in for a worker in this account (worker/routes/magic-link.ts):
+  //   env.OAUTH.sendMagicLink({ email, continue, clientId?, origin? })
+  //     → { ok: true, sent, verify_url, expires_in }
+  //     | { ok: false, status, error, error_description, retryAfterSec? }
+  // An RPC method is reachable only through a service binding to this
+  // entrypoint, never from the public internet, so the binding is the
+  // credential (POST /api/magic-link, the public door, takes only listed
+  // confidential clients). `clientId` (optional) lends a registered client's
+  // redirect origins to `continue`; `origin` (optional) is the calling
+  // worker's own origin, on which `continue` may also land. The shared
+  // per-address send budget and the hourly caps apply as on HTTP.
+
+  async sendMagicLink(input: { email: string; continue?: string; clientId?: string; origin?: string }): Promise<MagicLinkResult> {
+    if (!this.env.WORKOS_API_KEY || !this.env.WORKOS_CLIENT_ID) {
+      return { ok: false, status: 503, error: 'temporarily_unavailable', error_description: 'WorkOS is not configured' }
+    }
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    return startMagicLink(
+      this.env,
+      { email: str(input?.email) ?? '', continue: str(input?.continue) },
+      { kind: 'binding', clientId: str(input?.clientId), origin: str(input?.origin) },
+    )
   }
 
   // ── JWT Verification (private) ──────────────────────────────────────
@@ -737,7 +763,7 @@ function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
   const xIssuer = c.req.header('X-Issuer')
   const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   return c.json({
     resource: mcpResourceUri(origin),
     authorization_servers: [issuer],

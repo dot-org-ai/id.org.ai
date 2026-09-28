@@ -18,10 +18,10 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock } from 'cloudflare:test'
+import { authService } from './helpers/auth-service'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
-const BINDING = 'https://internal.example'
 const GOOD_CODE = '424242'
 
 beforeAll(() => {
@@ -158,13 +158,9 @@ describe('S1: guesses at one address are capped', () => {
     const email = 'shared@example.com'
     const workos = fakeWorkOS((e) => e === email)
     // A magic-link flow for the address (opened over a service binding)...
-    const sent = await SELF.fetch(`${BINDING}/api/magic-link`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email }),
-    })
-    expect(sent.status).toBe(202)
-    const path = new URL(((await sent.json()) as { verify_url: string }).verify_url).pathname
+    const sent = await authService().sendMagicLink({ email })
+    if (!sent.ok) throw new Error(`sendMagicLink: ${sent.status}`)
+    const path = new URL(sent.verify_url).pathname
     const flowCookie = (await SELF.fetch(`${BASE}${path}`)).headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
 
     // ...then the federation path spends the address's five guesses...

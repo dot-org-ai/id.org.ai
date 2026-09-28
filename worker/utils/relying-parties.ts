@@ -7,13 +7,20 @@
  * here accepts only
  *
  *   1. a relative path on the host that served the request;
- *   2. id.org.ai's own origins (and the request's own origin, which for a
- *      service binding is the calling worker's host);
+ *   2. id.org.ai's own origins, and the origin that served the request;
  *   3. the trusted-account domains (ADR-0007, TRUSTED_ACCOUNT_DOMAINS) and the
  *      hosts named by LOGIN_CONTINUE_HOSTS (config; `*.` suffix entries);
  *   4. the origin of a registered OAuth client's redirect_uri.
  *
  * Anything else is refused and the caller falls back to a safe default.
+ *
+ * Every host is compared in its canonical spelling (lowercase, no trailing
+ * dot; canonicalHostname): Cloudflare serves public traffic on `id.org.ai.`
+ * as well as `id.org.ai`, with the dot kept in request.url, so no decision
+ * here may treat one spelling of a name differently from another. No trust is
+ * ever inferred from the host a request arrived on: callers inside the
+ * account use the AuthService RPC entrypoint (worker/index.ts), which a public
+ * request cannot reach.
  *
  * Registration (RFC 7591) is open, so (4) is only as strong as registration:
  * whoever registers a client can already have /oauth/authorize redirect to its
@@ -23,7 +30,7 @@
  */
 import type { Env } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
-import { isSafeRedirectUrl } from '../../src/sdk/csrf'
+import { isSafeRedirectUrl, canonicalHostname, canonicalOrigin, requestOriginOf } from '../../src/sdk/csrf'
 import { parseTrustedAccountDomains } from '../routes/oauth'
 
 /** The public origins this worker serves (worker/wrangler.jsonc routes + workers.dev). */
@@ -35,28 +42,7 @@ export const OWN_ORIGINS: readonly string[] = [
   'https://oauth.dotdo.workers.dev',
 ]
 
-const PUBLIC_HOSTS = new Set(OWN_ORIGINS.map((o) => new URL(o).hostname))
-
-/**
- * True when the request came through a Cloudflare service binding rather than
- * the public internet. Public traffic reaches this worker only on its routes'
- * hostnames (id.org.ai, auth.org.ai, oauth.do, auth.headless.ly, *.workers.dev);
- * a service-binding caller builds the request URL itself, on its own host.
- * Unlike the X-Issuer header, the host of a public request cannot be chosen by
- * the client, so this cannot be spoofed from outside the account.
- */
-export function isServiceBindingRequest(request: Request): boolean {
-  let host: string
-  try {
-    host = new URL(request.url).hostname
-  } catch {
-    return false
-  }
-  if (PUBLIC_HOSTS.has(host)) return false
-  if (host.endsWith('.workers.dev')) return false
-  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return false
-  return true
-}
+export { canonicalHostname, canonicalOrigin, requestOriginOf }
 
 type StorageOp = (op: {
   op: 'get' | 'put' | 'delete' | 'list'
@@ -78,7 +64,7 @@ function originOf(url: string): string | null {
   try {
     const u = new URL(url)
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
-    return u.origin
+    return canonicalOrigin(u.href)
   } catch {
     return null
   }
@@ -151,7 +137,7 @@ export function parseContinueHosts(value: string | undefined): { exact: Set<stri
   const exact = new Set<string>()
   const suffixes: string[] = []
   for (const raw of (value ?? '').split(',')) {
-    const entry = raw.trim().toLowerCase()
+    const entry = canonicalHostname(raw.trim())
     if (!entry || /[/:\s@]/.test(entry)) continue
     if (entry.startsWith('*.')) {
       const suffix = entry.slice(2)
@@ -167,7 +153,7 @@ export function parseContinueHosts(value: string | undefined): { exact: Set<stri
 /** Is `hostname` named by LOGIN_CONTINUE_HOSTS? */
 export function isListedContinueHost(env: Env, hostname: string): boolean {
   const { exact, suffixes } = parseContinueHosts(env.LOGIN_CONTINUE_HOSTS)
-  const host = hostname.toLowerCase()
+  const host = canonicalHostname(hostname)
   return exact.has(host) || suffixes.some((s) => host.endsWith(s))
 }
 
@@ -237,25 +223,31 @@ export async function resolveContinue(
   opts: { requestOrigin: string; clientId?: string },
 ): Promise<string | null> {
   if (!raw || raw.length > 4096 || !isSafeRedirectUrl(raw)) return null
+  const requestOrigin = canonicalOrigin(opts.requestOrigin)
+  if (!requestOrigin) return null
   let resolved: URL
   try {
-    resolved = new URL(raw, opts.requestOrigin)
+    resolved = new URL(raw, requestOrigin)
   } catch {
     return null
   }
 
   // 1. Relative path on this host.
   if (raw.startsWith('/')) {
-    return resolved.origin === new URL(opts.requestOrigin).origin ? raw : null
+    return resolved.origin === requestOrigin ? raw : null
   }
 
   if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') return null
   // Credentials in a redirect target are never legitimate.
   if (resolved.username || resolved.password) return null
+  // Decide on, and return, the canonical spelling of the host.
+  const host = canonicalHostname(resolved.hostname)
+  if (!host) return null
+  if (host !== resolved.hostname) resolved.hostname = host
   const origin = resolved.origin
 
   // 2. id.org.ai's own origins, and the origin that served this request.
-  if (OWN_ORIGINS.includes(origin) || origin === new URL(opts.requestOrigin).origin) return resolved.href
+  if (OWN_ORIGINS.includes(origin) || origin === requestOrigin) return resolved.href
 
   // 3. Trusted-account domains (ADR-0007): same Cloudflare account.
   if (resolved.protocol === 'https:' && parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(resolved.hostname)) {

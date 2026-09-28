@@ -29,7 +29,7 @@ import {
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
-import { resolveBrowserRedirect } from '../utils/relying-parties'
+import { resolveBrowserRedirect, requestOriginOf, canonicalOrigin } from '../utils/relying-parties'
 
 /** Where a sign-in lands when no acceptable `continue` was given. */
 const DEFAULT_CONTINUE = '/dash/profile'
@@ -93,7 +93,7 @@ app.get('/login', async (c) => {
   // rather than becoming an open redirect. Under LOGIN_CONTINUE_POLICY=report
   // a syntactically safe absolute target outside the policy is still followed
   // and logged, so estate callers can be listed before enforcing.
-  const reqOrigin = new URL(c.req.url).origin
+  const reqOrigin = requestOriginOf(c.req.url)
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri')
   const continueDecision = await resolveBrowserRedirect(c.env, rawContinue, {
     requestOrigin: reqOrigin,
@@ -111,7 +111,7 @@ app.get('/login', async (c) => {
   // or when WorkOS has its own active session that conflicts with a new auth request.
   const identityId = await resolveIdentityId(c.req.raw, c.env)
   if (identityId) {
-    const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${new URL(c.req.url).origin}${continueUrl}`
+    const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${requestOriginOf(c.req.url)}${continueUrl}`
     return c.redirect(redirectTo, 302)
   }
 
@@ -132,7 +132,7 @@ app.get('/login', async (c) => {
 
   // Capture the requesting origin so the callback can redirect back and set the cookie
   // on the correct domain (e.g. headless.ly, not id.org.ai).
-  const requestOrigin = new URL(c.req.url).origin
+  const requestOrigin = requestOriginOf(c.req.url)
   const state = encodeLoginState(csrf, continueUrl, requestOrigin, safeProvider)
 
   // Store the CSRF token for validation on callback, WITH the continue URL and
@@ -258,7 +258,7 @@ app.post('/api/org-select', async (c) => {
     options: { expirationTtl: 60 },
   })
 
-  const requestOrigin = new URL(c.req.url).origin
+  const requestOrigin = requestOriginOf(c.req.url)
   const callbackUrl = new URL(`${requestOrigin}/api/callback`)
   callbackUrl.searchParams.set('_auth_result', resultKey)
   callbackUrl.searchParams.set('state', state)
@@ -315,7 +315,7 @@ app.get('/api/callback', async (c) => {
   const bound = typeof csrfRecord.continue === 'string' && typeof csrfRecord.origin === 'string'
   const boundContinue = bound
     ? csrfRecord.continue!
-    : ((await resolveBrowserRedirect(c.env, decoded.continue, { requestOrigin: new URL(c.req.url).origin })).url ?? '/')
+    : ((await resolveBrowserRedirect(c.env, decoded.continue, { requestOrigin: requestOriginOf(c.req.url) })).url ?? '/')
   const boundOrigin = bound ? csrfRecord.origin : undefined
   const boundProvider = bound ? csrfRecord.provider : decoded.provider
 
@@ -499,8 +499,10 @@ export async function finishWorkOSSignIn(
   // If the login was initiated from a different domain (e.g. apis.do), we can't
   // set the cookie from oauth.do. Store a one-time code and redirect to the
   // origin's /callback so the cookie is set on the correct domain.
-  const currentOrigin = new URL(c.req.url).origin
-  if (opts.origin && opts.origin !== currentOrigin) {
+  // Both origins in canonical spelling (lowercase host, no trailing dot).
+  const currentOrigin = requestOriginOf(c.req.url)
+  const bounceOrigin = opts.origin ? canonicalOrigin(opts.origin) : null
+  if (bounceOrigin && bounceOrigin !== currentOrigin) {
     const oneTimeCode = crypto.randomUUID()
     await oauthStub.oauthStorageOp({
       op: 'put',
@@ -509,7 +511,7 @@ export async function finishWorkOSSignIn(
       options: { expirationTtl: 60 },
     })
 
-    const callbackUrl = new URL('/callback', opts.origin)
+    const callbackUrl = new URL('/callback', bounceOrigin)
     callbackUrl.searchParams.set('_auth_code', oneTimeCode)
     return c.redirect(callbackUrl.toString(), 302)
   }
@@ -544,7 +546,7 @@ app.get('/logout', async (c) => {
   // Same destination policy as /login?continue= (worker/utils/relying-parties.ts):
   // a sign-out must not be a redirector either. Refused targets land on `/`.
   const reqUrl = new URL(c.req.url)
-  const returnDecision = await resolveBrowserRedirect(c.env, c.req.query('return_url'), { requestOrigin: reqUrl.origin })
+  const returnDecision = await resolveBrowserRedirect(c.env, c.req.query('return_url'), { requestOrigin: requestOriginOf(c.req.url) })
   if (returnDecision.outcome === 'refused' || returnDecision.outcome === 'unlisted') {
     console.warn(JSON.stringify({ event: `logout.return.${returnDecision.outcome}`, host: returnDecision.host }))
   }

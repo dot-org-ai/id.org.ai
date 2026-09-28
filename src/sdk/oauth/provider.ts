@@ -49,6 +49,7 @@
 // ============================================================================
 
 import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+import { canonicalHostname } from '../csrf'
 
 export interface OAuthConfig {
   issuer: string
@@ -429,7 +430,7 @@ export class OAuthProvider {
       return false
     }
     if (parsed.hash) return false
-    return this.trustedAccount.allowedDomains.has(parsed.hostname)
+    return this.trustedAccount.allowedDomains.has(canonicalHostname(parsed.hostname))
   }
 
   /**
@@ -1194,7 +1195,7 @@ export class OAuthProvider {
     //     doesn't actually hold for the refresh grant.
     if (this.isTrustedAccountClient(clientId)) {
       const host = tokenData.consumerHost
-      if (!host || !this.trustedAccount!.allowedDomains.has(host)) {
+      if (!host || !this.trustedAccount!.allowedDomains.has(canonicalHostname(host))) {
         return oauthError(
           'invalid_grant',
           'redirect_uri host is not in the trusted-account allowlist',
@@ -1425,7 +1426,7 @@ export class OAuthProvider {
    */
   private extractRedirectUriHost(redirectUri: string): string | undefined {
     try {
-      return new URL(redirectUri).hostname
+      return canonicalHostname(new URL(redirectUri).hostname)
     } catch {
       return undefined
     }
