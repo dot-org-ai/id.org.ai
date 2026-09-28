@@ -37,7 +37,8 @@ import {
   getSigningKeyManager,
   identityStubMiddleware,
 } from './middleware/tenant'
-import { oauthRoutes, getOAuthProvider } from './routes/oauth'
+import { oauthRoutes, getOAuthProvider, createOAuthProvider } from './routes/oauth'
+import { grantRoutes } from './routes/grants'
 import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
@@ -314,6 +315,30 @@ export class AuthService extends WorkerEntrypoint<Env> {
       { email: str(input?.email) ?? '', continue: str(input?.continue) },
       { kind: 'binding', clientId: str(input?.clientId), origin: str(input?.origin) },
     )
+  }
+
+  // ── exchangeToken (RFC 8693) ────────────────────────────────────────
+  // For api.sb's agents: a Person's access token for api.sb (the subject)
+  // plus the agent acting for them → a narrower api.sb access token (RFC 9068
+  // JWT) with sub = the Person and act = { sub: <agent> } (nested when the
+  // subject already names an actor). Reachable only through a service binding
+  // to this entrypoint, which authenticates the calling Worker; that Worker
+  // asserts the actor. See OAuthProvider.exchangeToken for the rules.
+  //   env.AUTH_SERVICE.exchangeToken({
+  //     subject_token, subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+  //     actor: { sub: 'workers/sextant' }, resource?: 'https://api.sb/mcp', scope?: 'sb:read',
+  //   }) → { ok: true, access_token, issued_token_type, token_type, expires_in, scope }
+  //      | { ok: false, error, error_description }
+
+  async exchangeToken(input: {
+    subject_token: string
+    subject_token_type: string
+    requested_token_type?: string
+    actor: { sub: string }
+    resource?: string
+    scope?: string
+  }) {
+    return createOAuthProvider(this.env).exchangeToken(input ?? {})
   }
 
   // ── JWT Verification (private) ──────────────────────────────────────
@@ -703,6 +728,8 @@ app.get('/.well-known/openid-configuration', (c) => {
     code_challenge_methods_supported: ['S256'],
     // RFC 9207: every authorization response (code or error) carries `iss`.
     authorization_response_iss_parameter_supported: true,
+    // An https client_id is a Client ID Metadata Document (src/sdk/oauth/cimd.ts).
+    client_id_metadata_document_supported: true,
     claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
@@ -738,9 +765,17 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       code_challenge_methods_supported: ['S256'],
       // RFC 9207: every authorization response (code or error) carries `iss`.
       authorization_response_iss_parameter_supported: true,
-      // ID-JAG (Identity Assertion JWT Authorization Grant) is accepted as a
-      // token-exchange subject token — advertised in the RFC 8693 field the
-      // auth.md agent-identity check reads.
+      // An https client_id is a Client ID Metadata Document (src/sdk/oauth/cimd.ts).
+      // DCR (registration_endpoint) stays: OpenCode and Cursor need it.
+      client_id_metadata_document_supported: true,
+      // NOT standard RFC 8414 metadata, and NOT about this token endpoint: the
+      // token endpoint does not accept grant_type token-exchange over HTTP.
+      // It describes the agent_auth identity_endpoint (POST /agent/identity),
+      // which resolves an ID-JAG assertion; the auth.md agent-identity check
+      // reads it here, so it stays. RFC 8693 token exchange for agents is the
+      // AuthService.exchangeToken RPC (service binding only), whose
+      // subject_token_type is the standard
+      // urn:ietf:params:oauth:token-type:access_token.
       subject_token_types_supported: ['urn:ietf:params:oauth:token-type:id-jag'],
       // auth.md agent-identity provider block. These are REAL, resolvable
       // endpoints (worker/routes/aap.ts): identity verifies an ID-JAG, events
@@ -863,6 +898,7 @@ app.use('/agent/*', authenticateRequest)
 // themselves on bare paths are unaffected.
 app.use('/vault/*', authenticateRequest)
 app.route('', auditRoutes)
+app.route('', grantRoutes)
 app.route('', mcpRoutes)
 app.route('', apiKeyRoutes)
 app.route('', workosRoutes)

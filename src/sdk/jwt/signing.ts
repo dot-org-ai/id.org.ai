@@ -8,6 +8,8 @@
  * Reconciled to maintain full API parity with @dotdo/oauth.
  */
 
+import { unrecognizedCrit } from '../oauth/access-token-jwt'
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -62,6 +64,8 @@ export interface VerifyJWTOptions {
   audience?: string | string[]
   /** Clock tolerance in seconds (default: 60) */
   clockTolerance?: number
+  /** `crit` header extensions this caller understands (RFC 7515 §4.1.11); any other rejects the token. */
+  crit?: string[]
 }
 
 // ============================================================================
@@ -243,6 +247,9 @@ export async function verifyJWTWithKeyManager(
     }
 
     if (header.alg !== 'RS256') return null
+    // RFC 7515 §4.1.11: an access token (`crit: ["aud_bound"]`) is not accepted
+    // by a caller that has not said it understands it.
+    if (unrecognizedCrit(header as unknown as Record<string, unknown>, options.crit).length > 0) return null
 
     // Try all keys in the manager (supports rotation)
     const keys = keyManager.getAllKeys()

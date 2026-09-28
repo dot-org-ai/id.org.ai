@@ -197,10 +197,12 @@ describe('an MCP client delegated sb:read for api.sb', () => {
     expect(i).toMatchObject({ active: true, aud: 'https://api.sb/mcp', scope: 'sb:read', client_id: client.client_id })
     expect(i.sub).toBeTruthy()
 
-    // Minted for api.sb: id.org.ai's own /mcp refuses it (RFC 8707 audience).
+    // Minted for api.sb: an RFC 9068 JWT (api.sb verifies it against the JWKS).
+    expect(t.body.access_token.split('.')).toHaveLength(3)
+    // id.org.ai's own /mcp refuses it (it is not an id.org.ai /mcp credential).
     const mcp = await SELF.fetch(`${BASE}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${t.body.access_token}`, 'content-type': 'application/json' }, body: '{}' })
     expect(mcp.status).toBe(401)
-    expect(mcp.headers.get('www-authenticate')).toContain('invalid_token')
+    expect(mcp.headers.get('www-authenticate')).toContain('resource_metadata')
   })
 
   it('a token for id.org.ai/mcp still works there (unchanged)', async () => {
