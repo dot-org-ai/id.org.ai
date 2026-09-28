@@ -146,7 +146,11 @@ describe('S1: guesses at one address are capped across flows', () => {
     const workos = fakeWorkOS((e) => e === email)
     const flow = await send(email)
     const results = await Promise.all(Array.from({ length: 20 }, (_, i) => verify(flow, wrong(i))))
-    expect(workos.checks).toBeLessThanOrEqual(5)
+    // Exactly the flow's 5 attempts reach WorkOS; every other guess ends the
+    // flow unasked (410), and the checked ones answer 400 (or 410 on the last).
+    expect(workos.checks).toBe(5)
+    expect(results.every((r) => r.status === 400 || r.status === 410)).toBe(true)
+    expect(results.filter((r) => r.status === 400).length).toBeLessThanOrEqual(5)
     expect(results.some((r) => signedIn(r))).toBe(false)
   })
 
