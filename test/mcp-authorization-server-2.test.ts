@@ -347,3 +347,42 @@ describe('PR #31 review round 1: revocation vs a client that keeps refreshing', 
     expect((await SELF.fetch(`${BASE}/oauth/userinfo`, { headers: { authorization: `Bearer ${t.body.access_token}` } })).status).toBe(401)
   })
 })
+
+describe('PR #31 review round 2: the device flow and revocation', () => {
+  async function approvedDevice(cookies: Record<string, string>, clientId: string) {
+    const d = await SELF.fetch(`${BASE}/oauth/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, scope: 'openid profile email offline_access' }).toString() })
+    expect(d.status).toBe(200)
+    const dev = (await d.json()) as { device_code: string; user_code: string }
+    const ok = await SELF.fetch(`${BASE}/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies) }, body: new URLSearchParams({ user_code: dev.user_code, approved: 'true' }).toString() })
+    expect(ok.status).toBe(200)
+    return dev.device_code
+  }
+  const poll = (clientId: string, deviceCode: string) => token({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientId, device_code: deviceCode })
+
+  it('an approval made before a revoke cannot be polled into a grant after it', async () => {
+    const cookies = await signIn()
+    const reg = await register({ client_name: 'third-party device client', grant_types: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'], token_endpoint_auth_method: 'none' })
+    const deviceCode = await approvedDevice(cookies, reg.client_id)
+    const rev = await SELF.fetch(`${BASE}/api/grants/revoke`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(cookies) }, body: JSON.stringify({ client_id: reg.client_id }) })
+    expect(rev.status).toBe(200)
+    const r = await poll(reg.client_id, deviceCode)
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('invalid_grant')
+  })
+
+  it('a device grant is listed, revocable, and a fresh approval after the revoke works', async () => {
+    const cookies = await signIn()
+    const reg = await register({ client_name: 'listed device client', grant_types: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'], token_endpoint_auth_method: 'none' })
+    const first = await poll(reg.client_id, await approvedDevice(cookies, reg.client_id))
+    expect(first.status).toBe(200)
+    const list = (await (await SELF.fetch(`${BASE}/api/grants`, { headers: { cookie: cookieHeader(cookies) } })).json()) as any
+    expect(list.grants.map((g: any) => g.client_id)).toContain(reg.client_id)
+    await SELF.fetch(`${BASE}/api/grants/revoke`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(cookies) }, body: JSON.stringify({ client_id: reg.client_id }) })
+    expect((await token({ grant_type: 'refresh_token', refresh_token: first.body.refresh_token, client_id: reg.client_id })).status).toBe(400)
+    const after = (await (await SELF.fetch(`${BASE}/api/grants`, { headers: { cookie: cookieHeader(cookies) } })).json()) as any
+    expect(after.grants.map((g: any) => g.client_id)).not.toContain(reg.client_id)
+    await new Promise((r) => setTimeout(r, 5))
+    const again = await poll(reg.client_id, await approvedDevice(cookies, reg.client_id))
+    expect(again.status).toBe(200)
+  })
+})
