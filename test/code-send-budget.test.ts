@@ -5,10 +5,13 @@
  * Durable Object, so parallel sends all read the same count and all passed;
  * and every successful send starts the address's guess budget afresh
  * (worker/utils/code-guard.ts), so unbounded sends meant unbounded guesses.
- * Now both routes that have a code emailed, /federation/email/send and
- * magic-link (HTTP and AuthService.sendMagicLink), reserve each send from ONE
- * per-address counter (`code-send:<normalised email>`, 5 per hour) with
- * IdentityDO.consumeBudget, before WorkOS is asked.
+ * Now every route that has a code emailed reserves each send, atomically with
+ * IdentityDO.consumeBudget and before WorkOS is asked, from a per-address
+ * counter, 5 per hour. Round 4 (R4-1) gave each path its own counter:
+ * `code-send:fed:<email>` for /federation/email/send, `code-send:ml:<email>`
+ * for magic-link (HTTP and AuthService.sendMagicLink together), because one
+ * shared counter let the public federation form lock a person out of
+ * magic-link sign-in (test/code-send-paths.test.ts).
  *
  * Runs the real worker (SELF, real IdentityDO); only WorkOS is faked, and the
  * fake counts every send and every code check.
@@ -110,7 +113,7 @@ describe('B2: sends to one address are capped atomically', () => {
     expect(workos.sends).toBe(SEND_BUDGET)
   })
 
-  it('the budget is ONE counter across /federation/email/send, POST /api/magic-link and the RPC', async () => {
+  it('one counter per path: POST /api/magic-link and the RPC share one, /federation/email/send has its own', async () => {
     const email = 'shared@send.example'
     const workos = fakeWorkOS(email)
     const basic = await listedClient()
@@ -125,8 +128,11 @@ describe('B2: sends to one address are capped atomically', () => {
         }).then((r) => r.status === 202),
       ),
     ])
-    expect(results.filter(Boolean).length).toBe(SEND_BUDGET)
-    expect(workos.sends).toBe(SEND_BUDGET)
+    const fedOk = results.slice(0, 7).filter(Boolean).length
+    const mlOk = results.slice(7).filter(Boolean).length
+    expect(fedOk).toBe(SEND_BUDGET)
+    expect(mlOk).toBe(SEND_BUDGET)
+    expect(workos.sends).toBe(2 * SEND_BUDGET)
     // ...and afterwards every route refuses the address.
     expect((await fedSend(email)).status).toBe(429)
     expect(await authService().sendMagicLink({ email })).toMatchObject({ ok: false, status: 429 })
@@ -155,9 +161,10 @@ describe('B2: racing sends cannot buy guesses', () => {
     expect(workos.checks).toBeGreaterThan(0)
     expect(workos.checks).toBeLessThanOrEqual(GUESSES_PER_SEND * successfulSends)
 
-    // With the send budget spent, no route can open another guess budget.
+    // With this path's send budget spent, it cannot open another guess budget.
+    // (The magic-link path's own budget, and the bound across both paths, are
+    // in test/code-send-paths.test.ts.)
     expect((await fedSend(email)).status).toBe(429)
-    expect(await authService().sendMagicLink({ email })).toMatchObject({ ok: false, status: 429 })
     expect(workos.sends).toBe(successfulSends)
   })
 })

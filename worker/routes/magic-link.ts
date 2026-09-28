@@ -37,14 +37,15 @@
  * (worker/utils/relying-parties.ts), plus the calling client's own redirect
  * origins.
  *
- * Limits: 5 sends per email per hour (the counter shared with
- * /federation/email/send, worker/utils/code-guard.ts), 100 per client (or
+ * Limits: 5 sends per email per hour (the magic-link path's own counter,
+ * `code-send:ml:<email>`, shared by listed clients and service bindings but
+ * not with the public /federation/email/send, worker/utils/code-guard.ts), 100 per client (or
  * binding) per hour, 300 in all per hour, 5 code attempts per flow. Every
  * counter is incremented and checked in one Durable Object call
  * (IdentityDO.consumeBudget), before the send or the WorkOS check it guards,
- * so parallel requests cannot overrun a budget. Every guess also spends the
- * per-address and per-IP guess budgets shared with /federation/email/verify;
- * a code sent here starts the address's guess budget afresh.
+ * so parallel requests cannot overrun a budget. Every guess also spends this
+ * path's per-address guess budget and the per-IP guess budget; a code sent
+ * here starts this path's guess budget afresh (never the federation path's).
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
@@ -246,9 +247,9 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
     continueUrl = accepted
   }
 
-  // ── Rate limits: per address (shared), then per caller, then for everyone ──
+  // ── Rate limits: per address (this path's own), then per caller, then for everyone ──
   const callerKey = client?.id ?? `binding:${bindingOrigin ? new URL(bindingOrigin).host : 'rpc'}`
-  const byEmail = await reserveCodeSend(env, email)
+  const byEmail = await reserveCodeSend(env, email, 'ml')
   const emailWait = byEmail.ok ? 0 : byEmail.retryAfterSec
   const clientWait = emailWait ? 0 : await consumeBudget(env, `magiclink-rl:client:${callerKey}`, CLIENT_LIMIT)
   const globalWait = emailWait || clientWait ? 0 : await consumeBudget(env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
@@ -277,9 +278,9 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
     }
     console.warn(JSON.stringify({ event: 'magic-link.send.refused', status: sent.status, client: callerKey }))
   } else {
-    // A new code is out: the address's guess budget starts afresh. Bounded by
-    // the shared send budget reserved above.
-    await resetCodeGuesses(env, email)
+    // A new code is out: this path's guess budget for the address starts
+    // afresh. Bounded by this path's send budget reserved above.
+    await resetCodeGuesses(env, email, 'ml')
   }
 
   const flowId = randomFlowId()
@@ -430,9 +431,9 @@ app.post('/magic-link/:flow', async (c) => {
     await endFlow(c.env, flowId)
     return expiredPage()
   }
-  // ...and against the address's and this IP's guess budgets, shared with
-  // /federation/email/verify, so new flows cannot buy more guesses.
-  const reservation = await reserveCodeGuess(c.env, flow.email, clientIpOf(c.req.raw))
+  // ...and against this path's guess budget for the address and this IP's
+  // guess budget, so new flows cannot buy more guesses.
+  const reservation = await reserveCodeGuess(c.env, flow.email, clientIpOf(c.req.raw), 'ml')
   if (!reservation.ok) {
     const res = page('Sign in', codeForm(flowId, flow, { error: 'Too many attempts for this address. Ask for a new sign-in code, or try again later.' }), 429)
     res.headers.set('Retry-After', String(reservation.retryAfterSec))
@@ -450,7 +451,7 @@ app.post('/magic-link/:flow', async (c) => {
       // Hand over to the regular org picker → /api/org-select → /api/callback,
       // with a login state that remembers this was a magic link.
       await endFlow(c.env, flowId)
-      await resetCodeGuesses(c.env, flow.email)
+      await resetCodeGuesses(c.env, flow.email, 'ml')
       const csrf = crypto.randomUUID()
       const origin = requestOriginOf(c.req.url)
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
@@ -476,7 +477,7 @@ app.post('/magic-link/:flow', async (c) => {
 
   // One use: the flow is gone once it signs someone in.
   await endFlow(c.env, flowId)
-  await resetCodeGuesses(c.env, flow.email)
+  await resetCodeGuesses(c.env, flow.email, 'ml')
 
   const response = await finishWorkOSSignIn(c, authResult, { requestedProvider: 'magic_link', continueUrl: flow.continue })
   const out = new Response(response.body, response)
