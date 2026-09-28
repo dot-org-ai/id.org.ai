@@ -79,7 +79,7 @@ export function scopeProblem(tokens: string[]): string | null {
 
 /** True when a raw scope string asks for (or imitates) an sb scope. */
 export function mentionsSbScope(scope: string | null | undefined): boolean {
-  return typeof scope === 'string' && /sb:/i.test(scope)
+  return typeof scope === 'string' && scope.split(/\s+/).some((t) => SB_LOOKALIKE.test(t))
 }
 
 /** Split a space-delimited scope string, dropping empty entries. */
