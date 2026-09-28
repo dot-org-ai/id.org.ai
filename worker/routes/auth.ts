@@ -29,7 +29,7 @@ import {
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
-import { resolveContinue } from '../utils/relying-parties'
+import { resolveBrowserRedirect } from '../utils/relying-parties'
 
 /** Where a sign-in lands when no acceptable `continue` was given. */
 const DEFAULT_CONTINUE = '/dash/profile'
@@ -40,15 +40,6 @@ export function sanitizeLoginHint(value: string | null | undefined): string | un
   const hint = value.trim()
   if (hint.length > 320 || !/^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(hint)) return undefined
   return hint
-}
-
-/** The host of a refused redirect target, for logs (never the full URL). */
-function hostForLog(url: string): string {
-  try {
-    return new URL(url, 'https://id.org.ai').host
-  } catch {
-    return 'unparseable'
-  }
 }
 
 /**
@@ -93,19 +84,23 @@ app.get('/login', async (c) => {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
 
-  // Only relative paths, id.org.ai's own origins, trusted-account domains and
-  // registered clients' redirect origins are accepted (worker/utils/relying-parties.ts).
-  // Anything else — //evil.com, https://evil.com, javascript:, encoded tricks —
-  // falls back to the default rather than becoming an open redirect.
+  // Only relative paths, id.org.ai's own origins, trusted-account domains,
+  // LOGIN_CONTINUE_HOSTS and registered clients' redirect origins are accepted
+  // (worker/utils/relying-parties.ts). Anything else — //evil.com,
+  // https://evil.com, javascript:, encoded tricks — falls back to the default
+  // rather than becoming an open redirect. Under LOGIN_CONTINUE_POLICY=report
+  // a syntactically safe absolute target outside the policy is still followed
+  // and logged, so estate callers can be listed before enforcing.
   const reqOrigin = new URL(c.req.url).origin
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri')
-  const acceptedContinue = rawContinue
-    ? await resolveContinue(c.env, rawContinue, { requestOrigin: reqOrigin, clientId: c.req.query('client_id') || undefined })
-    : null
-  if (rawContinue && !acceptedContinue) {
-    console.warn(JSON.stringify({ event: 'login.continue.refused', host: hostForLog(rawContinue) }))
+  const continueDecision = await resolveBrowserRedirect(c.env, rawContinue, {
+    requestOrigin: reqOrigin,
+    clientId: c.req.query('client_id') || undefined,
+  })
+  if (continueDecision.outcome === 'refused' || continueDecision.outcome === 'unlisted') {
+    console.warn(JSON.stringify({ event: `login.continue.${continueDecision.outcome}`, host: continueDecision.host }))
   }
-  const continueUrl = acceptedContinue ?? DEFAULT_CONTINUE
+  const continueUrl = continueDecision.url ?? DEFAULT_CONTINUE
   // OIDC login_hint (also forwarded by /oauth/authorize): prefill the email upstream.
   const loginHint = sanitizeLoginHint(c.req.query('login_hint'))
 
@@ -546,9 +541,14 @@ app.get('/logout', async (c) => {
     // Non-fatal — proceed with cookie clearing
   }
 
-  const rawReturnUrl = c.req.query('return_url') || '/'
-  const returnUrl = isSafeRedirectUrl(rawReturnUrl) ? rawReturnUrl : '/'
+  // Same destination policy as /login?continue= (worker/utils/relying-parties.ts):
+  // a sign-out must not be a redirector either. Refused targets land on `/`.
   const reqUrl = new URL(c.req.url)
+  const returnDecision = await resolveBrowserRedirect(c.env, c.req.query('return_url'), { requestOrigin: reqUrl.origin })
+  if (returnDecision.outcome === 'refused' || returnDecision.outcome === 'unlisted') {
+    console.warn(JSON.stringify({ event: `logout.return.${returnDecision.outcome}`, host: returnDecision.host }))
+  }
+  const returnUrl = returnDecision.url ?? '/'
   const isSecure = reqUrl.protocol === 'https:'
   const domain = getRootDomain(reqUrl.hostname)
   const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })

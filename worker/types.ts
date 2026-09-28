@@ -35,6 +35,23 @@ export interface Env {
   // (e.g. "startup.games,foo.example") whose redirect_uri is accepted under
   // the canonical shared client_id `cid_trusted_account_v1` without per-app DCR.
   TRUSTED_ACCOUNT_DOMAINS?: string
+  /**
+   * Extra hosts a sign-in (`/login?continue=`) or sign-out
+   * (`/logout?return_url=`) may send the browser to, beyond the built-in
+   * policy in worker/utils/relying-parties.ts. Comma-separated bare hostnames;
+   * a leading `*.` matches any subdomain (`*.dotdo.workers.dev`). Config, not
+   * code, so adding an estate site is a reviewable one-line change.
+   */
+  LOGIN_CONTINUE_HOSTS?: string
+  /**
+   * `enforce` (the default when unset): a `/login` continue or `/logout`
+   * return_url outside the policy falls back to the default landing.
+   * `report`: it is still followed (the pre-policy behaviour), and logged as
+   * `login.continue.unlisted` / `logout.return.unlisted` so the estate's
+   * callers can be found and listed before switching to `enforce`.
+   * POST /api/magic-link always enforces.
+   */
+  LOGIN_CONTINUE_POLICY?: string
 }
 
 export type Variables = {

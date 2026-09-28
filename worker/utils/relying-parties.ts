@@ -9,7 +9,8 @@
  *   1. a relative path on the host that served the request;
  *   2. id.org.ai's own origins (and the request's own origin, which for a
  *      service binding is the calling worker's host);
- *   3. the trusted-account domains (ADR-0007, TRUSTED_ACCOUNT_DOMAINS);
+ *   3. the trusted-account domains (ADR-0007, TRUSTED_ACCOUNT_DOMAINS) and the
+ *      hosts named by LOGIN_CONTINUE_HOSTS (config; `*.` suffix entries);
  *   4. the origin of a registered OAuth client's redirect_uri.
  *
  * Anything else is refused and the caller falls back to a safe default.
@@ -141,6 +142,71 @@ export async function isRegisteredClientOrigin(env: Env, origin: string): Promis
   return !!(await storage({ op: 'get', key })).value
 }
 
+/**
+ * Parse LOGIN_CONTINUE_HOSTS: bare hostnames, or `*.suffix` for any subdomain
+ * of `suffix` (never `suffix` itself, and never a bare `*`). Entries with a
+ * scheme, port, path or space are dropped rather than widening the policy.
+ */
+export function parseContinueHosts(value: string | undefined): { exact: Set<string>; suffixes: string[] } {
+  const exact = new Set<string>()
+  const suffixes: string[] = []
+  for (const raw of (value ?? '').split(',')) {
+    const entry = raw.trim().toLowerCase()
+    if (!entry || /[/:\s@]/.test(entry)) continue
+    if (entry.startsWith('*.')) {
+      const suffix = entry.slice(2)
+      // A suffix must itself be a multi-label name: `*.dev` or `*.` would open a TLD.
+      if (suffix.split('.').filter(Boolean).length >= 2 && !suffix.includes('*')) suffixes.push(`.${suffix}`)
+      continue
+    }
+    if (!entry.includes('*')) exact.add(entry)
+  }
+  return { exact, suffixes }
+}
+
+/** Is `hostname` named by LOGIN_CONTINUE_HOSTS? */
+export function isListedContinueHost(env: Env, hostname: string): boolean {
+  const { exact, suffixes } = parseContinueHosts(env.LOGIN_CONTINUE_HOSTS)
+  const host = hostname.toLowerCase()
+  return exact.has(host) || suffixes.some((s) => host.endsWith(s))
+}
+
+/** `report` only when explicitly configured; anything else enforces. */
+export function continuePolicy(env: Env): 'enforce' | 'report' {
+  return (env.LOGIN_CONTINUE_POLICY ?? '').trim().toLowerCase() === 'report' ? 'report' : 'enforce'
+}
+
+/**
+ * The policy for a browser-facing redirect parameter (`/login?continue=`,
+ * `/logout?return_url=`): `resolveContinue`, then, under
+ * LOGIN_CONTINUE_POLICY=report, a target the policy refused but which passes
+ * the syntactic check is still followed and reported as `unlisted`. The
+ * caller logs `host` (never the full URL) under its own event name.
+ */
+export async function resolveBrowserRedirect(
+  env: Env,
+  raw: string | null | undefined,
+  opts: { requestOrigin: string; clientId?: string },
+): Promise<{ url: string | null; outcome: 'none' | 'accepted' | 'unlisted' | 'refused'; host?: string }> {
+  if (!raw) return { url: null, outcome: 'none' }
+  const accepted = await resolveContinue(env, raw, opts)
+  if (accepted) return { url: accepted, outcome: 'accepted' }
+  const host = hostForLog(raw)
+  if (continuePolicy(env) === 'report' && raw.length <= 4096 && isSafeRedirectUrl(raw)) {
+    return { url: raw, outcome: 'unlisted', host }
+  }
+  return { url: null, outcome: 'refused', host }
+}
+
+/** The host of a redirect target, for logs (never the full URL). */
+export function hostForLog(url: string): string {
+  try {
+    return new URL(url, 'https://id.org.ai').host
+  } catch {
+    return 'unparseable'
+  }
+}
+
 /** A registered client's record, or null. */
 export async function getRegisteredClient(
   env: Env,
@@ -195,6 +261,8 @@ export async function resolveContinue(
   if (resolved.protocol === 'https:' && parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(resolved.hostname)) {
     return resolved.href
   }
+  //    ...and the estate hosts named in config (LOGIN_CONTINUE_HOSTS).
+  if (resolved.protocol === 'https:' && isListedContinueHost(env, resolved.hostname)) return resolved.href
 
   // 4. A registered client's redirect_uri origin.
   if (opts.clientId) {
