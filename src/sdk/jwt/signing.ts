@@ -331,12 +331,20 @@ export class SigningKeyManager {
   private keys: SigningKey[] = []
   private loaded = false
 
-  constructor(private storageOp: StorageOp) {}
+  /**
+   * @param storageKey where the key set lives. Default: the id.org.ai issuer
+   *   keys published at /.well-known/jwks.json. A different key gives an
+   *   independent key set that nothing publishes (the DLVP signer's).
+   */
+  constructor(
+    private storageOp: StorageOp,
+    private storageKey: string = SIGNING_KEYS_STORAGE_KEY,
+  ) {}
 
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return
 
-    const result = await this.storageOp({ op: 'get', key: SIGNING_KEYS_STORAGE_KEY })
+    const result = await this.storageOp({ op: 'get', key: this.storageKey })
     const serialized = result.value as SerializedSigningKey[] | undefined
 
     if (serialized && serialized.length > 0) {
@@ -353,7 +361,7 @@ export class SigningKeyManager {
 
   private async persistKeys(): Promise<void> {
     const serialized = await Promise.all(this.keys.map(serializeSigningKey))
-    await this.storageOp({ op: 'put', key: SIGNING_KEYS_STORAGE_KEY, value: serialized })
+    await this.storageOp({ op: 'put', key: this.storageKey, value: serialized })
   }
 
   async getCurrentKey(): Promise<SigningKey> {

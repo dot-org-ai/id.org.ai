@@ -52,6 +52,25 @@ export function getSigningKeyManager(env: Env): SigningKeyManager {
   return cachedSigningKeyManager
 }
 
+let cachedDlvpKeyManager: SigningKeyManager | null = null
+let dlvpKeyManagerEnv: Env | null = null
+
+/**
+ * The DLVP signer's own key set (storage key `dlvp-signing-keys` in the
+ * 'oauth' shard). It is NOT the id.org.ai issuer key: nothing publishes it at
+ * /.well-known/jwks.json, so no sign-in verifier anywhere (this worker, the
+ * `auth` worker, a relying party fetching our JWKS) can accept a DLVP token,
+ * whatever its claims. POST /dlvp/session is anonymous and signs claims the
+ * caller chooses; it must never sign with a published key.
+ */
+export function getDlvpSigningKeyManager(env: Env): SigningKeyManager {
+  dlvpKeyManagerEnv = env
+  if (!cachedDlvpKeyManager) {
+    cachedDlvpKeyManager = new SigningKeyManager((op) => getStubForIdentity(dlvpKeyManagerEnv!, 'oauth').oauthStorageOp(op), 'dlvp-signing-keys')
+  }
+  return cachedDlvpKeyManager
+}
+
 /**
  * Resolve the identity ID (shard key) from the request's auth credentials.
  * Returns null for anonymous/L0 requests that don't need a DO.

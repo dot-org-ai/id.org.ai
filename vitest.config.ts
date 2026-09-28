@@ -23,6 +23,9 @@ export default defineWorkersConfig({
           bindings: {
             WORKOS_API_KEY: 'sk_test_vitest_placeholder',
             LOGIN_CONTINUE_POLICY: 'enforce',
+            // DLVP is off in production (unset); the suite exercises it.
+            // test/dlvp-token-separation.test.ts covers the off state.
+            DLVP_ENABLED: 'true',
             MAGIC_LINK_CLIENTS: Array.from({ length: 20 }, (_, i) => `cid_magiclink_test_${String(i + 1).padStart(2, '0')}`).join(','),
           },
           kvNamespaces: ['SESSIONS'],

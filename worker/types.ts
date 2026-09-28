@@ -53,6 +53,12 @@ export interface Env {
    */
   LOGIN_CONTINUE_POLICY?: string
   /**
+   * `true` serves the DLVP handshake (/dlvp/*, worker/routes/dlvp.ts).
+   * Unset in production: nothing in DLVP can complete there yet (empty issuer
+   * trust map, no-op settlement), so its anonymous surface stays off.
+   */
+  DLVP_ENABLED?: string
+  /**
    * OAuth client ids allowed to call POST /api/magic-link, comma-separated.
    * Registration (RFC 7591) is open, so a registered client is not by itself
    * trusted to have id.org.ai email sign-in codes. Unset = no client may call

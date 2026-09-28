@@ -156,6 +156,9 @@ export async function buildReceipt(params: MintReceiptParams): Promise<MutualDis
   // The receipt VC claims (signed by the resolver's issuer key).
   const vcClaims: Record<string, unknown> = {
     sub: grai,
+    // Not a session: /dlvp/settle refuses anything without dlvp_typ
+    // 'co-presentation-request'.
+    dlvp_typ: 'consent-receipt',
     vct: CONSENT_RECEIPT_VCT,
     cnf: { jwk: params.consumerCnfJwk },
     status: { status_list: { uri: statusRef.uri, idx: statusRef.idx } },

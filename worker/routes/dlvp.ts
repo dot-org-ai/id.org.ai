@@ -6,7 +6,7 @@
  * prefix). Copies createResolveApp's deps-injected Hono-app factory VERBATIM so
  * tests inject a seeded MemoryRegistryPort + a session signer + an issuer trust
  * map, while production defaults to emptyRegistryPort + the DO-backed issuer key
- * (getSigningKeyManager) + an EMPTY trust map (honest: with no real issuer trust
+ * (getDlvpSigningKeyManager, a key set nothing publishes) + an EMPTY trust map (honest: with no real issuer trust
  * list wired, settle fail-closes on every presentation — never a fabricated pass).
  *
  * Surface (lens-B five-move flow, bounded to v1):
@@ -34,7 +34,7 @@ import type { Context } from 'hono'
 import type { Env, Variables } from '../types'
 import type { Grain, RegistryPort } from '../registry/port'
 import { emptyRegistryPort } from '../registry/port'
-import { getSigningKeyManager } from '../middleware/tenant'
+import { getDlvpSigningKeyManager } from '../middleware/tenant'
 import type { CaptureSink } from '../resolve/capture'
 import { noopCaptureSink } from '../resolve/capture'
 import {
@@ -76,11 +76,32 @@ import {
 } from '../dlvp/settlement'
 import { decodeJWT } from '../../src/sdk/oauth/jwt-verify'
 
+/** The `dlvp_typ` of a co-presentation request-object (session). */
+export const DLVP_TYP_SESSION = 'co-presentation-request'
+
+/**
+ * A verified token is a session only if it says so and carries a string
+ * nonce: a receipt VC is signed by the same signer and must not settle.
+ */
+function asSession(claims: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!claims) return null
+  if (claims.dlvp_typ !== DLVP_TYP_SESSION) return null
+  if (typeof claims.nonce !== 'string' || claims.nonce.length === 0) return null
+  return claims
+}
+
 type DlvpContext = Context<{ Bindings: Env; Variables: Variables }>
 
 export interface DlvpDeps {
+  /**
+   * Serve /dlvp/* at all. Default: only when the DLVP_ENABLED var is "true".
+   * Production leaves it unset: with an empty issuer-trust map and the no-op
+   * settlement port nothing in DLVP can complete there, and the surface is
+   * anonymous and shares a worker with sign-in. Off, /dlvp/* is a 404.
+   */
+  enabled?: boolean
   registry?: RegistryPort
-  /** Injected in tests; production builds one per-request from getSigningKeyManager(env). */
+  /** Injected in tests; production builds one per-request from getDlvpSigningKeyManager(env). */
   signer?: DlvpSigner
   /** The session-injected issuer JWKS trust map (empty in production — deferred). */
   trust?: IssuerTrustMap
@@ -94,6 +115,9 @@ export interface DlvpDeps {
    */
   settlement?: SettlementPort
 }
+
+/** Largest /dlvp/session body accepted (the endpoint is anonymous). */
+const DLVP_SESSION_MAX_BODY = 16 * 1024
 
 function dlvpError(
   c: DlvpContext,
@@ -130,11 +154,28 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
   const signerFor = (c: DlvpContext): DlvpSigner =>
-    deps.signer ?? signerFromKeyManager(getSigningKeyManager(c.env))
+    deps.signer ?? signerFromKeyManager(getDlvpSigningKeyManager(c.env))
+
+  // Off unless enabled (see DlvpDeps.enabled): every /dlvp/* route is a 404.
+  app.use('/dlvp/*', async (c, next) => {
+    const enabled = deps.enabled ?? (c.env as { DLVP_ENABLED?: string } | undefined)?.DLVP_ENABLED === 'true'
+    if (!enabled) return c.json({ error: { code: 'NOT_FOUND', message: 'not found' } }, 404)
+    await next()
+  })
 
   // ── POST /dlvp/session — moves 1–2 (open + sign the stateless request-object) ─
   app.post('/dlvp/session', async (c) => {
-    const body = (await c.req.json().catch(() => null)) as DlvpSessionRequest | null
+    // Anonymous: bound what it parses, signs and echoes back.
+    const raw = await c.req.text().catch(() => '')
+    if (raw.length > DLVP_SESSION_MAX_BODY) {
+      return dlvpError(c, 'BAD_REQUEST', `body larger than ${DLVP_SESSION_MAX_BODY} bytes`, 'open a co-presentation over one identifier')
+    }
+    let body: DlvpSessionRequest | null = null
+    try {
+      body = JSON.parse(raw) as DlvpSessionRequest
+    } catch {
+      body = null
+    }
     if (!body || typeof body.identifier !== 'string' || !Array.isArray(body.consumerAsk)) {
       return dlvpError(
         c,
@@ -153,7 +194,7 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
       { consumer: 'dlvp:consumer', brand: 'dlvp:brand' },
       origin,
     )
-    const session = await signer.sign(claims as unknown as Record<string, unknown>, {
+    const session = await signer.sign({ ...(claims as unknown as Record<string, unknown>), dlvp_typ: DLVP_TYP_SESSION }, {
       expiresIn: SESSION_TTL_SECONDS,
     })
     // move 1: the provisional consent event (r ⊆ e), no-op sink.
@@ -193,7 +234,7 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
     const signer = signerFor(c)
 
     // (a) verify the session request-object against our own key, unexpired.
-    const sess = await signer.verify(body.session)
+    const sess = asSession(await signer.verify(body.session))
     if (!sess) {
       const decoded = decodeJWT(body.session)
       const now = Math.floor(Date.now() / 1000)
@@ -347,7 +388,7 @@ export function createDlvpApp(deps: DlvpDeps = {}) {
     const signer = signerFor(c)
 
     // (a) verify the signed session request-object (our own key, unexpired).
-    const sess = await signer.verify(body.session)
+    const sess = asSession(await signer.verify(body.session))
     if (!sess) {
       const decoded = decodeJWT(body.session)
       const now = Math.floor(Date.now() / 1000)

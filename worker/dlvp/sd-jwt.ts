@@ -180,7 +180,7 @@ export async function verifySdJwtPresentation(
   if (!decoded) return fail('MALFORMED', 'issuer JWT does not decode')
   const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
   if (!iss) return fail('MALFORMED', 'issuer JWT has no iss claim')
-  const trustJwk = opts.trust[iss]
+  const trustJwk = Object.hasOwn(opts.trust, iss) ? opts.trust[iss] : undefined
   if (!trustJwk) return fail('UNTRUSTED_ISSUER', `no trusted JWK for issuer ${iss}`)
 
   // (1) ISSUER SIGNATURE.
