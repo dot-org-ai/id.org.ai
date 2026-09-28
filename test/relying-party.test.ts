@@ -7,7 +7,8 @@
  *   2. /login?continue= is no longer an open redirect.
  *   3. The id_token and userinfo say how the person signed in (amr, idp,
  *      auth_time) and the id_token carries email_verified.
- *   4. POST /api/magic-link: WorkOS Magic Auth sign-in for relying parties.
+ *   4. POST /api/magic-link: WorkOS Magic Auth sign-in for relying parties
+ *      (callers: service bindings and the clients MAGIC_LINK_CLIENTS lists).
  *
  * Runs the real worker in-process (SELF, real IdentityDO + KV); only WorkOS is
  * faked (fetchMock).
@@ -424,14 +425,35 @@ describe('fix 3: sign-in method (amr / idp)', () => {
 
 const WAITLIST_CB = 'https://waitlist.example/auth/cb'
 
+let magicLinkClientSeq = 0
+/**
+ * A confidential client listed in MAGIC_LINK_CLIENTS (vitest.config.ts lists
+ * cid_magiclink_test_01..20). Registration hands out random ids, so the test
+ * stores the record a registration would under the next listed id.
+ */
 async function confidentialClient(): Promise<{ id: string; secret: string; basic: string }> {
-  const c = await register({
-    client_name: 'Startup waitlist',
-    redirect_uris: [WAITLIST_CB],
-    token_endpoint_auth_method: 'client_secret_basic',
-    grant_types: ['authorization_code', 'refresh_token'],
+  const id = `cid_magiclink_test_${String(++magicLinkClientSeq).padStart(2, '0')}`
+  const secret = `cs_${crypto.randomUUID().replace(/-/g, '')}`
+  const oauth = env.IDENTITY.get(env.IDENTITY.idFromName('oauth')) as unknown as {
+    oauthStorageOp(op: { op: 'put'; key: string; value: unknown }): Promise<unknown>
+  }
+  await oauth.oauthStorageOp({
+    op: 'put',
+    key: `client:${id}`,
+    value: {
+      id,
+      name: 'Startup waitlist',
+      secret,
+      redirectUris: [WAITLIST_CB],
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
+      scopes: ['openid', 'profile', 'email'],
+      trusted: false,
+      tokenEndpointAuthMethod: 'client_secret_basic',
+      createdAt: Date.now(),
+    },
   })
-  return { id: c.client_id, secret: c.client_secret!, basic: `Basic ${btoa(`${c.client_id}:${c.client_secret}`)}` }
+  return { id, secret, basic: `Basic ${btoa(`${id}:${secret}`)}` }
 }
 
 function mockMagicAuthCreate(status = 201, onEmail?: (email: string) => void) {

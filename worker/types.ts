@@ -52,6 +52,13 @@ export interface Env {
    * POST /api/magic-link always enforces.
    */
   LOGIN_CONTINUE_POLICY?: string
+  /**
+   * OAuth client ids allowed to call POST /api/magic-link, comma-separated.
+   * Registration (RFC 7591) is open, so a registered client is not by itself
+   * trusted to have id.org.ai email sign-in codes; a service binding needs no
+   * listing. Unset = no client may call it.
+   */
+  MAGIC_LINK_CLIENTS?: string
 }
 
 export type Variables = {
