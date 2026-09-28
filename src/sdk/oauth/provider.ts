@@ -55,11 +55,14 @@ import {
   SB_SCOPE_DO,
   SCOPES_SUPPORTED,
   SCOPE_DESCRIPTIONS,
+  DEFAULT_SB_RESOURCE,
+  SB_SCOPE_READ,
   bindSbScopes,
   isSbResource,
   isSbScope,
   parseResourceIndicators,
   sameResource,
+  scopeProblem,
   splitScopes,
 } from './delegation'
 
@@ -269,6 +272,13 @@ type StorageLike = {
    * provider falls back to get-then-delete.
    */
   take?<T = unknown>(key: string): Promise<T | undefined>
+  /**
+   * True for exactly one caller per key (an atomic first-claim in the
+   * IdentityDO). Used so a refresh token rotates once: of N parallel
+   * refreshes with one token, one wins. Optional: without it, rotation is
+   * get-then-put as before.
+   */
+  claimOnce?(key: string, ttlMs: number): Promise<boolean>
 }
 
 // ============================================================================
@@ -513,6 +523,15 @@ export class OAuthProvider {
     const scope = (body.scope as string) || 'openid profile email'
     const tokenEndpointAuthMethod = (body.token_endpoint_auth_method as string) || 'none'
 
+    // Scope tokens must fit RFC 6749 §3.3, and the sb names are reserved.
+    if (typeof scope !== 'string') {
+      return oauthError('invalid_client_metadata', 'scope must be a string')
+    }
+    const scopeIssue = scopeProblem(splitScopes(scope))
+    if (scopeIssue) {
+      return oauthError('invalid_client_metadata', scopeIssue)
+    }
+
     // Validate grant types
     const validGrantTypes = [
       'authorization_code',
@@ -747,6 +766,8 @@ export class OAuthProvider {
     // one) the sb scopes are grantable by the Person's consent; anything
     // else must be in the client's registered scopes.
     const requestedScopes = splitScopes(scope)
+    const scopeIssue = scopeProblem(requestedScopes)
+    if (scopeIssue) return redirectFail('invalid_scope', scopeIssue)
     const grantable = (s: string) =>
       client.scopes.includes(s) || (OIDC_SCOPES as readonly string[]).includes(s) || (!trustedAccount && isSbScope(s))
     const invalidScopes = requestedScopes.filter((s) => !grantable(s) || (trustedAccount && isSbScope(s)))
@@ -808,7 +829,12 @@ export class OAuthProvider {
     if (!checked.ok) return checked.response
     const { client, redirectUri, resource } = checked
 
-    const scopes = body.approved === 'read' ? checked.scopes.filter((s) => s !== SB_SCOPE_DO) : checked.scopes
+    // "Allow read only": sb:do becomes sb:read (never an empty grant).
+    let scopes = checked.scopes
+    if (body.approved === 'read' && scopes.includes(SB_SCOPE_DO)) {
+      scopes = scopes.filter((s) => s !== SB_SCOPE_DO)
+      if (!scopes.includes(SB_SCOPE_READ)) scopes.push(SB_SCOPE_READ)
+    }
 
     // Store consent
     const consentKey = `consent:${identityId}:${client.id}`
@@ -897,6 +923,10 @@ export class OAuthProvider {
 
     const scope = body.scope || client.scopes.join(' ')
     const scopes = scope.split(' ')
+
+    // Scope tokens must fit RFC 6749 §3.3 (no tab- or case-smuggled sb names).
+    const deviceScopeIssue = scopeProblem(scopes.filter(Boolean))
+    if (deviceScopeIssue) return oauthError('invalid_scope', deviceScopeIssue)
 
     // The device approval page names no scopes, so it cannot be where a Person
     // delegates api.sb authority: the sb scopes go through /oauth/authorize,
@@ -1347,6 +1377,11 @@ export class OAuthProvider {
     const target = this.tokenRequestResource(body, tokenData.resource)
     if (!target.ok) return target.response
 
+    // ── Rotate once: of parallel refreshes with this token, one wins ─────
+    if (this.storage.claimOnce && !(await this.storage.claimOnce(`rt-rotation:${refreshTokenId}`, REFRESH_TOKEN_TTL * 1000 + 60_000))) {
+      return oauthError('invalid_grant', 'Refresh token has already been used')
+    }
+
     // ── Rotate: revoke old refresh token ────────────────────────────────
     await this.storage.put(`refresh:${refreshTokenId}`, {
       ...tokenData,
@@ -1370,21 +1405,26 @@ export class OAuthProvider {
   }
 
   /**
-   * RFC 8707 §2.2 at the token endpoint. A `resource` sent with a code or
-   * refresh redemption must be the resource the grant was made for; when the
-   * grant named none, the sent resource becomes this access token's audience.
+   * RFC 8707 §2.2 at the token endpoint. Only the authorization request, which
+   * the Person sees, sets an audience:
+   *   - a grant made with no resource ignores a `resource` here (as before this
+   *     change): a sign-in grant's refresh token can never be turned into a
+   *     token some resource server accepts;
+   *   - a grant made for a resource accepts that same resource, and refuses any
+   *     other with invalid_target;
+   *   - the one narrowing: a grant for https://api.sb (the default for an
+   *     sb-scoped request that named no resource) may ask for
+   *     https://api.sb/mcp.
    */
   private tokenRequestResource(
     body: Record<string, string>,
     granted: string | undefined,
   ): { ok: true; resource?: string } | { ok: false; response: Response } {
+    if (granted === undefined) return { ok: true }
     const parsed = parseResourceIndicators([body.resource])
     if (!parsed.ok) return { ok: false, response: oauthError('invalid_target', parsed.description) }
     if (parsed.resource === undefined) return { ok: true }
-    if (granted === undefined) return { ok: true, resource: parsed.resource }
-    // An sb grant may be narrowed between api.sb's own audiences (an sb-scoped
-    // request with no resource was bound to https://api.sb by default).
-    if (isSbResource(granted) && isSbResource(parsed.resource)) return { ok: true, resource: parsed.resource }
+    if (sameResource(granted, DEFAULT_SB_RESOURCE) && parsed.resource === 'https://api.sb/mcp') return { ok: true, resource: parsed.resource }
     if (!sameResource(parsed.resource, granted)) {
       return { ok: false, response: oauthError('invalid_target', `this grant is for ${granted}, not ${parsed.resource}`) }
     }
@@ -1415,6 +1455,10 @@ export class OAuthProvider {
 
     const scope = body.scope || client.scopes.join(' ')
     const scopes = scope.split(' ')
+
+    // Scope tokens must fit RFC 6749 §3.3 (no tab- or case-smuggled sb names).
+    const ccScopeIssue = scopeProblem(scopes.filter(Boolean))
+    if (ccScopeIssue) return oauthError('invalid_scope', ccScopeIssue)
 
     // The sb scopes delegate a Person's authority; client_credentials has no
     // Person, so it can never carry them.

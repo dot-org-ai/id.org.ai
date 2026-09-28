@@ -8,6 +8,8 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager, readSessionSignIn } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
+import { parseCookieValue } from '../utils/cookies'
+import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { OAuthProvider, applySignInClaims } from '../../src/sdk/oauth/provider'
 import {
   generateCSRFToken,
@@ -19,6 +21,7 @@ import {
 } from '../../src/sdk/csrf'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { indexClientOrigins } from '../utils/relying-parties'
+import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -89,6 +92,12 @@ export function getOAuthProvider(c: any): OAuthProvider {
       async take<T = unknown>(key: string): Promise<T | undefined> {
         const result = await stub.takeOnce({ key })
         return (result?.value ?? undefined) as T | undefined
+      },
+      // Atomic first claim (the DO's increment-and-check budget with max 1):
+      // a refresh token rotates for exactly one of N parallel refreshes.
+      async claimOnce(key: string, ttlMs: number): Promise<boolean> {
+        const result = await stub.consumeBudget({ key, max: 1, windowMs: ttlMs })
+        return result.allowed
       },
     },
     config: {
@@ -198,7 +207,11 @@ app.get('/oauth/authorize', async (c) => {
   const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
   const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
 
-  if (isServiceBinding || isTrustedAccount) {
+  // A request that asks for (or imitates) an sb scope never takes the
+  // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
+  // CSRF binding like any browser consent (and the POST checks it).
+  const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.get('scope'))
+  if ((isServiceBinding && !asksSb) || isTrustedAccount) {
     const provider = getOAuthProvider(c)
     return provider.handleAuthorize(c.req.raw, identityId, signIn)
   }
@@ -255,27 +268,49 @@ app.post('/oauth/authorize', async (c) => {
 
   const signIn = await readSessionSignIn(c.req.raw, c.env)
 
-  // Skip CSRF validation for service binding callers — the proxy handles its own security
+  // Read the posted form once (a clone): the scope decides which rules apply,
+  // the state carries the CSRF token.
+  const clonedRequest = c.req.raw.clone()
+  const contentType = c.req.raw.headers.get('content-type') || ''
+  let formState: string | undefined
+  let formScope: string | undefined
+  if (contentType.includes('application/json')) {
+    const body = (await clonedRequest.json().catch(() => ({}))) as Record<string, unknown>
+    formState = typeof body.state === 'string' ? body.state : undefined
+    formScope = typeof body.scope === 'string' ? body.scope : undefined
+  } else {
+    const form = await clonedRequest.formData()
+    formState = (form.get('state') as string | null) ?? undefined
+    formScope = (form.get('scope') as string | null) ?? undefined
+  }
+  const asksSb = mentionsSbScope(formScope)
+
+  // Delegating api.sb authority is a Person's act in their browser: the sb
+  // consent is accepted only from the id.org.ai `auth` cookie session, never
+  // from a bearer credential (an API key or session token held by an agent
+  // must not be able to hand a client sb:do).
+  // Tenant resolution takes an API key (header, X-API-Key, ?api_key=) or a
+  // session token before the cookie, so any of those present means the
+  // identity did not come from the browser session.
+  const viaBrowserSession =
+    !extractApiKey(c.req.raw) &&
+    !extractSessionToken(c.req.raw) &&
+    !c.req.header('authorization') &&
+    !!parseCookieValue(c.req.header('cookie') ?? '', 'auth')
+  if (asksSb && !viaBrowserSession) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, 'api.sb access can only be granted from a signed-in browser session')
+  }
+
+  // Skip CSRF validation for service binding callers — the proxy handles its own security.
+  // Never for an sb consent (X-Issuer is only a header).
   const isServiceBinding = !!c.req.header('X-Issuer')
-  if (isServiceBinding) {
+  if (isServiceBinding && !asksSb) {
     const provider = getOAuthProvider(c)
     return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn)
   }
 
   // Extract CSRF token from cookie
   const cookieCSRF = extractCSRFFromCookie(c.req.raw)
-
-  // Extract CSRF token from the state parameter in the form body
-  const clonedRequest = c.req.raw.clone()
-  const contentType = c.req.raw.headers.get('content-type') || ''
-  let formState: string | undefined
-  if (contentType.includes('application/json')) {
-    const body = (await clonedRequest.json()) as Record<string, string>
-    formState = body.state
-  } else {
-    const form = await clonedRequest.formData()
-    formState = form.get('state') as string | undefined
-  }
 
   let formCSRF: string | null = null
   let originalState: string | undefined

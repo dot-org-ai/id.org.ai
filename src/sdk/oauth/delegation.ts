@@ -56,6 +56,29 @@ export function isSbScope(scope: string): boolean {
   return (SB_SCOPES as readonly string[]).includes(scope)
 }
 
+/** RFC 6749 §3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E ). */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/
+
+/**
+ * Why a list of scope tokens is not acceptable, or null. Each token must fit
+ * the RFC 6749 grammar (no tabs, newlines, quotes or backslashes), and any
+ * token that mentions `sb:` in any case must be exactly `sb:read` or `sb:do`:
+ * the sb names are reserved, so `SB:DO`, `sb:do,sb:read` or `x,sb:do` cannot
+ * slip past a check for the exact scope and be read as it by a lax parser.
+ */
+export function scopeProblem(tokens: string[]): string | null {
+  for (const t of tokens) {
+    if (!SCOPE_TOKEN.test(t)) return `invalid scope token: ${JSON.stringify(t)}`
+    if (/sb:/i.test(t) && !isSbScope(t)) return `reserved scope name: ${t} (the sb scopes are exactly sb:read and sb:do)`
+  }
+  return null
+}
+
+/** True when a raw scope string asks for (or imitates) an sb scope. */
+export function mentionsSbScope(scope: string | null | undefined): boolean {
+  return typeof scope === 'string' && /sb:/i.test(scope)
+}
+
 /** Split a space-delimited scope string, dropping empty entries. */
 export function splitScopes(scope: string): string[] {
   return scope.split(' ').filter(Boolean)
@@ -114,7 +137,12 @@ export function parseResourceIndicators(values: Array<string | null | undefined>
     distinct.set(canonicalResource(v), v)
   }
   if (distinct.size > 1) return { ok: false, description: 'only one resource per request is supported' }
-  return { ok: true, resource: [...distinct.values()][0] }
+  // Stored (and reported as `aud`) in canonical form, so a resource server's
+  // exact `aud` check sees one spelling: an api.sb resource as listed in
+  // SB_RESOURCES, anything else canonicalized.
+  const canonical = [...distinct.keys()][0]!
+  const sb = SB_RESOURCES.find((r) => canonicalResource(r) === canonical)
+  return { ok: true, resource: sb ?? canonical }
 }
 
 export type DelegationCheck =

@@ -26,7 +26,7 @@ import {
 
 type Store = Map<string, unknown>
 
-function createStorage(withTake = false) {
+function createStorage(withTake = false, withClaim = false) {
   const store: Store = new Map()
   const storage = {
     store,
@@ -45,14 +45,28 @@ function createStorage(withTake = false) {
       return out
     },
   }
-  if (!withTake) return storage
-  return Object.assign(storage, {
-    async take<T = unknown>(key: string): Promise<T | undefined> {
-      const v = store.get(key) as T | undefined
-      store.delete(key)
-      return v
-    },
-  })
+  const claimed = new Set<string>()
+  return Object.assign(
+    storage,
+    withTake
+      ? {
+          async take<T = unknown>(key: string): Promise<T | undefined> {
+            const v = store.get(key) as T | undefined
+            store.delete(key)
+            return v
+          },
+        }
+      : {},
+    withClaim
+      ? {
+          async claimOnce(key: string): Promise<boolean> {
+            if (claimed.has(key)) return false
+            claimed.add(key)
+            return true
+          },
+        }
+      : {},
+  )
 }
 
 const CONFIG: OAuthConfig = {
@@ -322,11 +336,48 @@ describe('2. RFC 8707 resource indicators and audience', () => {
     expect(body.error).toBe('invalid_target')
   })
 
-  it('a code granted with no resource can be bound at the token endpoint; the refresh token stays unbound', async () => {
+  it('a grant made with no resource ignores a resource at the token endpoint (only the Person-visible request sets an audience)', async () => {
     const back = await authorizeThroughConsent(provider, clientId, { scope: 'openid offline_access' })
-    const { body } = await redeem(provider, clientId, back.searchParams.get('code')!, { resource: 'https://id.org.ai/mcp' })
-    expect((await introspect(provider, body.access_token)).aud).toBe('https://id.org.ai/mcp')
-    expect((await introspect(provider, body.refresh_token)).aud).toBeUndefined()
+    const { status, body } = await redeem(provider, clientId, back.searchParams.get('code')!, { resource: 'https://id.org.ai/mcp' })
+    expect(status).toBe(200)
+    expect((await introspect(provider, body.access_token)).aud).toBeUndefined()
+    // …and on refresh, to either kind of resource.
+    for (const resource of ['https://id.org.ai/mcp', 'https://api.sb']) {
+      const res = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: body.refresh_token, client_id: clientId, resource }).toString(),
+        }),
+      )
+      const next = (await res.json()) as any
+      expect(res.status).toBe(200)
+      expect((await introspect(provider, next.access_token)).aud).toBeUndefined()
+      body.refresh_token = next.refresh_token
+    }
+  })
+
+  it('resources are stored and reported in canonical form', async () => {
+    const back = await authorizeThroughConsent(provider, clientId, { scope: 'sb:read', resource: 'https://API.sb./mcp/' })
+    const { body } = await redeem(provider, clientId, back.searchParams.get('code')!)
+    expect((await introspect(provider, body.access_token)).aud).toBe('https://api.sb/mcp')
+  })
+
+  it('refresh rotates once: of parallel refreshes with one token, one wins', async () => {
+    const p = makeProvider(createStorage(true, true))
+    const id = await register(p)
+    const back = await authorizeThroughConsent(p, id, { scope: 'openid offline_access' })
+    const { body } = await redeem(p, id, back.searchParams.get('code')!)
+    const refreshOnce = () =>
+      p.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: body.refresh_token, client_id: id }).toString(),
+        }),
+      )
+    const results = await Promise.all(Array.from({ length: 5 }, refreshOnce))
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1)
   })
 
   it('refresh keeps the audience and refuses a different one', async () => {
@@ -409,6 +460,79 @@ describe('3. sb:read / sb:do', () => {
     const { status, body } = await redeem(provider, clientId, back.searchParams.get('code')!, { resource: 'https://api.sb/mcp' })
     expect(status).toBe(200)
     expect((await introspect(provider, body.access_token)).aud).toBe('https://api.sb/mcp')
+  })
+
+  it('a grant for https://api.sb/mcp cannot be widened to https://api.sb', async () => {
+    const back = await authorizeThroughConsent(provider, clientId, { scope: 'sb:read', resource: 'https://api.sb/mcp' })
+    const { status, body } = await redeem(provider, clientId, back.searchParams.get('code')!, { resource: 'https://api.sb' })
+    expect(status).toBe(400)
+    expect(body.error).toBe('invalid_target')
+  })
+
+  it('"Allow read only" on a request for sb:do alone grants sb:read, never an empty scope', async () => {
+    const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope: 'sb:do', resource: 'https://api.sb/mcp' })), PERSON)
+    const res = await provider.handleAuthorizeConsent(consentBody({ ...hiddenFields(await page.text()), approved: 'read' }), PERSON)
+    const { body } = await redeem(provider, clientId, new URL(res.headers.get('location')!).searchParams.get('code')!)
+    expect(body.scope).toBe('sb:read')
+  })
+
+  it('sb look-alikes and malformed scope tokens are refused everywhere', async () => {
+    // authorize
+    for (const scope of ['SB:DO', 'sb:do,sb:read', 'x,sb:do', 'sb:admin', 'openid\tsb:do', 'openid\nsb:do', 'a"b']) {
+      const res = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, { scope })), PERSON)
+      expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('invalid_scope')
+    }
+    // DCR
+    for (const scope of ['openid\tsb:do', 'SB:DO', 'openid sb:write']) {
+      const res = await provider.handleRegister(
+        new Request('https://id.org.ai/oauth/register', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ client_name: 'x', redirect_uris: [REDIRECT], scope }),
+        }),
+      )
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as any).error).toBe('invalid_client_metadata')
+    }
+    // device
+    const reg = await provider.handleRegister(
+      new Request('https://id.org.ai/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'cli', grant_types: ['urn:ietf:params:oauth:grant-type:device_code'], token_endpoint_auth_method: 'none' }),
+      }),
+    )
+    const cli = ((await reg.json()) as { client_id: string }).client_id
+    for (const scope of ['openid\tsb:do', 'SB:DO', 'sb:do ', 'sb:do,sb:read']) {
+      const res = await provider.handleDeviceAuthorization(
+        new Request('https://id.org.ai/oauth/device', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: cli, scope }).toString(),
+        }),
+      )
+      expect(res.status).toBe(400)
+    }
+    // client_credentials
+    const svcReg = await provider.handleRegister(
+      new Request('https://id.org.ai/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'svc', grant_types: ['client_credentials'], token_endpoint_auth_method: 'client_secret_post', scope: 'read' }),
+      }),
+    )
+    const svc = (await svcReg.json()) as { client_id: string; client_secret: string }
+    for (const scope of ['sb:do\t', 'x\tsb:do', 'SB:DO']) {
+      const res = await provider.handleToken(
+        new Request('https://id.org.ai/oauth/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'client_credentials', client_id: svc.client_id, client_secret: svc.client_secret, scope }).toString(),
+        }),
+      )
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as any).error).toBe('invalid_scope')
+    }
   })
 
   it('sb scopes for any other resource are refused', async () => {
