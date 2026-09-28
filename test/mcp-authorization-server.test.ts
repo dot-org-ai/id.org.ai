@@ -342,3 +342,78 @@ describe('review round 1 regressions', () => {
     expect(results.filter((r) => r.status === 200)).toHaveLength(1)
   })
 })
+
+describe('review round 2 regressions (duplicate scope parameter)', () => {
+  async function setup() {
+    const client = await register({ client_name: 'Dup scope', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none' })
+    const { verifier, challenge } = await pkce()
+    const cookies = await signIn()
+    const me = (await (await SELF.fetch(`${BASE}/me`, { headers: { cookie: cookieHeader(cookies) } })).json()) as { id: string }
+    const identityId = `human:${me.id}`
+    const stub = (env as any).IDENTITY.get((env as any).IDENTITY.idFromName(identityId))
+    const key = ((await stub.createApiKey({ name: 'agent key', identityId, scopes: ['read'] })) as { key: string }).key
+    await (env as any).SESSIONS.put(`apikey:${key}`, identityId)
+    return { client, verifier, challenge, cookies, key }
+  }
+  const dupBody = (fields: Record<string, string>) => {
+    const b = new URLSearchParams({ ...fields, scope: 'openid', approved: 'true' })
+    b.append('scope', 'sb:do')
+    return b.toString()
+  }
+  const noCode = async (res: Response) => {
+    const loc = res.headers.get('location')
+    if (loc) expect(new URL(loc).searchParams.get('code')).toBeNull()
+    expect([400, 403]).toContain(res.status)
+  }
+
+  it('H1: browser session + X-Issuer + scope=openid&scope=sb:do → no code', async () => {
+    const { client, challenge, cookies } = await setup()
+    const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies), 'X-Issuer': 'https://evil.example' },
+      body: dupBody({ client_id: client.client_id, redirect_uri: MCP_REDIRECT, resource: 'https://api.sb', code_challenge: challenge, code_challenge_method: 'S256' }),
+    })
+    await noCode(res)
+  })
+
+  it('H2: API key only + X-Issuer + duplicate scope → no code', async () => {
+    const { client, challenge, key } = await setup()
+    const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-api-key': key, 'X-Issuer': 'https://evil.example' },
+      body: dupBody({ client_id: client.client_id, redirect_uri: MCP_REDIRECT, resource: 'https://api.sb', code_challenge: challenge, code_challenge_method: 'S256' }),
+    })
+    await noCode(res)
+  })
+
+  it('H3: API key + a valid CSRF pair + duplicate scope → no code', async () => {
+    const { client, challenge, key } = await setup()
+    const page = await SELF.fetch(authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's'), { redirect: 'manual', headers: { 'x-api-key': key } })
+    expect(page.status).toBe(200)
+    const csrf = setCookies(page).__csrf!
+    const fields = consentFields(await page.text())
+    const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-api-key': key, cookie: cookieHeader({ __csrf: csrf }) },
+      body: dupBody({ ...fields, resource: 'https://api.sb' }),
+    })
+    await noCode(res)
+  })
+
+  it('an API key still completes a non-sb consent through the CSRF path (unchanged)', async () => {
+    const { client, challenge, key } = await setup()
+    const page = await SELF.fetch(authorizeUrl(client.client_id, MCP_REDIRECT, challenge, 's'), { redirect: 'manual', headers: { 'x-api-key': key } })
+    const csrf = setCookies(page).__csrf!
+    const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-api-key': key, cookie: cookieHeader({ __csrf: csrf }) },
+      body: new URLSearchParams({ ...consentFields(await page.text()), approved: 'true' }).toString(),
+    })
+    expect(res.status).toBe(302)
+    expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeTruthy()
+  })
+})

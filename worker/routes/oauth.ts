@@ -210,7 +210,7 @@ app.get('/oauth/authorize', async (c) => {
   // A request that asks for (or imitates) an sb scope never takes the
   // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
   // CSRF binding like any browser consent (and the POST checks it).
-  const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.get('scope'))
+  const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.getAll('scope').join(' '))
   if ((isServiceBinding && !asksSb) || isTrustedAccount) {
     const provider = getOAuthProvider(c)
     return provider.handleAuthorize(c.req.raw, identityId, signIn)
@@ -281,7 +281,9 @@ app.post('/oauth/authorize', async (c) => {
   } else {
     const form = await clonedRequest.formData()
     formState = (form.get('state') as string | null) ?? undefined
-    formScope = (form.get('scope') as string | null) ?? undefined
+    // Every value: this is only the route's early screen; the provider
+    // enforces the same rule on the scopes it actually grants.
+    formScope = form.getAll('scope').filter((v): v is string => typeof v === 'string').join(' ')
   }
   const asksSb = mentionsSbScope(formScope)
 
@@ -306,7 +308,8 @@ app.post('/oauth/authorize', async (c) => {
   const isServiceBinding = !!c.req.header('X-Issuer')
   if (isServiceBinding && !asksSb) {
     const provider = getOAuthProvider(c)
-    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn)
+    // No CSRF check on this path, so never interactive: no sb scopes.
+    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false })
   }
 
   // Extract CSRF token from cookie
@@ -355,7 +358,10 @@ app.post('/oauth/authorize', async (c) => {
   // Hand the provider the client's ORIGINAL state, so the redirect back to the
   // client carries exactly the state it sent (not the CSRF wrapper).
   const provider = getOAuthProvider(c)
-  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn)
+  // CSRF verified above; interactive when the identity is the browser session.
+  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn, {
+    interactive: viaBrowserSession,
+  })
 })
 
 /** Rebuild a consent POST with `state` replaced by the client's original state. */
