@@ -277,7 +277,9 @@ describe('OAuthProvider', () => {
 
     it('includes scopes and claims', async () => {
       const d = await provider.getOpenIDConfiguration().json() as Record<string, unknown>
-      expect(d.scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access'])
+      // The OIDC scopes, then the api.sb delegation scopes (src/sdk/oauth/delegation.ts).
+      expect(d.scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access', 'sb:read', 'sb:do'])
+      expect(d.authorization_response_iss_parameter_supported).toBe(true)
       expect(d.claims_supported).toContain('sub')
       expect(d.claims_supported).toContain('email')
     })

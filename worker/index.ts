@@ -38,6 +38,7 @@ import {
   identityStubMiddleware,
 } from './middleware/tenant'
 import { oauthRoutes, getOAuthProvider } from './routes/oauth'
+import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import type { VerifyTokenResult } from '../src/sdk/auth'
@@ -697,9 +698,11 @@ app.get('/.well-known/openid-configuration', (c) => {
     grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials', 'urn:ietf:params:oauth:grant-type:device_code'],
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+    scopes_supported: SCOPES_SUPPORTED,
     token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
+    // RFC 9207: every authorization response (code or error) carries `iss`.
+    authorization_response_iss_parameter_supported: true,
     claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
@@ -721,7 +724,9 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       introspection_endpoint: `${issuer}/oauth/introspect`,
       userinfo_endpoint: `${issuer}/oauth/userinfo`,
       device_authorization_endpoint: `${issuer}/oauth/device`,
-      scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+      // sb:read / sb:do delegate a Person's authority on api.sb; they are only
+      // granted for an api.sb resource (src/sdk/oauth/delegation.ts).
+      scopes_supported: SCOPES_SUPPORTED,
       response_types_supported: ['code'],
       grant_types_supported: [
         'authorization_code',
@@ -731,6 +736,8 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       ],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
+      // RFC 9207: every authorization response (code or error) carries `iss`.
+      authorization_response_iss_parameter_supported: true,
       // ID-JAG (Identity Assertion JWT Authorization Grant) is accepted as a
       // token-exchange subject token — advertised in the RFC 8693 field the
       // auth.md agent-identity check reads.
