@@ -124,9 +124,11 @@ describe('a forged login state cannot redirect or steal the session', () => {
 describe('expiry is enforced on read (DO storage ignores expirationTtl)', () => {
   it('an _auth_code past its minute, or without expiresAt, is refused', async () => {
     const stub = oauthStorage()
-    await stub.oauthStorageOp({ op: 'put', key: 'auth-code:legacy-code', value: { jwt: 'x.y.z', continueUrl: '/' } })
-    await stub.oauthStorageOp({ op: 'put', key: 'auth-code:old-code', value: { jwt: 'x.y.z', continueUrl: '/', expiresAt: Date.now() - 1 } })
-    for (const code of ['legacy-code', 'old-code']) {
+    const legacy = crypto.randomUUID()
+    const old = crypto.randomUUID()
+    await stub.oauthStorageOp({ op: 'put', key: `auth-code:${legacy}`, value: { jwt: 'x.y.z', continueUrl: '/' } })
+    await stub.oauthStorageOp({ op: 'put', key: `auth-code:${old}`, value: { jwt: 'x.y.z', continueUrl: '/', expiresAt: Date.now() - 1 } })
+    for (const code of [legacy, old]) {
       const res = await SELF.fetch(`${BASE}/callback?_auth_code=${code}`, { redirect: 'manual' })
       expect(res.status, code).toBe(400)
       expect(res.headers.getSetCookie().some((c) => c.startsWith('auth=x.y.z'))).toBe(false)
@@ -163,5 +165,89 @@ describe('_auth_result reads only org-select keys', () => {
       const res = await SELF.fetch(`${BASE}/api/callback?_auth_result=${encodeURIComponent(key)}&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
       expect(res.status, key).toBe(400)
     }
+  })
+})
+
+describe('R4-2: an _auth_code only ever travels to an https origin', () => {
+  it('a login started over plain http gets no _auth_code bounce, and no code is minted', async () => {
+    const origin = 'http://internal-rp.example'
+    const state = await startLogin(origin, '/app')
+    mockWorkOSAuthenticate()
+    const before = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+    const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    const location = cb.headers.get('location') ?? ''
+    expect(location).not.toContain('_auth_code')
+    expect(location.startsWith('http:')).toBe(false)
+    expect(cb.status).toBe(400)
+    const after = await oauthStorage().oauthStorageOp({ op: 'list', options: { prefix: 'auth-code:' } })
+    expect((after.entries as unknown[]).length).toBe((before.entries as unknown[]).length)
+  })
+
+  it('the same login started over https still bounces', async () => {
+    const state = await startLogin('https://internal-rp.example', '/app')
+    mockWorkOSAuthenticate()
+    const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(cb.status).toBe(302)
+    const bounce = new URL(cb.headers.get('location')!)
+    expect(bounce.protocol).toBe('https:')
+    expect(bounce.searchParams.get('_auth_code')).toBeTruthy()
+  })
+})
+
+describe('R4-3: an _auth_code redeems exactly once, however many redemptions race', () => {
+  it('20 parallel redemptions of one code: exactly one session', async () => {
+    const origin = 'https://race-rp.example'
+    const state = await startLogin(origin, '/app')
+    mockWorkOSAuthenticate()
+    const cb = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    const code = new URL(cb.headers.get('location')!).searchParams.get('_auth_code')!
+    expect(code).toBeTruthy()
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => SELF.fetch(`${origin}/callback?_auth_code=${code}`, { redirect: 'manual' })),
+    )
+    const sessions = results.filter((r) => r.status === 302 && !!setCookies(r).auth)
+    expect(sessions.length).toBe(1)
+    expect(results.filter((r) => r.status === 400).length).toBe(19)
+  })
+
+  it('a code that is not a minted code shape is refused without touching storage', async () => {
+    const stub = oauthStorage()
+    await stub.oauthStorageOp({ op: 'put', key: 'auth-code:not-a-uuid', value: { jwt: 'x.y.z', continueUrl: '/', expiresAt: Date.now() + 60_000 } })
+    const res = await SELF.fetch(`${BASE}/callback?_auth_code=not-a-uuid`, { redirect: 'manual' })
+    expect(res.status).toBe(400)
+    expect(res.headers.getSetCookie().some((c) => c.startsWith('auth=x.y.z'))).toBe(false)
+  })
+})
+
+describe('R4-3: a state whose csrf is not a string is an invalid state, not a server error', () => {
+  it.each([
+    ['a number', 123],
+    ['an object', { a: 1 }],
+    ['an array', ['x']],
+    ['null', null],
+  ])('csrf as %s -> 400', async (_label, csrf) => {
+    const state = b64urlJson({ csrf, continue: '/', origin: BASE })
+    mockWorkOSAuthenticate()
+    const res = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(res.status).toBe(400)
+  })
+
+  it('an array csrf cannot stand in for a real one', async () => {
+    const real = decodeState(await startLogin(BASE, '/dash/keys'))
+    const state = b64urlJson({ ...real, csrf: [real.csrf] })
+    mockWorkOSAuthenticate()
+    const res = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(res.status).toBe(400)
+    expect(setCookies(res).auth).toBeFalsy()
+  })
+
+  it('a pre-binding record with a non-string continue in the state is not a 500', async () => {
+    const csrf = crypto.randomUUID()
+    await oauthStorage().oauthStorageOp({ op: 'put', key: `login-csrf:${csrf}`, value: { csrf, createdAt: Date.now() } })
+    const state = b64urlJson({ csrf, continue: { toString: 1 }, origin: 7 })
+    mockWorkOSAuthenticate()
+    const res = await SELF.fetch(`${BASE}/api/callback?code=wos_code&state=${encodeURIComponent(state)}`, { redirect: 'manual' })
+    expect(res.status).toBeLessThan(500)
   })
 })

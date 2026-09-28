@@ -74,6 +74,9 @@ export const LOGIN_CSRF_MAX_AGE_MS = 30 * 60 * 1000
 /** How long a cross-origin `_auth_code` stays redeemable (enforced on read). */
 export const AUTH_CODE_MAX_AGE_MS = 60 * 1000
 
+/** What /api/callback mints as an `_auth_code`: crypto.randomUUID(). */
+const AUTH_CODE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 // ── WorkOS Login Flow (no auth required) ─────────────────────────────────────
@@ -181,13 +184,18 @@ app.get('/callback', async (c) => {
     return c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : errorResponse(c, 400, ErrorCode.InvalidRequest, 'Missing _auth_code parameter')
   }
 
+  // Only the shape /api/callback mints (crypto.randomUUID()).
+  if (!AUTH_CODE_PATTERN.test(authCode)) {
+    return errorResponse(c, 400, ErrorCode.InvalidGrant, 'Invalid or expired auth code')
+  }
+
+  // Redeem: read and delete in ONE Durable Object call, so of N racing
+  // redemptions of one code exactly one gets it (and one session).
   const oauthStub = getStubForIdentity(c.env, 'oauth')
-  const stored = await oauthStub.oauthStorageOp({ op: 'get', key: `auth-code:${authCode}` })
+  const stored = await oauthStub.takeOnce({ key: `auth-code:${authCode}` })
   if (!stored.value) {
     return errorResponse(c, 400, ErrorCode.InvalidGrant, 'Invalid or expired auth code')
   }
-  // Consume one-time code
-  await oauthStub.oauthStorageOp({ op: 'delete', key: `auth-code:${authCode}` })
 
   const { jwt, continueUrl, expiresAt } = stored.value as { jwt: string; continueUrl: string; expiresAt?: number }
   // DO storage ignores expirationTtl: enforce the one-minute lifetime here. A
@@ -299,7 +307,7 @@ app.get('/api/callback', async (c) => {
 
   // Decode and validate state (CSRF)
   const decoded = decodeLoginState(state)
-  if (!decoded) {
+  if (!decoded || typeof decoded.csrf !== 'string') {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid state parameter')
   }
 
@@ -327,11 +335,11 @@ app.get('/api/callback', async (c) => {
     if (!/^auth-result:[0-9a-f-]{36}$/.test(authResultKey)) {
       return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Invalid org selection reference')
     }
-    const stored = await oauthStub.oauthStorageOp({ op: 'get', key: authResultKey })
+    // One use, atomically (read and delete in one call), like _auth_code.
+    const stored = await oauthStub.takeOnce({ key: authResultKey })
     if (!stored.value) {
       return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Expired org selection — please try logging in again')
     }
-    await oauthStub.oauthStorageOp({ op: 'delete', key: authResultKey })
     authResult = stored.value as any
   } else if (code) {
     try {
@@ -503,6 +511,12 @@ export async function finishWorkOSSignIn(
   const currentOrigin = requestOriginOf(c.req.url)
   const bounceOrigin = opts.origin ? canonicalOrigin(opts.origin) : null
   if (bounceOrigin && bounceOrigin !== currentOrigin) {
+    // The code is a bearer credential for a 30-day session: it travels only
+    // to an https origin. A login started over plain http gets no code.
+    if (new URL(bounceOrigin).protocol !== 'https:') {
+      console.warn(JSON.stringify({ event: 'auth.bounce.refused-insecure-origin', host: new URL(bounceOrigin).host }))
+      return errorResponse(c, 400, ErrorCode.InvalidRequest, 'Sign-in must start over https — open the site with https:// and sign in again')
+    }
     const oneTimeCode = crypto.randomUUID()
     await oauthStub.oauthStorageOp({
       op: 'put',
