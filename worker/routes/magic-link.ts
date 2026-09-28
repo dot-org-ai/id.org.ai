@@ -23,7 +23,10 @@
  * Limits: 5 sends per email per hour, 100 per client (or binding host) per
  * hour, 5 code attempts per flow. Every counter is incremented and checked in
  * one Durable Object call (IdentityDO.consumeBudget), before the send or the
- * WorkOS check it guards, so parallel requests cannot overrun a budget.
+ * WorkOS check it guards, so parallel requests cannot overrun a budget. Every
+ * guess also spends the per-address and per-IP guess budgets shared with
+ * /federation/email/verify (worker/utils/code-guard.ts); a code sent here
+ * starts the address's budget afresh.
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
@@ -41,6 +44,7 @@ import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
 import { parseCookieValue } from '../utils/cookies'
+import { reserveCodeGuess, resetCodeGuesses, clientIpOf } from '../utils/code-guard'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -228,6 +232,9 @@ app.post('/api/magic-link', async (c) => {
       return c.json({ error: 'temporarily_unavailable', error_description: 'Could not send the sign-in email; try again' }, 502)
     }
     console.warn(JSON.stringify({ event: 'magic-link.send.refused', status: sent.status, client: callerKey }))
+  } else {
+    // A new code is out: the address's guess budget starts afresh.
+    await resetCodeGuesses(c.env, email)
   }
 
   const flowId = randomFlowId()
@@ -344,6 +351,14 @@ app.post('/magic-link/:flow', async (c) => {
     await endFlow(c.env, flowId)
     return expiredPage()
   }
+  // ...and against the address's and this IP's guess budgets, shared with
+  // /federation/email/verify, so new flows cannot buy more guesses.
+  const reservation = await reserveCodeGuess(c.env, flow.email, clientIpOf(c.req.raw))
+  if (!reservation.ok) {
+    const res = page('Sign in', codeForm(flowId, flow, { error: 'Too many attempts for this address. Ask for a new sign-in code, or try again later.' }), 429)
+    res.headers.set('Retry-After', String(reservation.retryAfterSec))
+    return res
+  }
 
   let authResult: WorkOSAuthResult
   try {
@@ -356,6 +371,7 @@ app.post('/magic-link/:flow', async (c) => {
       // Hand over to the regular org picker → /api/org-select → /api/callback,
       // with a login state that remembers this was a magic link.
       await endFlow(c.env, flowId)
+      await resetCodeGuesses(c.env, flow.email)
       const csrf = crypto.randomUUID()
       const origin = new URL(c.req.url).origin
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
@@ -381,6 +397,7 @@ app.post('/magic-link/:flow', async (c) => {
 
   // One use: the flow is gone once it signs someone in.
   await endFlow(c.env, flowId)
+  await resetCodeGuesses(c.env, flow.email)
 
   const response = await finishWorkOSSignIn(c, authResult, { requestedProvider: 'magic_link', continueUrl: flow.continue })
   const out = new Response(response.body, response)
