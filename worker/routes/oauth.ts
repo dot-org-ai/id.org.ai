@@ -391,7 +391,7 @@ app.post('/oauth/authorize', async (c) => {
 
 /**
  * Is the `auth` cookie shaped like an id.org.ai browser-session JWT (what
- * /api/callback, magic link and federation sign), rather than some other
+ * /api/callback and magic link sign), rather than some other
  * id.org.ai-signed JWT placed there? Tenant resolution has already verified
  * its signature and issuer; this looks at its shape. A session JWT carries no
  * `aud`, `nonce` or `at_hash`; an id_token (issued to a relying party) always

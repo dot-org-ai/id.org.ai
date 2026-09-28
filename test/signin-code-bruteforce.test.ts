@@ -1,19 +1,19 @@
 /**
- * Brute force of emailed sign-in codes (security review S1).
+ * Brute force of emailed sign-in codes (security review S1), on the
+ * magic-link path.
  *
- * Since 86c6afa, POST /federation/email/verify turns a correct WorkOS Magic
- * Auth code into an id.org.ai session, and production takes this path for
- * every viewer (MICROSOFT_CLIENT_ID is unset). It had no guess limit, no
- * browser binding and no link to a send, so anyone could try all 10^6 codes
- * against any address. Now:
+ * POST /magic-link/:flow turns a correct WorkOS Magic Auth code into an
+ * id.org.ai session. Every guess:
  *
- *   - a verify must present the send transaction's cookie (same browser, same
- *     address, within 10 minutes), which allows 5 guesses;
- *   - every guess, on this route and on POST /magic-link/:flow, reserves one
- *     of 5 guesses per address per 15 minutes on its own path (a new send on
- *     that path starts it afresh; round 4 split the paths so a flood of the
- *     public federation form cannot lock anyone out of magic-link) and one of
- *     50 per IP per hour across both paths, atomically, before WorkOS is asked.
+ *   - must present the flow's browser cookie (the browser that opened the
+ *     flow's page), and a flow allows 5 guesses;
+ *   - reserves one of 5 guesses per address per 15 minutes (a new send starts
+ *     it afresh) and one of 50 per IP per hour, atomically, before WorkOS is
+ *     asked (worker/utils/code-guard.ts).
+ *
+ * On the live branch these repros drove the public /federation/email/verify
+ * route, the other path that spends the same guess budgets; main has no
+ * federation routes, so they drive /magic-link/:flow.
  *
  * Runs the real worker (SELF, real IdentityDO); only WorkOS is faked, and the
  * fake counts every code check.
@@ -61,7 +61,7 @@ function fakeWorkOS(match: (email: string) => boolean): { checks: number; sends:
       if (body.get('code') === GOOD_CODE) {
         return {
           statusCode: 200,
-          data: JSON.stringify({ user: { id: `user_${seen.checks}`, email: body.get('email'), first_name: 'Ada' } }),
+          data: JSON.stringify({ user: { id: `user_${crypto.randomUUID()}`, email: body.get('email'), first_name: 'Ada' } }),
           responseOptions: { headers: { 'content-type': 'application/json' } },
         }
       }
@@ -71,116 +71,93 @@ function fakeWorkOS(match: (email: string) => boolean): { checks: number; sends:
   return seen
 }
 
-/** POST /federation/email/send as the page does; returns the send cookie. */
-async function send(email: string): Promise<string> {
-  const res = await SELF.fetch(`${BASE}/federation/email/send`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
-  })
-  expect(res.status).toBe(200)
-  const cookie = res.headers.getSetCookie().find((c) => c.startsWith('__fec='))
-  return cookie ? cookie.split(';')[0]! : ''
+type Flow = { path: string; cookie: string }
+
+/** Send a code over the binding and open its flow page in "this browser". */
+async function send(email: string): Promise<Flow> {
+  const r = await authService().sendMagicLink({ email })
+  expect(r.ok).toBe(true)
+  const path = new URL((r as { verify_url: string }).verify_url).pathname
+  const page = await SELF.fetch(`${BASE}${path}`)
+  expect(page.status).toBe(200)
+  const cookie = page.headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
+  return { path, cookie }
 }
 
-function verify(email: string, code: string, cookie = '', ip = '192.0.2.10'): Promise<Response> {
-  return SELF.fetch(`${BASE}/federation/email/verify`, {
+function verify(flow: Flow, code: string, cookie: string | null = flow.cookie, ip = '192.0.2.10'): Promise<Response> {
+  return SELF.fetch(`${BASE}${flow.path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip, ...(cookie ? { cookie } : {}) },
-    body: JSON.stringify({ email, code, continue: '/' }),
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip, ...(cookie ? { cookie } : {}) },
+    body: `code=${code}`,
   })
 }
 
 const wrong = (i: number) => String(100000 + i)
+const signedIn = (res: Response) => res.headers.getSetCookie().some((c) => c.startsWith('auth='))
 
-describe('S1: /federation/email/verify is bound to a send', () => {
-  it('refuses a guess with no send transaction, without asking WorkOS', async () => {
-    const email = 'nosend@example.com'
+describe('S1: a guess is bound to its flow', () => {
+  it('refuses a guess without the flow cookie, without asking WorkOS', async () => {
+    const email = 'nocookie@example.com'
     const workos = fakeWorkOS((e) => e === email)
-    const res = await verify(email, GOOD_CODE)
+    const flow = await send(email)
+    const res = await verify(flow, GOOD_CODE, null)
     expect(res.status).toBe(403)
     expect(workos.checks).toBe(0)
   })
 
-  it("refuses another address's send transaction", async () => {
+  it("refuses another flow's cookie", async () => {
     const workos = fakeWorkOS((e) => e.endsWith('@swap.example'))
-    const cookie = await send('mine@swap.example')
-    const res = await verify('victim@swap.example', GOOD_CODE, cookie)
+    const mine = await send('mine@swap.example')
+    const victim = await send('victim@swap.example')
+    const res = await verify(victim, GOOD_CODE, mine.cookie)
     expect(res.status).toBe(403)
     expect(workos.checks).toBe(0)
   })
 })
 
-describe('S1: guesses at one address are capped', () => {
-  it('five wrong guesses in a row, then refused until a new send; the new code then works', async () => {
+describe('S1: guesses at one address are capped across flows', () => {
+  it('five wrong guesses spread over two flows spend the address; the sixth is refused unasked until a new send', async () => {
     const email = 'serial@example.com'
     const workos = fakeWorkOS((e) => e === email)
-    const cookie = await send(email)
-    for (let i = 0; i < 5; i++) expect((await verify(email, wrong(i), cookie)).status).toBe(401)
+    const a = await send(email)
+    const b = await send(email)
+    for (let i = 0; i < 3; i++) expect((await verify(a, wrong(i))).status).toBe(400)
+    for (let i = 3; i < 5; i++) expect((await verify(b, wrong(i))).status).toBe(400)
     expect(workos.checks).toBe(5)
 
-    // The sixth guess, even the right code, is refused unasked.
-    const sixth = await verify(email, GOOD_CODE, cookie)
+    // Flow `a` has guesses of its own left, but the address has none: the
+    // sixth guess, even the right code, is refused without asking WorkOS.
+    const sixth = await verify(a, GOOD_CODE)
     expect(sixth.status).toBe(429)
+    expect(Number(sixth.headers.get('retry-after'))).toBeGreaterThan(0)
     expect(workos.checks).toBe(5)
 
-    // A new send opens a new transaction and a fresh budget.
-    const again = await send(email)
-    const ok = await verify(email, GOOD_CODE, again)
-    expect(ok.status).toBe(200)
-    expect(ok.headers.getSetCookie().some((c) => c.startsWith('auth='))).toBe(true)
-    // ...once: the transaction is spent.
-    expect((await verify(email, GOOD_CODE, again)).status).toBe(403)
+    // A new send opens a new flow and a fresh budget; its code works, once.
+    const c = await send(email)
+    const ok = await verify(c, GOOD_CODE)
+    expect(ok.status).toBe(302)
+    expect(signedIn(ok)).toBe(true)
+    expect((await verify(c, GOOD_CODE)).status).toBe(410)
   })
 
-  it('20 parallel guesses on one send reach WorkOS at most 5 times', async () => {
+  it('20 parallel guesses on one flow reach WorkOS at most 5 times', async () => {
     const email = 'parallel@example.com'
     const workos = fakeWorkOS((e) => e === email)
-    const cookie = await send(email)
-    const results = await Promise.all(Array.from({ length: 20 }, (_, i) => verify(email, wrong(i), cookie)))
-    const statuses = results.map((r) => r.status)
+    const flow = await send(email)
+    const results = await Promise.all(Array.from({ length: 20 }, (_, i) => verify(flow, wrong(i))))
     expect(workos.checks).toBeLessThanOrEqual(5)
-    expect(statuses.filter((s) => s === 401).length).toBe(workos.checks)
-    expect(statuses.filter((s) => s === 429).length).toBe(20 - workos.checks)
+    expect(results.some((r) => signedIn(r))).toBe(false)
   })
 
-  it('parallel guesses spread over several sends still reach WorkOS at most 5 times', async () => {
+  it('parallel guesses spread over several flows still reach WorkOS at most 5 times', async () => {
     const email = 'spread@example.com'
     const workos = fakeWorkOS((e) => e === email)
     // Four sends first (each would start the budget afresh), then the burst.
-    const cookies = [await send(email), await send(email), await send(email), await send(email)]
-    const results = await Promise.all(
-      cookies.flatMap((cookie, t) => Array.from({ length: 5 }, (_, i) => verify(email, wrong(t * 10 + i), cookie))),
-    )
+    const flows = [await send(email), await send(email), await send(email), await send(email)]
+    const results = await Promise.all(flows.flatMap((f, t) => Array.from({ length: 5 }, (_, i) => verify(f, wrong(t * 10 + i)))))
     expect(workos.checks).toBeLessThanOrEqual(5)
     expect(results.filter((r) => r.status === 429).length).toBe(20 - workos.checks)
-  })
-
-  it('the per-address budget is per path: spending it here leaves /magic-link/:flow its own', async () => {
-    const email = 'shared@example.com'
-    const workos = fakeWorkOS((e) => e === email)
-    // A magic-link flow for the address (opened over a service binding)...
-    const sent = await authService().sendMagicLink({ email })
-    if (!sent.ok) throw new Error(`sendMagicLink: ${sent.status}`)
-    const path = new URL(sent.verify_url).pathname
-    const flowCookie = (await SELF.fetch(`${BASE}${path}`)).headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
-
-    // ...then the federation path spends its five guesses at the address...
-    const cookie = await send(email)
-    for (let i = 0; i < 5; i++) expect((await verify(email, wrong(i), cookie)).status).toBe(401)
-    expect(workos.checks).toBe(5)
-
-    // ...which does not touch the magic-link path's: the flow's code is
-    // checked, and signs the person in.
-    const checks = workos.checks
-    const res = await SELF.fetch(`${BASE}${path}`, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: flowCookie, 'cf-connecting-ip': '192.0.2.10' },
-      body: `code=${GOOD_CODE}`,
-    })
-    expect(res.status).toBe(302)
-    expect(workos.checks).toBe(checks + 1)
   })
 })
 
@@ -190,15 +167,14 @@ describe('S1: guesses from one IP are capped across addresses', () => {
     const ip = '198.51.100.7'
     for (let i = 0; i < 50; i++) {
       const email = `u${i}@spray.example`
-      expect((await verify(email, wrong(i), await send(email), ip)).status).toBe(401)
+      expect((await verify(await send(email), wrong(i), undefined, ip)).status).toBe(400)
     }
     expect(workos.checks).toBe(50)
 
-    const email = 'u50@spray.example'
-    const cookie = await send(email)
-    expect((await verify(email, wrong(50), cookie, ip)).status).toBe(429)
+    const flow = await send('u50@spray.example')
+    expect((await verify(flow, wrong(50), undefined, ip)).status).toBe(429)
     expect(workos.checks).toBe(50)
-    expect((await verify(email, wrong(51), cookie, '198.51.100.8')).status).toBe(401)
+    expect((await verify(flow, wrong(51), undefined, '198.51.100.8')).status).toBe(400)
     expect(workos.checks).toBe(51)
   })
 })

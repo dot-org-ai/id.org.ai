@@ -26,7 +26,6 @@ import { resolveContinue, isListedContinueHost } from '../worker/utils/relying-p
 import { getRootDomain } from '../worker/utils/cookies'
 import { canonicalizeResourceUri } from '../worker/utils/mcp-resource'
 import { parseTrustedAccountDomains } from '../worker/routes/oauth'
-import { safeContinue } from '../worker/routes/federation'
 import type { Env } from '../worker/types'
 
 const BASE = 'https://id.org.ai'
@@ -186,11 +185,8 @@ describe('B1: hosts are compared in canonical spelling everywhere', () => {
     expect(isListedContinueHost({ LOGIN_CONTINUE_HOSTS: 'management.studio' } as Env, 'Management.Studio.')).toBe(true)
   })
 
-  it('trusted-account domains, federation continue, cookie domain and MCP audience', () => {
+  it('trusted-account domains, cookie domain and MCP audience', () => {
     expect(parseTrustedAccountDomains('Startup.Games.').has('startup.games')).toBe(true)
-    expect(safeContinue('https://Deck.org.ai./view', {} as Env)).toBe('https://deck.org.ai/view')
-    expect(safeContinue('https://evil.example./', {} as Env)).toBe('/')
-    expect(safeContinue('https://x@deck.org.ai/', {} as Env)).toBe('/')
     expect(getRootDomain('id.org.ai.')).toBeNull()
     expect(getRootDomain('Api.Headless.LY.')).toBe('.headless.ly')
     expect(canonicalizeResourceUri('https://ID.org.ai./mcp')).toBe('https://id.org.ai/mcp')

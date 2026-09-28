@@ -302,8 +302,8 @@ export class AuthService extends WorkerEntrypoint<Env> {
   // confidential clients). `clientId` (optional) lends a registered client's
   // redirect origins to `continue`; `origin` (optional) is the calling
   // worker's own origin, on which `continue` may also land. The magic-link
-  // path's per-address send budget (`code-send:ml:<email>`, shared with HTTP,
-  // not with /federation/email/send) and the hourly caps apply as on HTTP.
+  // path's per-address send budget (`code-send:ml:<email>`, shared with HTTP)
+  // and the hourly caps apply as on HTTP.
 
   async sendMagicLink(input: { email: string; continue?: string; clientId?: string; origin?: string }): Promise<MagicLinkResult> {
     if (!this.env.WORKOS_API_KEY || !this.env.WORKOS_CLIENT_ID) {

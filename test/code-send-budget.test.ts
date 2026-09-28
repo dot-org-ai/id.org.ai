@@ -1,17 +1,19 @@
 /**
- * One send budget per address, shared and atomic (round-2 review, B2).
+ * One send budget per address, atomic (round-2 review, B2), on the magic-link
+ * path.
  *
- * /federation/email/send throttled with a get and a separate put against the
- * Durable Object, so parallel sends all read the same count and all passed;
- * and every successful send starts the address's guess budget afresh
+ * The send throttle used to be a get and a separate put against the Durable
+ * Object, so parallel sends all read the same count and all passed; and every
+ * successful send starts the address's guess budget afresh
  * (worker/utils/code-guard.ts), so unbounded sends meant unbounded guesses.
- * Now every route that has a code emailed reserves each send, atomically with
- * IdentityDO.consumeBudget and before WorkOS is asked, from a per-address
- * counter, 5 per hour. Round 4 (R4-1) gave each path its own counter:
- * `code-send:fed:<email>` for /federation/email/send, `code-send:ml:<email>`
- * for magic-link (HTTP and AuthService.sendMagicLink together), because one
- * shared counter let the public federation form lock a person out of
- * magic-link sign-in (test/code-send-paths.test.ts).
+ * Now every send reserves, atomically with IdentityDO.consumeBudget and before
+ * WorkOS is asked, from the per-address counter `code-send:ml:<email>`,
+ * 5 per hour, shared by POST /api/magic-link (listed clients) and
+ * AuthService.sendMagicLink (service bindings).
+ *
+ * On the live branch these repros drove the public /federation/email/send
+ * route; main has no federation routes, so they drive the magic-link path,
+ * which spends the same budget through the same code.
  *
  * Runs the real worker (SELF, real IdentityDO); only WorkOS is faked, and the
  * fake counts every send and every code check.
@@ -38,12 +40,13 @@ afterAll(() => {
   fetchMock.deactivate()
 })
 
-/** Fake WorkOS for one address: sends succeed, every code check is a wrong code. */
+/** Fake WorkOS for one address (any spelling): sends succeed, every code check is a wrong code. */
 function fakeWorkOS(email: string): { sends: number; checks: number } {
   const seen = { sends: 0, checks: 0 }
+  const same = (e: string | null | undefined) => (e ?? '').trim().toLowerCase() === email
   fetchMock
     .get(WORKOS)
-    .intercept({ method: 'POST', path: '/user_management/magic_auth', body: (b: string) => JSON.parse(b).email === email })
+    .intercept({ method: 'POST', path: '/user_management/magic_auth', body: (b: string) => same(JSON.parse(b).email) })
     .reply(() => {
       seen.sends++
       return { statusCode: 201, data: JSON.stringify({ id: `ma_${seen.sends}` }), responseOptions: { headers: { 'content-type': 'application/json' } } }
@@ -51,31 +54,13 @@ function fakeWorkOS(email: string): { sends: number; checks: number } {
     .persist()
   fetchMock
     .get(WORKOS)
-    .intercept({ method: 'POST', path: '/user_management/authenticate', body: (b: string) => new URLSearchParams(b).get('email') === email })
+    .intercept({ method: 'POST', path: '/user_management/authenticate', body: (b: string) => same(new URLSearchParams(b).get('email')) })
     .reply(() => {
       seen.checks++
       return { statusCode: 400, data: '{"code":"invalid_one_time_code"}' }
     })
     .persist()
   return seen
-}
-
-function fedSend(email: string): Promise<Response> {
-  return SELF.fetch(`${BASE}/federation/email/send`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
-  })
-}
-
-const fecCookie = (res: Response) => res.headers.getSetCookie().find((c) => c.startsWith('__fec='))?.split(';')[0] ?? ''
-
-function fedVerify(email: string, code: string, cookie: string, ip: string): Promise<Response> {
-  return SELF.fetch(`${BASE}/federation/email/verify`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip, cookie },
-    body: JSON.stringify({ email, code, continue: '/' }),
-  })
 }
 
 async function listedClient(): Promise<string> {
@@ -89,53 +74,77 @@ async function listedClient(): Promise<string> {
   return `Basic ${btoa(`${id}:${secret}`)}`
 }
 
+/** AuthService.sendMagicLink over the binding; the verify_url on success. */
+async function mlSendRpc(email: string): Promise<string | null> {
+  const r = await authService().sendMagicLink({ email })
+  return r.ok ? r.verify_url : null
+}
+
+/** POST /api/magic-link as a listed client. */
+function mlSendHttp(email: string, basic: string): Promise<Response> {
+  return SELF.fetch(`${BASE}/api/magic-link`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: basic },
+    body: JSON.stringify({ email }),
+  })
+}
+
+/** Open a flow's page in "this browser": the flow cookie a guess must carry. */
+async function openFlow(verifyUrl: string): Promise<{ path: string; cookie: string }> {
+  const path = new URL(verifyUrl).pathname
+  const page = await SELF.fetch(`${BASE}${path}`)
+  expect(page.status).toBe(200)
+  const cookie = page.headers.getSetCookie().find((c) => c.startsWith('__mlf='))!.split(';')[0]!
+  return { path, cookie }
+}
+
+function mlGuess(path: string, cookie: string, code: string, ip: string): Promise<Response> {
+  return SELF.fetch(`${BASE}${path}`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie, 'cf-connecting-ip': ip },
+    body: `code=${code}`,
+  })
+}
+
 const wrong = (i: number) => String(100000 + i)
 
 describe('B2: sends to one address are capped atomically', () => {
-  it(`20 parallel /federation/email/send to one address: at most ${SEND_BUDGET} succeed, and only those reach WorkOS`, async () => {
+  it(`20 parallel sends to one address: at most ${SEND_BUDGET} succeed, and only those reach WorkOS`, async () => {
     const email = 'flood@send.example'
     const workos = fakeWorkOS(email)
-    const results = await Promise.all(Array.from({ length: 20 }, () => fedSend(email)))
-    const ok = results.filter((r) => r.status === 200).length
-    expect(ok).toBeLessThanOrEqual(SEND_BUDGET)
+    const results = await Promise.all(Array.from({ length: 20 }, () => authService().sendMagicLink({ email })))
+    const ok = results.filter((r) => r.ok).length
     expect(ok).toBe(SEND_BUDGET)
     expect(workos.sends).toBe(ok)
-    const refused = results.filter((r) => r.status === 429)
+    const refused = results.filter((r) => !r.ok)
     expect(refused.length).toBe(20 - ok)
-    expect(Number(refused[0]!.headers.get('retry-after'))).toBeGreaterThan(0)
+    for (const r of refused) expect(r).toMatchObject({ ok: false, status: 429 })
+    expect((refused[0] as { retryAfterSec?: number }).retryAfterSec).toBeGreaterThan(0)
   })
 
   it('case variants share the budget', async () => {
     const workos = fakeWorkOS('casey@send.example')
     const spellings = ['casey@send.example', 'CASEY@send.example', ' Casey@Send.Example ', 'casey@SEND.example']
-    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => fedSend(spellings[i % spellings.length]!)))
-    expect(results.filter((r) => r.status === 200).length).toBe(SEND_BUDGET)
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => authService().sendMagicLink({ email: spellings[i % spellings.length]! })))
+    expect(results.filter((r) => r.ok).length).toBe(SEND_BUDGET)
     expect(workos.sends).toBe(SEND_BUDGET)
   })
 
-  it('one counter per path: POST /api/magic-link and the RPC share one, /federation/email/send has its own', async () => {
+  it('one counter for the path: POST /api/magic-link and the RPC share it', async () => {
     const email = 'shared@send.example'
     const workos = fakeWorkOS(email)
     const basic = await listedClient()
     const results = await Promise.all([
-      ...Array.from({ length: 7 }, () => fedSend(email).then((r) => r.status === 200)),
       ...Array.from({ length: 7 }, () => authService().sendMagicLink({ email }).then((r) => r.ok)),
-      ...Array.from({ length: 6 }, () =>
-        SELF.fetch(`${BASE}/api/magic-link`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: basic },
-          body: JSON.stringify({ email }),
-        }).then((r) => r.status === 202),
-      ),
+      ...Array.from({ length: 6 }, () => mlSendHttp(email, basic).then((r) => r.status === 202)),
     ])
-    const fedOk = results.slice(0, 7).filter(Boolean).length
-    const mlOk = results.slice(7).filter(Boolean).length
-    expect(fedOk).toBe(SEND_BUDGET)
-    expect(mlOk).toBe(SEND_BUDGET)
-    expect(workos.sends).toBe(2 * SEND_BUDGET)
-    // ...and afterwards every route refuses the address.
-    expect((await fedSend(email)).status).toBe(429)
+    expect(results.filter(Boolean).length).toBe(SEND_BUDGET)
+    expect(workos.sends).toBe(SEND_BUDGET)
+    // ...and afterwards both callers are refused the address.
+    expect((await mlSendHttp(email, basic)).status).toBe(429)
     expect(await authService().sendMagicLink({ email })).toMatchObject({ ok: false, status: 429 })
+    expect(workos.sends).toBe(SEND_BUDGET)
   })
 })
 
@@ -144,14 +153,14 @@ describe('B2: racing sends cannot buy guesses', () => {
     const email = 'race@guess.example'
     const workos = fakeWorkOS(email)
     let guessN = 0
-    // Each send, the moment it succeeds, fires 10 guesses with its own
-    // transaction (twice its per-transaction budget), from its own IP, while
-    // the other sends are still racing to restart the address's budget.
+    // Each send, the moment it succeeds, fires 10 guesses on its own flow
+    // (twice its per-flow budget), from its own IP, while the other sends are
+    // still racing to restart the address's guess budget.
     const burst = (i: number) =>
-      fedSend(email).then(async (res) => {
-        if (res.status !== 200) return false
-        const cookie = fecCookie(res)
-        await Promise.all(Array.from({ length: 10 }, () => fedVerify(email, wrong(guessN++), cookie, `198.51.100.${i + 1}`)))
+      mlSendRpc(email).then(async (url) => {
+        if (!url) return false
+        const f = await openFlow(url)
+        await Promise.all(Array.from({ length: 10 }, () => mlGuess(f.path, f.cookie, wrong(guessN++), `198.51.100.${i + 1}`)))
         return true
       })
     const outcomes = await Promise.all(Array.from({ length: 20 }, (_, i) => burst(i)))
@@ -161,10 +170,8 @@ describe('B2: racing sends cannot buy guesses', () => {
     expect(workos.checks).toBeGreaterThan(0)
     expect(workos.checks).toBeLessThanOrEqual(GUESSES_PER_SEND * successfulSends)
 
-    // With this path's send budget spent, it cannot open another guess budget.
-    // (The magic-link path's own budget, and the bound across both paths, are
-    // in test/code-send-paths.test.ts.)
-    expect((await fedSend(email)).status).toBe(429)
+    // With the send budget spent, no further guess budget can be opened.
+    expect(await mlSendRpc(email)).toBeNull()
     expect(workos.sends).toBe(successfulSends)
   })
 })

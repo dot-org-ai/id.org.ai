@@ -38,14 +38,14 @@
  * origins.
  *
  * Limits: 5 sends per email per hour (the magic-link path's own counter,
- * `code-send:ml:<email>`, shared by listed clients and service bindings but
- * not with the public /federation/email/send, worker/utils/code-guard.ts), 100 per client (or
+ * `code-send:ml:<email>`, shared by listed clients and service bindings,
+ * worker/utils/code-guard.ts), 100 per client (or
  * binding) per hour, 300 in all per hour, 5 code attempts per flow. Every
  * counter is incremented and checked in one Durable Object call
  * (IdentityDO.consumeBudget), before the send or the WorkOS check it guards,
  * so parallel requests cannot overrun a budget. Every guess also spends this
  * path's per-address guess budget and the per-IP guess budget; a code sent
- * here starts this path's guess budget afresh (never the federation path's).
+ * here starts this path's guess budget afresh.
  */
 import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
