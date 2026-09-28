@@ -58,6 +58,10 @@ export function cimdClientIdProblem(clientId: string): string | null {
   if (clientId.includes('#')) return 'client_id must not contain a fragment'
   if (u.search || clientId.includes('?')) return 'client_id must not contain a query'
   if (u.pathname === '/' || u.pathname === '') return 'client_id must contain a path'
+  if (u.port !== '') return 'client_id must use the default https port'
+  if (u.hostname.endsWith('.')) return 'client_id host must not end with a dot'
+  if (isIpLiteralHost(u.hostname)) return 'client_id host must be a DNS name, not an IP address'
+  if (!u.hostname.includes('.')) return 'client_id host must be a public DNS name'
   // The URL as sent must be the URL as parsed: no dot segments, no case or
   // encoding tricks the parser would normalise away.
   if (u.href !== clientId) return 'client_id is not in canonical form'
@@ -66,6 +70,21 @@ export function cimdClientIdProblem(clientId: string): string | null {
     return 'client_id must not contain dot segments'
   }
   return null
+}
+
+/** True for an IPv4 or IPv6 literal host (after WHATWG parsing, which turns decimal/hex/octal IPv4 into dotted form). */
+export function isIpLiteralHost(hostname: string): boolean {
+  return hostname.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)
+}
+
+/** An http URI on a loopback host (localhost, 127.0.0.1, [::1]). */
+export function isLoopbackUri(uri: string): boolean {
+  try {
+    const u = new URL(uri)
+    return u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname)
+  } catch {
+    return false
+  }
 }
 
 function isHttpsOrLoopback(uri: string): boolean {

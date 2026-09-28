@@ -305,3 +305,45 @@ describe('CIMD fetch budget', () => {
     expect(((await other.json()) as any).error_description).toContain('HTTP 404')
   })
 })
+
+describe('PR #31 review round 1: revocation vs a client that keeps refreshing', () => {
+  it('B1: across 8 trials, no refresh token or access token survives POST /api/grants/revoke', async () => {
+    let survivors = 0
+    for (let trial = 0; trial < 8; trial++) {
+      const t = await sbTokens()
+      let rt = t.refresh_token as string
+      let at = t.access_token as string
+      let stop = false
+      const loop = (async () => {
+        while (!stop) {
+          const r = await token({ grant_type: 'refresh_token', refresh_token: rt, client_id: t.clientId })
+          if (r.status !== 200) break
+          rt = r.body.refresh_token
+          at = r.body.access_token
+        }
+      })()
+      await new Promise((r) => setTimeout(r, trial * 3))
+      const rev = await SELF.fetch(`${BASE}/api/grants/revoke`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(t.cookies) }, body: JSON.stringify({ client_id: t.clientId }) })
+      expect(rev.status).toBe(200)
+      stop = true
+      await loop
+      // Whatever the last rotation wrote is dead.
+      const after = await token({ grant_type: 'refresh_token', refresh_token: rt, client_id: t.clientId })
+      if (after.status === 200 || (await introspect(at)).active) survivors++
+    }
+    expect(survivors).toBe(0)
+  })
+
+  it('B1: an opaque token at id.org.ai/mcp and userinfo stops working when its grant is revoked', async () => {
+    const client = await register({ client_name: 'mcp revoke', redirect_uris: [REDIRECT], token_endpoint_auth_method: 'none' })
+    const { verifier, challenge } = await pkce()
+    const cookies = await signIn()
+    const back = await consent(authorizeUrl(client.client_id, REDIRECT, challenge, { resource: `${BASE}/mcp` }), cookies)
+    const t = await token({ grant_type: 'authorization_code', code: back.searchParams.get('code')!, redirect_uri: REDIRECT, client_id: client.client_id, code_verifier: verifier })
+    expect((await SELF.fetch(`${BASE}/mcp`, { headers: { authorization: `Bearer ${t.body.access_token}` } })).status).not.toBe(401)
+    expect((await SELF.fetch(`${BASE}/oauth/userinfo`, { headers: { authorization: `Bearer ${t.body.access_token}` } })).status).toBe(200)
+    await SELF.fetch(`${BASE}/api/grants/revoke`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(cookies) }, body: JSON.stringify({ client_id: client.client_id }) })
+    expect((await SELF.fetch(`${BASE}/mcp`, { headers: { authorization: `Bearer ${t.body.access_token}` } })).status).toBe(401)
+    expect((await SELF.fetch(`${BASE}/oauth/userinfo`, { headers: { authorization: `Bearer ${t.body.access_token}` } })).status).toBe(401)
+  })
+})

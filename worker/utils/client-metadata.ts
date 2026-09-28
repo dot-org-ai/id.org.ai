@@ -14,7 +14,7 @@
  * cannot make id.org.ai fetch in a loop.
  */
 import { assertPublicHttpsUrl } from './ssrf'
-import { CIMD_MAX_BYTES, CIMD_TIMEOUT_MS } from '../../src/sdk/oauth/cimd'
+import { CIMD_MAX_BYTES, CIMD_TIMEOUT_MS, cimdClientIdProblem } from '../../src/sdk/oauth/cimd'
 import type { ClientMetadataFetcher } from '../../src/sdk/oauth/provider'
 
 async function readCapped(res: Response, maxBytes: number): Promise<string> {
@@ -44,6 +44,11 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
 }
 
 export const fetchClientMetadataDocument: ClientMetadataFetcher = async (clientId) => {
+  // The client_id shape rules (no IP literal, no port, no trailing dot, a
+  // dotted DNS name) come first, so no address form can reach the SSRF
+  // range checks below at all.
+  const problem = cimdClientIdProblem(clientId)
+  if (problem) return { ok: false, error: problem }
   let url: URL
   try {
     url = assertPublicHttpsUrl(clientId)
@@ -62,7 +67,10 @@ export const fetchClientMetadataDocument: ClientMetadataFetcher = async (clientI
     if (res.status >= 300 && res.status < 400) return { ok: false, error: `redirect (HTTP ${res.status}) refused` }
     if (res.status !== 200) return { ok: false, error: `HTTP ${res.status}` }
     const type = (res.headers.get('content-type') ?? '').toLowerCase()
-    if (type && !type.includes('json')) return { ok: false, error: `not JSON (${type.split(';')[0]})` }
+    const mediaType = type.split(';')[0]!.trim()
+    if (mediaType !== 'application/json' && !/^application\/[a-z0-9.+-]+\+json$/.test(mediaType)) {
+      return { ok: false, error: `not JSON (${mediaType || 'no content-type'})` }
+    }
     const text = await readCapped(res, CIMD_MAX_BYTES)
     let doc: unknown
     try {

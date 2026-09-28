@@ -62,6 +62,7 @@ import {
   cimdClientIdProblem,
   cimdRedirectMatches,
   cimdTtlSeconds,
+  isLoopbackUri,
   looksLikeCimdClientId,
   parseClientMetadataDocument,
 } from './cimd'
@@ -163,6 +164,7 @@ interface AccessToken {
                                // be replayed against another.
   signIn?: SignInContext       // how the person signed in, for userinfo amr / idp
   family?: string              // the grant's refresh-token family: revoking it deletes this token
+  grantedAt?: number           // when the Person's grant was made (see isTokenRevoked)
 }
 
 /**
@@ -183,6 +185,7 @@ interface AccessTokenJwtRecord {
   issuer: string
   expiresAt: number
   createdAt: number
+  grantedAt?: number
   revoked?: boolean
 }
 
@@ -209,6 +212,12 @@ interface RefreshToken {
    */
   consumerHost?: string
   signIn?: SignInContext       // carried through rotation so refreshed id_tokens keep amr / idp
+  /**
+   * When the Person's grant (the authorization code or device approval) was
+   * made; carried through every rotation. A grant revoked at or after this
+   * time is dead, whatever rotation raced the revocation.
+   */
+  grantedAt?: number
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -306,6 +315,30 @@ function grantIndexPrefix(identityId: string, clientId: string): string {
 }
 function grantIndexKey(identityId: string, clientId: string, family: string): string {
   return `${grantIndexPrefix(identityId, clientId)}${family}`
+}
+/**
+ * The revocation check over any storage getter (the provider's, or the
+ * worker's direct DO reads at /mcp and userinfo). See OAuthProvider.isTokenRevoked.
+ */
+export async function isTokenRevokedIn(
+  get: (key: string) => Promise<unknown>,
+  rec: { identityId?: string; clientId: string; createdAt: number; grantedAt?: number; family?: string },
+): Promise<boolean> {
+  if (rec.family && (await get(familyRevokedKey(rec.family)))) return true
+  if (rec.identityId) {
+    const tomb = (await get(grantRevokedKey(rec.identityId, rec.clientId))) as { at?: number } | undefined
+    if (tomb && typeof tomb.at === 'number' && (rec.grantedAt ?? rec.createdAt) <= tomb.at) return true
+  }
+  return false
+}
+
+/** `grant-revoked:{identity}:{client}` → { at }: every grant made at or before `at` is dead. */
+function grantRevokedKey(identityId: string, clientId: string): string {
+  return `grant-revoked:${encodeURIComponent(identityId)}:${encodeURIComponent(clientId)}`
+}
+/** `fam-revoked:{family}` → { at }: the whole family is dead. */
+function familyRevokedKey(family: string): string {
+  return `fam-revoked:${family}`
 }
 
 // Internal storage abstraction — see OAuthStorage in ./storage.ts for canonical API type
@@ -763,8 +796,13 @@ export class OAuthProvider {
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
     const hasFullConsent = !!existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
     const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
+    // A CIMD client with a loopback redirect is a public native client whose
+    // client_id is public and whose port is free: anyone can start its flow
+    // and catch the code on the Person's localhost. RFC 8252 §8.6: never
+    // approve it silently, even when consent is on record.
+    const alwaysAsk = looksLikeCimdClientId(clientId) && isLoopbackUri(redirectUri)
 
-    if (consentRequired && !hasFullConsent) {
+    if ((consentRequired && !hasFullConsent) || alwaysAsk) {
       return this.renderConsentPage(client, {
         clientId,
         redirectUri,
@@ -1286,7 +1324,7 @@ export class OAuthProvider {
     // Try as access token
     if (token.startsWith('at_')) {
       const tokenData = await this.storage.get<AccessToken>(`access:${token}`)
-      if (tokenData && tokenData.expiresAt > Date.now()) {
+      if (tokenData && tokenData.expiresAt > Date.now() && !(await this.isTokenRevoked(tokenData))) {
         const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
         const tier = tierFromLevel(identity?.level)
         return jsonResponse({
@@ -1331,7 +1369,7 @@ export class OAuthProvider {
     // Try as refresh token
     if (token.startsWith('rt_')) {
       const tokenData = await this.storage.get<RefreshToken>(`refresh:${token}`)
-      if (tokenData && !tokenData.revoked && tokenData.expiresAt > Date.now()) {
+      if (tokenData && !tokenData.revoked && tokenData.expiresAt > Date.now() && !(await this.isTokenRevoked(tokenData))) {
         const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
         const tier = tierFromLevel(identity?.level)
         return jsonResponse({
@@ -1410,6 +1448,7 @@ export class OAuthProvider {
     const tokenData = await this.storage.get<AccessToken>(`access:${token}`)
     if (!tokenData) return null
     if (tokenData.expiresAt < Date.now()) return null
+    if (await this.isTokenRevoked(tokenData)) return null
 
     return tokenData
   }
@@ -1503,6 +1542,12 @@ export class OAuthProvider {
     const target = this.tokenRequestResource(body, codeData.resource)
     if (!target.ok) return target.response
 
+    // ── The Person may have revoked this client since the code was issued ─
+    if (await this.isTokenRevoked({ identityId: codeData.identityId, clientId, createdAt: codeData.createdAt })) {
+      await this.storage.delete(`code:${code}`)
+      return oauthError('invalid_grant', 'The grant for this code has been revoked')
+    }
+
     // ── Delete authorization code (one-time use) ────────────────────────
     await this.storage.delete(`code:${code}`)
 
@@ -1525,6 +1570,7 @@ export class OAuthProvider {
       effectiveIssuer: codeData.effectiveIssuer,
       consumerHost,
       signIn: codeData.signIn,
+      grantedAt: codeData.createdAt,
     })
   }
 
@@ -1598,6 +1644,14 @@ export class OAuthProvider {
       return oauthError('invalid_grant', 'Refresh token has already been used')
     }
 
+    // ── The grant (or this family) may have been revoked: refuse, whatever
+    //    this token's own record says (a racing rotation may have written it) ─
+    const grantedAt = tokenData.grantedAt ?? tokenData.createdAt
+    if (await this.isTokenRevoked({ identityId: tokenData.identityId, clientId, createdAt: tokenData.createdAt, grantedAt, family: tokenData.family })) {
+      await this.storage.put(`refresh:${refreshTokenId}`, { ...tokenData, revoked: true } satisfies RefreshToken)
+      return oauthError('invalid_grant', 'Refresh token has been revoked')
+    }
+
     // ── Rotate: revoke old refresh token ────────────────────────────────
     await this.storage.put(`refresh:${refreshTokenId}`, {
       ...tokenData,
@@ -1617,6 +1671,7 @@ export class OAuthProvider {
       // can keep enforcing the allowlist (ADR-0007).
       consumerHost: tokenData.consumerHost,
       signIn: tokenData.signIn,
+      grantedAt,
     })
   }
 
@@ -1770,6 +1825,7 @@ export class OAuthProvider {
           clientId,
           identityId: deviceCode.identityId,
           scopes: deviceCode.scopes,
+          grantedAt: Date.now(),
         })
       }
 
@@ -1911,8 +1967,11 @@ export class OAuthProvider {
      * refresh token keeps the grant's `resource`.
      */
     accessResource?: string
+    /** When the Person's grant was made (the code, or the device approval); carried through rotation. */
+    grantedAt?: number
   }): Promise<Response> {
     const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn } = options
+    const grantedAt = options.grantedAt ?? Date.now()
     const resource = options.resource
     const tokenAudience = options.accessResource ?? resource
     const now = Date.now()
@@ -1929,7 +1988,7 @@ export class OAuthProvider {
     let accessExpiresIn = ACCESS_TOKEN_TTL
     const jwt =
       tokenAudience !== undefined && isSbResource(tokenAudience) && this.signingKeyManager
-        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer }).catch(() => null)
+        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt }).catch(() => null)
         : null
     if (jwt) {
       accessTokenValue = jwt.token
@@ -1949,6 +2008,7 @@ export class OAuthProvider {
       ...(tokenAudience !== undefined && { resource: tokenAudience }),
       ...(signIn && { signIn }),
       family: tokenFamily,
+      grantedAt,
     }
 
     const refreshToken: RefreshToken = {
@@ -1964,6 +2024,7 @@ export class OAuthProvider {
       ...(effectiveIssuer !== undefined && { effectiveIssuer }),
       ...(consumerHost !== undefined && { consumerHost }),
       ...(signIn && { signIn }),
+      grantedAt,
     }
 
     if (!jwt) {
@@ -2060,6 +2121,7 @@ export class OAuthProvider {
     issuer: string
     act?: ActorClaim
     notAfter?: number
+    grantedAt?: number
   }): Promise<{ token: string; expiresIn: number; jti: string }> {
     if (!this.signingKeyManager) throw new Error('no signing key')
     const key = await this.signingKeyManager.getCurrentKey()
@@ -2091,6 +2153,7 @@ export class OAuthProvider {
       issuer: params.issuer,
       expiresAt: exp * 1000,
       createdAt: nowMs,
+      grantedAt: params.grantedAt ?? nowMs,
     }
     await this.storage.put(`access-jwt:${jti}`, record)
     if (params.family !== undefined) await this.storage.put(`fam:${params.family}:jwt:${jti}`, 1)
@@ -2113,6 +2176,7 @@ export class OAuthProvider {
     if (claims.exp * 1000 <= Date.now()) return null
     const record = await this.storage.get<AccessTokenJwtRecord>(`access-jwt:${claims.jti}`)
     if (!record || record.revoked || record.expiresAt <= Date.now()) return null
+    if (await this.isTokenRevoked(record)) return null
     // The record is the authority; the claims must agree with it.
     if (claims.sub !== record.identityId || claims.client_id !== record.clientId || claims.aud !== record.resource || claims.iss !== record.issuer) return null
     return { ...record, claims }
@@ -2138,6 +2202,8 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private async revokeRefreshTokenFamily(family: string): Promise<void> {
+    // Tombstone first: a rotation racing this revocation is refused at use.
+    await this.storage.put(familyRevokedKey(family), { at: Date.now() })
     const tokens = await this.storage.list<RefreshToken>({ prefix: 'refresh:rt_' })
     const updates: Promise<void>[] = []
 
@@ -2181,6 +2247,19 @@ export class OAuthProvider {
     }
   }
 
+  /**
+   * Is the grant a token (or code) belongs to revoked? Revocation writes its
+   * tombstone before anything else, and every point of use asks this, so a
+   * rotation, redemption or exchange racing a revocation cannot outlive it:
+   *   - the Person revoked the client's grant at or after the grant was made
+   *     (`grant-revoked:`), or
+   *   - the token's refresh family was revoked (`fam-revoked:`; RFC 7009).
+   * `grantedAt` falls back to `createdAt` for records made before it existed.
+   */
+  async isTokenRevoked(rec: { identityId?: string; clientId: string; createdAt: number; grantedAt?: number; family?: string }): Promise<boolean> {
+    return isTokenRevokedIn((key) => this.storage.get(key), rec)
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Grants: what a Person has delegated to each client
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2202,17 +2281,17 @@ export class OAuthProvider {
    * server verifying locally, expired within ACCESS_TOKEN_JWT_TTL).
    */
   async revokeGrant(identityId: string, clientId: string): Promise<{ revoked_families: number }> {
+    // The tombstone first: from here on every code, refresh token, access
+    // token and exchange from a grant made up to now is refused at use
+    // (isTokenRevoked), including tokens made before the family index existed
+    // and tokens a racing rotation is writing right now.
+    await this.storage.put(grantRevokedKey(identityId, clientId), { at: Date.now() })
     await this.storage.delete(`consent:${identityId}:${clientId}`)
+    // Then tidy what the index knows about (opaque access tokens deleted, JWT
+    // records and refresh tokens marked), so the records say so too.
     const families = new Set<string>()
     const prefix = grantIndexPrefix(identityId, clientId)
     for (const key of (await this.storage.list<unknown>({ prefix })).keys()) families.add(key.slice(prefix.length))
-    // Refresh tokens issued before the grant index existed.
-    const refresh = await this.storage.list<RefreshToken>({ prefix: 'refresh:rt_' })
-    for (const [key, token] of refresh) {
-      if (token.identityId !== identityId || token.clientId !== clientId) continue
-      families.add(token.family)
-      if (!token.revoked) await this.storage.put(key, { ...token, revoked: true } satisfies RefreshToken)
-    }
     for (const family of families) await this.revokeIndexedFamilyTokens(family)
     return { revoked_families: families.size }
   }
@@ -2260,15 +2339,15 @@ export class OAuthProvider {
     const subjectToken = input.subject_token
 
     // ── The subject: a live access token of a Person, for api.sb ─────────
-    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number } | null = null
+    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number } | null = null
     if (subjectToken.startsWith('at_')) {
       const rec = await this.storage.get<AccessToken>(`access:${subjectToken}`)
-      if (rec && rec.identityId && rec.expiresAt > Date.now()) {
-        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt }
+      if (rec && rec.identityId && rec.expiresAt > Date.now() && !(await this.isTokenRevoked(rec))) {
+        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
       }
     } else {
       const rec = await this.verifyAccessTokenJwt(subjectToken)
-      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt }
+      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
     }
     if (!subject) return fail('invalid_grant', 'subject_token is not an active id.org.ai access token')
     if (subject.resource === undefined || !isSbResource(subject.resource)) {
@@ -2278,8 +2357,13 @@ export class OAuthProvider {
     // ── What the new token may say ─────────────────────────────────────────
     const target = parseResourceIndicators([typeof input.resource === 'string' ? input.resource : undefined])
     if (!target.ok) return fail('invalid_target', target.description)
+    // The subject's own audience, or the one narrowing the token endpoint
+    // allows (https://api.sb → https://api.sb/mcp); never sideways or wider.
     const resource = target.resource ?? subject.resource
-    if (!isSbResource(resource)) return fail('invalid_target', 'the exchanged token is for api.sb only')
+    const narrows = sameResource(subject.resource, DEFAULT_SB_RESOURCE) && resource === 'https://api.sb/mcp'
+    if (!sameResource(resource, subject.resource) && !narrows) {
+      return fail('invalid_target', `the subject token is for ${subject.resource}; an exchange may keep it or narrow https://api.sb to https://api.sb/mcp`)
+    }
     const scopes = typeof input.scope === 'string' ? splitScopes(input.scope) : subject.scopes
     if (scopes.length === 0) return fail('invalid_scope', 'no scope requested')
     const extra = scopes.filter((sc) => !subject!.scopes.includes(sc))
@@ -2301,6 +2385,7 @@ export class OAuthProvider {
         issuer: subject.issuer,
         act,
         notAfter: subject.expiresAt,
+        grantedAt: subject.grantedAt,
       })
     } catch (err) {
       return fail('invalid_grant', err instanceof Error ? err.message : 'could not issue the token')

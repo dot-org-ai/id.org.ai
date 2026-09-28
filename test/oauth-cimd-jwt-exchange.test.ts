@@ -590,3 +590,123 @@ describe('7. revoking a client grant', () => {
     expect((await refresh(provider, clientId, t.refresh_token)).status).toBe(200)
   })
 })
+
+describe('PR #31 review round 1 regressions', () => {
+  const ACCESS = 'urn:ietf:params:oauth:token-type:access_token'
+  const refreshReq = (id: string, rt: string) => form('https://id.org.ai/oauth/token', { grant_type: 'refresh_token', refresh_token: rt, client_id: id })
+
+  it('B1: a code issued before the grant was revoked cannot be redeemed after', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    const page = await provider.handleAuthorize(new Request(await authorizeUrl(clientId, 'https://dcr.example/cb', { scope: 'openid sb:read sb:do', resource: 'https://api.sb/mcp' })), PERSON)
+    const res = await provider.handleAuthorizeConsent(form('https://id.org.ai/oauth/authorize', { ...hiddenFields(await page.text()), approved: 'true' }), PERSON, undefined, { interactive: true })
+    const code = new URL(res.headers.get('location')!).searchParams.get('code')!
+    await provider.revokeGrant(PERSON, clientId)
+    const tok = await provider.handleToken(form('https://id.org.ai/oauth/token', { grant_type: 'authorization_code', code, redirect_uri: 'https://dcr.example/cb', client_id: clientId, code_verifier: VERIFIER }))
+    expect(tok.status).toBe(400)
+    expect(((await tok.json()) as any).error).toBe('invalid_grant')
+  })
+
+  it('B1: a refresh token written by a rotation that raced the revocation is dead, and so is its access token', async () => {
+    const storage = createStorage()
+    const provider = makeProvider({ storage })
+    const clientId = await register(provider)
+    const t = await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'sb:read', resource: 'https://api.sb/mcp' })
+    // Simulate the race: the revocation lists the index BEFORE the rotation writes
+    // its new refresh token (hide the index from revokeGrant's listing).
+    const realList = storage.list.bind(storage)
+    let hide = true
+    storage.list = (async (opts?: { prefix?: string }) => (hide && opts?.prefix?.startsWith('grant:') ? new Map() : realList(opts))) as typeof storage.list
+    await provider.revokeGrant(PERSON, clientId)
+    hide = false
+    // …then a rotation that had already passed its checks writes a new pair
+    // (forge it the way the racing rotation would: same family, same grantedAt).
+    const rt = (await storage.get<any>(`refresh:${t.refresh_token}`))!
+    const newRt = 'rt_raced_' + crypto.randomUUID().replace(/-/g, '')
+    await storage.put(`refresh:${newRt}`, { ...rt, id: newRt, revoked: false, createdAt: Date.now() + 5 })
+    const r = await provider.handleToken(refreshReq(clientId, newRt))
+    expect(r.status).toBe(400)
+    expect((await introspect(provider, newRt)).active).toBe(false)
+    expect((await introspect(provider, t.access_token)).active).toBe(false)
+  })
+
+  it('B1: a legacy opaque token (no family, no grantedAt) dies with revokeGrant', async () => {
+    const storage = createStorage()
+    const provider = makeProvider({ storage })
+    const clientId = await register(provider)
+    await storage.put('access:at_legacy', { id: 'at_legacy', clientId, identityId: PERSON, scopes: ['sb:read'], resource: 'https://api.sb', expiresAt: Date.now() + 3600_000, createdAt: Date.now() - 1000 })
+    expect((await introspect(provider, 'at_legacy')).active).toBe(true)
+    await provider.revokeGrant(PERSON, clientId)
+    expect((await introspect(provider, 'at_legacy')).active).toBe(false)
+    const ex = await provider.exchangeToken({ subject_token: 'at_legacy', subject_token_type: ACCESS, actor: { sub: 'w' } })
+    expect(ex.ok).toBe(false)
+  })
+
+  it('B1: after revocation the Person can grant again (new consent, new tokens work)', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'openid offline_access' })
+    await provider.revokeGrant(PERSON, clientId)
+    await new Promise((r) => setTimeout(r, 5))
+    const again = await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'openid offline_access' })
+    expect((await introspect(provider, again.access_token)).active).toBe(true)
+    expect((await provider.handleToken(refreshReq(clientId, again.refresh_token))).status).toBe(200)
+  })
+
+  it('RFC 7009: a refresh token revoked mid-rotation takes the racing successor with it', async () => {
+    const storage = createStorage()
+    const provider = makeProvider({ storage })
+    const clientId = await register(provider)
+    const t = await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'openid offline_access' })
+    const rt = (await storage.get<any>(`refresh:${t.refresh_token}`))!
+    await provider.handleRevoke(form('https://id.org.ai/oauth/revoke', { token: t.refresh_token }))
+    const successor = 'rt_succ_' + crypto.randomUUID().replace(/-/g, '')
+    await storage.put(`refresh:${successor}`, { ...rt, id: successor, revoked: false, createdAt: Date.now() + 5 })
+    expect((await provider.handleToken(refreshReq(clientId, successor))).status).toBe(400)
+  })
+
+  it('S2: a CIMD client with a loopback redirect always gets the consent screen, even with consent on record', async () => {
+    const { fetcher } = makeFetcher()
+    const provider = makeProvider({ fetcher })
+    await tokensFor(provider, CLAUDE_CODE, 'http://localhost:61234/callback', { scope: 'sb:read sb:do', resource: 'https://api.sb/mcp' })
+    const again = await provider.handleAuthorize(new Request(await authorizeUrl(CLAUDE_CODE, 'http://localhost:1337/callback', { scope: 'sb:read sb:do', resource: 'https://api.sb/mcp' })), PERSON)
+    expect(again.status).toBe(200)
+    // An https-redirect CIMD client (bound to its domain) is approved from recorded consent as usual.
+    await tokensFor(provider, CHATGPT, 'https://chatgpt.com/connector_platform_oauth_redirect')
+    const chat = await provider.handleAuthorize(new Request(await authorizeUrl(CHATGPT, 'https://chatgpt.com/connector_platform_oauth_redirect')), PERSON)
+    expect(chat.status).toBe(302)
+  })
+
+  it('S1: IP-literal, trailing-dot, dotless and non-443 client_ids are refused before any fetch', async () => {
+    for (const bad of [
+      'https://[::ffff:a9fe:a9fe]/c.json',
+      'https://[::ffff:7f00:1]/c.json',
+      'https://[64:ff9b::a9fe:a9fe]/c.json',
+      'https://169.254.169.254/latest',
+      'https://2130706433/c.json',
+      'https://0x7f000001/c.json',
+      'https://localhost./c.json',
+      'https://metadata.google.internal./c.json',
+      'https://localhost/c.json',
+      'https://claude.ai:8443/x',
+    ])
+      expect(cimdClientIdProblem(bad), bad).not.toBeNull()
+    const { fetcher, calls } = makeFetcher()
+    const provider = makeProvider({ fetcher })
+    const res = await provider.handleAuthorize(new Request(await authorizeUrl('https://[::ffff:a9fe:a9fe]/c.json', 'http://localhost:1/callback')), PERSON)
+    expect(res.status).toBe(400)
+    expect(calls).toEqual([])
+  })
+
+  it('S3: an exchange cannot move the audience sideways or wider; root → /mcp narrows', async () => {
+    const provider = makeProvider()
+    const clientId = await register(provider)
+    const mcp = await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'sb:read', resource: 'https://api.sb/mcp' })
+    const wider = await provider.exchangeToken({ subject_token: mcp.access_token, subject_token_type: ACCESS, actor: { sub: 'w' }, resource: 'https://api.sb' })
+    expect(wider.ok).toBe(false)
+    if (!wider.ok) expect(wider.error).toBe('invalid_target')
+    const root = await tokensFor(provider, clientId, 'https://dcr.example/cb', { scope: 'sb:read', resource: 'https://api.sb' })
+    const narrow = await provider.exchangeToken({ subject_token: root.access_token, subject_token_type: ACCESS, actor: { sub: 'w' }, resource: 'https://api.sb/mcp' })
+    expect(narrow.ok).toBe(true)
+  })
+})

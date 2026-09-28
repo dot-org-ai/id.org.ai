@@ -16,7 +16,8 @@
 
 /** True when `host` is a private / loopback / link-local / metadata address. */
 export function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[/, '').replace(/\]$/, '')
+  // Trailing dots name the same host (`localhost.` is localhost).
+  const h = host.toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.+$/, '')
   if (h.length === 0) return true
 
   // Names that never resolve to a public host.

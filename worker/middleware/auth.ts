@@ -19,6 +19,7 @@ import { getStubForIdentity } from './tenant'
 import { mcpResourceUri, mcpWwwAuthenticate, isMcpPath, canonicalizeResourceUri } from '../utils/mcp-resource'
 import type { IdentityStub } from '../../src/server/do/Identity'
 import { requestOriginOf } from '../../src/sdk/csrf'
+import { isTokenRevokedIn } from '../../src/sdk/oauth/provider'
 
 /**
  * OAuth 2.1 resource-server validation for opaque `at_` access tokens
@@ -70,10 +71,18 @@ async function tryOAuthAccessToken(c: any): Promise<Response | boolean> {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const res = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${token}` }).catch(() => ({}) as any)
   const rec = (res?.value ?? undefined) as
-    | { identityId?: string; scopes?: string[]; expiresAt?: number; resource?: string | string[] | null }
+    | { identityId?: string; clientId?: string; scopes?: string[]; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; resource?: string | string[] | null }
     | undefined
 
   if (!rec) return reject('Invalid access token')
+  // A revoked grant or family (the tombstone is written before anything else).
+  const revoked = await isTokenRevokedIn(
+    async (key) => ((await oauthStub.oauthStorageOp({ op: 'get', key })) as { value?: unknown })?.value,
+    { identityId: rec.identityId, clientId: rec.clientId ?? '', createdAt: rec.createdAt ?? 0, grantedAt: rec.grantedAt, family: rec.family },
+  ).catch(() => true)
+  if (revoked) {
+    return reject('Access token has been revoked')
+  }
 
   // Fail closed: a record without a positive, finite numeric expiry is
   // treated as expired, never as non-expiring. Mirrors the canonical
