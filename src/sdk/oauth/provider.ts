@@ -48,10 +48,28 @@
 // more ergonomic API surface for external consumers.
 // ============================================================================
 
-import { SigningKeyManager, signJWT, type AccessTokenClaims } from '../jwt/signing'
+import { SigningKeyManager, signJWT, verifyJWTWithKeyManager, type AccessTokenClaims } from '../jwt/signing'
+import {
+  ACCESS_TOKEN_JWT_TTL,
+  ACCESS_TOKEN_TYP,
+  AUD_BOUND_HEADER,
+  peekJwtHeader,
+  signAccessTokenJwt,
+  type ActorClaim,
+} from './access-token-jwt'
+import {
+  CIMD_NEGATIVE_TTL_S,
+  cimdClientIdProblem,
+  cimdRedirectMatches,
+  cimdTtlSeconds,
+  isLoopbackUri,
+  looksLikeCimdClientId,
+  parseClientMetadataDocument,
+} from './cimd'
 import { canonicalHostname } from '../csrf'
 import {
   OIDC_SCOPES,
+  SB_RESOURCES,
   SB_SCOPE_DO,
   SCOPES_SUPPORTED,
   SCOPE_DESCRIPTIONS,
@@ -145,6 +163,30 @@ interface AccessToken {
                                // /mcp) so a token minted for one resource cannot
                                // be replayed against another.
   signIn?: SignInContext       // how the person signed in, for userinfo amr / idp
+  family?: string              // the grant's refresh-token family: revoking it deletes this token
+  grantedAt?: number           // when the Person's grant was made (see isTokenRevoked)
+}
+
+/**
+ * The server-side record of an RFC 9068 JWT access token (`access-jwt:{jti}`).
+ * The JWT itself is self-contained; this record lets introspection answer for
+ * it and lets revoking the grant mark it inactive there. A resource server
+ * that verifies the JWT locally sees a revocation only when the token expires
+ * (ACCESS_TOKEN_JWT_TTL, 15 minutes).
+ */
+interface AccessTokenJwtRecord {
+  jti: string
+  clientId: string
+  identityId: string
+  scopes: string[]
+  resource: string
+  family?: string
+  act?: ActorClaim
+  issuer: string
+  expiresAt: number
+  createdAt: number
+  grantedAt?: number
+  revoked?: boolean
 }
 
 // Internal storage type — see OAuthRefreshToken in ./types.ts for canonical API type
@@ -170,6 +212,12 @@ interface RefreshToken {
    */
   consumerHost?: string
   signIn?: SignInContext       // carried through rotation so refreshed id_tokens keep amr / idp
+  /**
+   * When the Person's grant (the authorization code or device approval) was
+   * made; carried through every rotation. A grant revoked at or after this
+   * time is dead, whatever rotation raced the revocation.
+   */
+  grantedAt?: number
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -180,6 +228,7 @@ interface DeviceCode {
   scopes: string[]
   status: 'pending' | 'approved' | 'denied' | 'expired'
   identityId?: string          // set when user approves
+  approvedAt?: number          // when the Person approved (the grant's time, see isTokenRevoked)
   interval: number             // polling interval in seconds
   expiresAt: number
   createdAt: number
@@ -230,7 +279,7 @@ function tierFromLevel(level: number | undefined): string | undefined {
 }
 
 /** Build the OIDC discovery document. Shared between OAuthProvider and server-side facade. */
-export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, unknown> {
+export function buildOpenIDConfiguration(config: OAuthConfig, features: { cimd?: boolean } = {}): Record<string, unknown> {
   return {
     issuer: config.issuer,
     authorization_endpoint: config.authorizationEndpoint,
@@ -255,8 +304,42 @@ export function buildOpenIDConfiguration(config: OAuthConfig): Record<string, un
     code_challenge_methods_supported: ['S256'],
     // RFC 9207: every authorization response carries `iss`.
     authorization_response_iss_parameter_supported: true,
+    // Client ID Metadata Documents: an https client_id is fetched and validated.
+    ...(features.cimd && { client_id_metadata_document_supported: true }),
     claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
   }
+}
+
+/** `grant:{identity}:{client}:` — the families (grants) a Person gave one client. Components are URI-encoded (both may contain ':'). */
+function grantIndexPrefix(identityId: string, clientId: string): string {
+  return `grant:${encodeURIComponent(identityId)}:${encodeURIComponent(clientId)}:`
+}
+function grantIndexKey(identityId: string, clientId: string, family: string): string {
+  return `${grantIndexPrefix(identityId, clientId)}${family}`
+}
+/**
+ * The revocation check over any storage getter (the provider's, or the
+ * worker's direct DO reads at /mcp and userinfo). See OAuthProvider.isTokenRevoked.
+ */
+export async function isTokenRevokedIn(
+  get: (key: string) => Promise<unknown>,
+  rec: { identityId?: string; clientId: string; createdAt: number; grantedAt?: number; family?: string },
+): Promise<boolean> {
+  if (rec.family && (await get(familyRevokedKey(rec.family)))) return true
+  if (rec.identityId) {
+    const tomb = (await get(grantRevokedKey(rec.identityId, rec.clientId))) as { at?: number } | undefined
+    if (tomb && typeof tomb.at === 'number' && (rec.grantedAt ?? rec.createdAt) <= tomb.at) return true
+  }
+  return false
+}
+
+/** `grant-revoked:{identity}:{client}` → { at }: every grant made at or before `at` is dead. */
+function grantRevokedKey(identityId: string, clientId: string): string {
+  return `grant-revoked:${encodeURIComponent(identityId)}:${encodeURIComponent(clientId)}`
+}
+/** `fam-revoked:{family}` → { at }: the whole family is dead. */
+function familyRevokedKey(family: string): string {
+  return `fam-revoked:${family}`
 }
 
 // Internal storage abstraction — see OAuthStorage in ./storage.ts for canonical API type
@@ -417,6 +500,26 @@ export type OAuthAuditEmit = (event: {
   userAgent?: string
 }) => Promise<void> | void
 
+/**
+ * Fetch a Client ID Metadata Document (worker/utils/client-metadata.ts owns
+ * the SSRF guards, the size and time limits and the no-redirect rule). The
+ * provider validates and caches what comes back.
+ */
+export type ClientMetadataFetcher = (
+  url: string,
+) => Promise<
+  | { ok: true; doc: unknown; cacheControl: string | null }
+  /** `transient`: nothing was learned about this URL (e.g. the caller was rate-limited); do not cache. */
+  | { ok: false; error: string; transient?: boolean }
+>
+
+/** A cached CIMD fetch: the document, or the error, until `expiresAt`. */
+interface CimdCacheEntry {
+  doc?: unknown
+  error?: string
+  expiresAt: number
+}
+
 export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
@@ -424,6 +527,7 @@ export class OAuthProvider {
   private signingKeyManager?: SigningKeyManager
   private trustedAccount?: TrustedAccountConfig
   private auditEmit?: OAuthAuditEmit
+  private fetchClientMetadata?: ClientMetadataFetcher
 
   get issuer(): string {
     return this.config.issuer
@@ -458,6 +562,12 @@ export class OAuthProvider {
      * no per-request traceability. DCR'd clients are intentionally untouched.
      */
     auditEmit?: OAuthAuditEmit
+    /**
+     * Enables Client ID Metadata Documents: a client_id that is an https URL
+     * is fetched with this and validated (src/sdk/oauth/cimd.ts). Without it,
+     * such a client_id is simply unknown.
+     */
+    fetchClientMetadata?: ClientMetadataFetcher
   }) {
     this.storage = options.storage
     this.config = options.config
@@ -465,6 +575,7 @@ export class OAuthProvider {
     this.signingKeyManager = options.signingKeyManager
     this.trustedAccount = options.trustedAccount
     this.auditEmit = options.auditEmit
+    this.fetchClientMetadata = options.fetchClientMetadata
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -524,7 +635,7 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   getOpenIDConfiguration(): Response {
-    return jsonResponse(buildOpenIDConfiguration(this.config))
+    return jsonResponse(buildOpenIDConfiguration(this.config, { cimd: !!this.fetchClientMetadata }))
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -686,8 +797,13 @@ export class OAuthProvider {
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
     const hasFullConsent = !!existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
     const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
+    // A CIMD client with a loopback redirect is a public native client whose
+    // client_id is public and whose port is free: anyone can start its flow
+    // and catch the code on the Person's localhost. RFC 8252 §8.6: never
+    // approve it silently, even when consent is on record.
+    const alwaysAsk = looksLikeCimdClientId(clientId) && isLoopbackUri(redirectUri)
 
-    if (consentRequired && !hasFullConsent) {
+    if ((consentRequired && !hasFullConsent) || alwaysAsk) {
       return this.renderConsentPage(client, {
         clientId,
         redirectUri,
@@ -730,6 +846,15 @@ export class OAuthProvider {
       }
       return { ok: true, client: this.buildTrustedAccountClient() }
     }
+    // Client ID Metadata Document: the client is what its URL publishes.
+    if (looksLikeCimdClientId(clientId)) {
+      const resolved = await this.resolveCimdClient(clientId)
+      if (!resolved.ok) return { ok: false, response: oauthError('invalid_client', resolved.description) }
+      if (!redirectUri || !cimdRedirectMatches(resolved.client.redirectUris, redirectUri)) {
+        return { ok: false, response: oauthError('invalid_request', 'Invalid redirect_uri') }
+      }
+      return { ok: true, client: resolved.client }
+    }
     const client = await this.getClient(clientId)
     if (!client) {
       return { ok: false, response: oauthError('invalid_client', 'Unknown client_id') }
@@ -739,6 +864,47 @@ export class OAuthProvider {
       return { ok: false, response: oauthError('invalid_request', 'Invalid redirect_uri') }
     }
     return { ok: true, client }
+  }
+
+  /**
+   * Resolve a CIMD client: validate the client_id URL, then the cached or
+   * freshly fetched metadata document. A failed fetch is remembered for
+   * CIMD_NEGATIVE_TTL_S; a document for its Cache-Control max-age, clamped to
+   * 5 minutes .. 24 hours. Fails closed: no stale document is used.
+   */
+  private async resolveCimdClient(clientId: string): Promise<{ ok: true; client: OAuthProviderClient } | { ok: false; description: string }> {
+    if (!this.fetchClientMetadata) return { ok: false, description: 'Unknown client_id' }
+    const problem = cimdClientIdProblem(clientId)
+    if (problem) return { ok: false, description: problem }
+
+    const cacheKey = `cimd:${clientId}`
+    const now = Date.now()
+    const cached = await this.storage.get<CimdCacheEntry>(cacheKey)
+    if (cached && cached.expiresAt > now) {
+      if (cached.error !== undefined) return { ok: false, description: cached.error }
+      return parseClientMetadataDocument(clientId, cached.doc)
+    }
+
+    let entry: CimdCacheEntry
+    try {
+      const fetched = await this.fetchClientMetadata(clientId)
+      if (!fetched.ok && fetched.transient) {
+        return { ok: false, description: `client metadata could not be fetched: ${fetched.error}` }
+      }
+      if (!fetched.ok) {
+        entry = { error: `client metadata could not be fetched: ${fetched.error}`, expiresAt: now + CIMD_NEGATIVE_TTL_S * 1000 }
+      } else {
+        const parsed = parseClientMetadataDocument(clientId, fetched.doc)
+        entry = parsed.ok
+          ? { doc: fetched.doc, expiresAt: now + cimdTtlSeconds(fetched.cacheControl) * 1000 }
+          : { error: parsed.description, expiresAt: now + CIMD_NEGATIVE_TTL_S * 1000 }
+      }
+    } catch (err) {
+      entry = { error: `client metadata could not be fetched: ${err instanceof Error ? err.message : 'error'}`, expiresAt: now + CIMD_NEGATIVE_TTL_S * 1000 }
+    }
+    await this.storage.put(cacheKey, entry)
+    if (entry.error !== undefined) return { ok: false, description: entry.error }
+    return parseClientMetadataDocument(clientId, entry.doc)
   }
 
   /**
@@ -956,6 +1122,11 @@ export class OAuthProvider {
     if (!clientId) {
       return oauthError('invalid_request', 'client_id is required')
     }
+    // CIMD clients use the authorization code flow only (and this endpoint is
+    // unauthenticated: it must not make id.org.ai fetch arbitrary URLs).
+    if (looksLikeCimdClientId(clientId)) {
+      return oauthError('unauthorized_client', 'Client ID Metadata Document clients cannot use the device flow')
+    }
 
     const client = await this.getClient(clientId)
     if (!client) {
@@ -1065,6 +1236,7 @@ export class OAuthProvider {
         ...deviceCode,
         status: approved ? 'approved' : 'denied',
         identityId: approved ? identityId : undefined,
+        ...(approved && { approvedAt: Date.now() }),
       } satisfies DeviceCode)
 
       if (approved) {
@@ -1102,6 +1274,12 @@ export class OAuthProvider {
 
     if (tokenData.expiresAt < Date.now()) {
       return jsonResponse({ error: 'invalid_token', error_description: 'Token has expired' }, 401, {
+        'WWW-Authenticate': 'Bearer error="invalid_token"',
+      })
+    }
+
+    if (await this.isTokenRevoked(tokenData)) {
+      return jsonResponse({ error: 'invalid_token', error_description: 'Token has been revoked' }, 401, {
         'WWW-Authenticate': 'Bearer error="invalid_token"',
       })
     }
@@ -1154,7 +1332,7 @@ export class OAuthProvider {
     // Try as access token
     if (token.startsWith('at_')) {
       const tokenData = await this.storage.get<AccessToken>(`access:${token}`)
-      if (tokenData && tokenData.expiresAt > Date.now()) {
+      if (tokenData && tokenData.expiresAt > Date.now() && !(await this.isTokenRevoked(tokenData))) {
         const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
         const tier = tierFromLevel(identity?.level)
         return jsonResponse({
@@ -1173,10 +1351,33 @@ export class OAuthProvider {
       }
     }
 
+    // Try as an RFC 9068 JWT access token
+    if (token.split('.').length === 3) {
+      const rec = await this.verifyAccessTokenJwt(token)
+      if (rec) {
+        const identity = await this.getIdentity(rec.identityId)
+        const tier = tierFromLevel(identity?.level)
+        return jsonResponse({
+          active: true,
+          client_id: rec.clientId,
+          sub: rec.identityId,
+          scope: rec.scopes.join(' '),
+          token_type: 'Bearer',
+          exp: Math.floor(rec.expiresAt / 1000),
+          iat: Math.floor(rec.createdAt / 1000),
+          aud: rec.resource,
+          iss: rec.issuer,
+          jti: rec.jti,
+          ...(rec.act && { act: rec.act }),
+          ...(tier && { tier }),
+        })
+      }
+    }
+
     // Try as refresh token
     if (token.startsWith('rt_')) {
       const tokenData = await this.storage.get<RefreshToken>(`refresh:${token}`)
-      if (tokenData && !tokenData.revoked && tokenData.expiresAt > Date.now()) {
+      if (tokenData && !tokenData.revoked && tokenData.expiresAt > Date.now() && !(await this.isTokenRevoked(tokenData))) {
         const identity = tokenData.identityId ? await this.getIdentity(tokenData.identityId) : null
         const tier = tierFromLevel(identity?.level)
         return jsonResponse({
@@ -1218,6 +1419,16 @@ export class OAuthProvider {
       await this.storage.delete(`access:${token}`)
     }
 
+    // Revoke a JWT access token: introspection answers inactive from now on
+    // (a resource server verifying it locally sees that at its expiry).
+    if (token.split('.').length === 3) {
+      const rec = await this.verifyAccessTokenJwt(token)
+      if (rec) {
+        const { claims: _claims, ...stored } = rec
+        await this.storage.put(`access-jwt:${rec.jti}`, { ...stored, revoked: true } satisfies AccessTokenJwtRecord)
+      }
+    }
+
     // Revoke refresh token (mark as revoked, don't delete — for family detection)
     if (token.startsWith('rt_')) {
       const tokenData = await this.storage.get<RefreshToken>(`refresh:${token}`)
@@ -1245,6 +1456,7 @@ export class OAuthProvider {
     const tokenData = await this.storage.get<AccessToken>(`access:${token}`)
     if (!tokenData) return null
     if (tokenData.expiresAt < Date.now()) return null
+    if (await this.isTokenRevoked(tokenData)) return null
 
     return tokenData
   }
@@ -1326,12 +1538,23 @@ export class OAuthProvider {
       if (client?.secret && client.secret !== clientSecret) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
       }
+      // A code without PKCE is only ever issued to a confidential client;
+      // a public one (no secret, or a CIMD client) must never redeem one.
+      if (!client?.secret) {
+        return oauthError('invalid_grant', 'code_verifier is required')
+      }
     }
 
     // ── RFC 8707 at the token endpoint: the resource, if sent, must be the
     //    one the code was granted for (a client cannot re-target it) ─────
     const target = this.tokenRequestResource(body, codeData.resource)
     if (!target.ok) return target.response
+
+    // ── The Person may have revoked this client since the code was issued ─
+    if (await this.isTokenRevoked({ identityId: codeData.identityId, clientId, createdAt: codeData.createdAt })) {
+      await this.storage.delete(`code:${code}`)
+      return oauthError('invalid_grant', 'The grant for this code has been revoked')
+    }
 
     // ── Delete authorization code (one-time use) ────────────────────────
     await this.storage.delete(`code:${code}`)
@@ -1355,6 +1578,7 @@ export class OAuthProvider {
       effectiveIssuer: codeData.effectiveIssuer,
       consumerHost,
       signIn: codeData.signIn,
+      grantedAt: codeData.createdAt,
     })
   }
 
@@ -1382,7 +1606,8 @@ export class OAuthProvider {
     // ── Verify client secret for confidential clients ───────────────────
     // Trusted-account is a public client (no secret); skip the lookup so we
     // don't materialise a DCR row for it.
-    if (!this.isTrustedAccountClient(clientId)) {
+    // CIMD clients are public (no secret), so there is nothing to look up.
+    if (!this.isTrustedAccountClient(clientId) && !looksLikeCimdClientId(clientId)) {
       const client = await this.getClient(clientId)
       if (client?.secret && client.secret !== clientSecret) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
@@ -1427,6 +1652,14 @@ export class OAuthProvider {
       return oauthError('invalid_grant', 'Refresh token has already been used')
     }
 
+    // ── The grant (or this family) may have been revoked: refuse, whatever
+    //    this token's own record says (a racing rotation may have written it) ─
+    const grantedAt = tokenData.grantedAt ?? tokenData.createdAt
+    if (await this.isTokenRevoked({ identityId: tokenData.identityId, clientId, createdAt: tokenData.createdAt, grantedAt, family: tokenData.family })) {
+      await this.storage.put(`refresh:${refreshTokenId}`, { ...tokenData, revoked: true } satisfies RefreshToken)
+      return oauthError('invalid_grant', 'Refresh token has been revoked')
+    }
+
     // ── Rotate: revoke old refresh token ────────────────────────────────
     await this.storage.put(`refresh:${refreshTokenId}`, {
       ...tokenData,
@@ -1446,6 +1679,7 @@ export class OAuthProvider {
       // can keep enforcing the allowlist (ADR-0007).
       consumerHost: tokenData.consumerHost,
       signIn: tokenData.signIn,
+      grantedAt,
     })
   }
 
@@ -1483,6 +1717,10 @@ export class OAuthProvider {
   ): Promise<Response> {
     if (!clientId || !clientSecret) {
       return oauthError('invalid_client', 'client_id and client_secret are required', 401)
+    }
+    // A CIMD client has no secret; never fetch its document from here.
+    if (looksLikeCimdClientId(clientId)) {
+      return oauthError('invalid_client', 'Unknown client', 401)
     }
 
     const client = await this.getClient(clientId)
@@ -1549,6 +1787,9 @@ export class OAuthProvider {
     if (!deviceCodeId) {
       return oauthError('invalid_request', 'device_code is required')
     }
+    if (looksLikeCimdClientId(clientId)) {
+      return oauthError('invalid_client', 'Unknown client')
+    }
 
     const client = await this.getClient(clientId)
     if (!client) {
@@ -1587,11 +1828,19 @@ export class OAuthProvider {
         await this.storage.delete(`device:${deviceCodeId}`)
         await this.storage.delete(`device-user:${deviceCode.userCode}`)
 
+        // The grant is the approval: if the Person revoked this client since
+        // approving, the approval is dead too.
+        const grantedAt = deviceCode.approvedAt ?? deviceCode.createdAt
+        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt })) {
+          return oauthError('invalid_grant', 'The grant for this device code has been revoked')
+        }
+
         // Issue tokens
         return this.issueTokenPair({
           clientId,
           identityId: deviceCode.identityId,
           scopes: deviceCode.scopes,
+          grantedAt,
         })
       }
 
@@ -1733,14 +1982,33 @@ export class OAuthProvider {
      * refresh token keeps the grant's `resource`.
      */
     accessResource?: string
+    /** When the Person's grant was made (the code, or the device approval); carried through rotation. */
+    grantedAt?: number
   }): Promise<Response> {
     const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn } = options
+    const grantedAt = options.grantedAt ?? Date.now()
     const resource = options.resource
     const tokenAudience = options.accessResource ?? resource
     const now = Date.now()
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
     const tokenFamily = family || crypto.randomUUID()
+    const issuer = effectiveIssuer || this.config.issuer
+
+    // An access token for api.sb is an RFC 9068 JWT, which api.sb verifies
+    // against the JWKS with no call back here. Every other access token stays
+    // opaque (at_…), as existing clients and resource servers expect. If
+    // signing fails the token is opaque too (introspection still answers).
+    let accessTokenValue = accessTokenId
+    let accessExpiresIn = ACCESS_TOKEN_TTL
+    const jwt =
+      tokenAudience !== undefined && isSbResource(tokenAudience) && this.signingKeyManager
+        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt }).catch(() => null)
+        : null
+    if (jwt) {
+      accessTokenValue = jwt.token
+      accessExpiresIn = jwt.expiresIn
+    }
 
     const accessToken: AccessToken = {
       id: accessTokenId,
@@ -1754,6 +2022,8 @@ export class OAuthProvider {
       // authorize → code → token, and re-carried through refresh rotation).
       ...(tokenAudience !== undefined && { resource: tokenAudience }),
       ...(signIn && { signIn }),
+      family: tokenFamily,
+      grantedAt,
     }
 
     const refreshToken: RefreshToken = {
@@ -1769,15 +2039,22 @@ export class OAuthProvider {
       ...(effectiveIssuer !== undefined && { effectiveIssuer }),
       ...(consumerHost !== undefined && { consumerHost }),
       ...(signIn && { signIn }),
+      grantedAt,
     }
 
-    await this.storage.put(`access:${accessTokenId}`, accessToken, {
-      expirationTtl: ACCESS_TOKEN_TTL + 60,
-    })
+    if (!jwt) {
+      await this.storage.put(`access:${accessTokenId}`, accessToken, {
+        expirationTtl: ACCESS_TOKEN_TTL + 60,
+      })
+      await this.storage.put(`fam:${tokenFamily}:at:${accessTokenId}`, 1)
+    }
 
     await this.storage.put(`refresh:${refreshTokenId}`, refreshToken, {
       expirationTtl: REFRESH_TOKEN_TTL + 60,
     })
+    // Indexes for revocation: the family's tokens, and the grant's families.
+    await this.storage.put(`fam:${tokenFamily}:rt:${refreshTokenId}`, 1)
+    await this.storage.put(grantIndexKey(identityId, clientId, tokenFamily), { createdAt: now })
 
     // ADR-0007 (BLOCKER 2): emit token-issuance audit for trusted-account
     // flows. Trace points: access token id, refresh token id, consumer host.
@@ -1818,8 +2095,8 @@ export class OAuthProvider {
         if (tier) claims.tier = tier
         applySignInClaims(claims, signIn)
 
-        // Compute at_hash (OIDC Core Section 3.1.3.6)
-        const tokenHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessTokenId))
+        // Compute at_hash (OIDC Core Section 3.1.3.6) over the access token issued
+        const tokenHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessTokenValue))
         const halfHash = new Uint8Array(tokenHash).slice(0, 16)
         let atHashBinary = ''
         for (const byte of halfHash) atHashBinary += String.fromCharCode(byte)
@@ -1836,13 +2113,88 @@ export class OAuthProvider {
     }
 
     return jsonResponse({
-      access_token: accessTokenId,
+      access_token: accessTokenValue,
       token_type: 'Bearer',
-      expires_in: ACCESS_TOKEN_TTL,
+      expires_in: accessExpiresIn,
       refresh_token: refreshTokenId,
       scope: scopes.join(' '),
       ...(idToken && { id_token: idToken }),
     })
+  }
+
+  /**
+   * Sign an RFC 9068 access token and keep its record (`access-jwt:{jti}`)
+   * for introspection and revocation. Its lifetime is ACCESS_TOKEN_JWT_TTL,
+   * never past `notAfter` (an exchanged token does not outlive its subject).
+   */
+  private async mintAccessTokenJwt(params: {
+    clientId: string
+    identityId: string
+    scopes: string[]
+    resource: string
+    family?: string
+    issuer: string
+    act?: ActorClaim
+    notAfter?: number
+    grantedAt?: number
+  }): Promise<{ token: string; expiresIn: number; jti: string }> {
+    if (!this.signingKeyManager) throw new Error('no signing key')
+    const key = await this.signingKeyManager.getCurrentKey()
+    const nowMs = Date.now()
+    const iat = Math.floor(nowMs / 1000)
+    let exp = iat + ACCESS_TOKEN_JWT_TTL
+    if (params.notAfter !== undefined) exp = Math.min(exp, Math.floor(params.notAfter / 1000))
+    if (exp <= iat) throw new Error('subject token is about to expire')
+    const jti = crypto.randomUUID()
+    const token = await signAccessTokenJwt(key, {
+      iss: params.issuer,
+      sub: params.identityId,
+      aud: params.resource,
+      client_id: params.clientId,
+      scope: params.scopes.join(' '),
+      iat,
+      exp,
+      jti,
+      ...(params.act && { act: params.act }),
+    })
+    const record: AccessTokenJwtRecord = {
+      jti,
+      clientId: params.clientId,
+      identityId: params.identityId,
+      scopes: params.scopes,
+      resource: params.resource,
+      ...(params.family !== undefined && { family: params.family }),
+      ...(params.act && { act: params.act }),
+      issuer: params.issuer,
+      expiresAt: exp * 1000,
+      createdAt: nowMs,
+      grantedAt: params.grantedAt ?? nowMs,
+    }
+    await this.storage.put(`access-jwt:${jti}`, record)
+    if (params.family !== undefined) await this.storage.put(`fam:${params.family}:jwt:${jti}`, 1)
+    return { token, expiresIn: exp - iat, jti }
+  }
+
+  /**
+   * Verify an id.org.ai JWT access token and return its live record: the
+   * signature (id.org.ai's keys), `typ: at+jwt`, the `aud_bound` extension,
+   * expiry, and that the grant it came from has not been revoked. Null when
+   * any check fails.
+   */
+  private async verifyAccessTokenJwt(token: string): Promise<(AccessTokenJwtRecord & { claims: Record<string, unknown> }) | null> {
+    if (!this.signingKeyManager) return null
+    const header = peekJwtHeader(token)
+    if (!header || header.typ !== ACCESS_TOKEN_TYP) return null
+    await this.signingKeyManager.getJWKS() // loads the keys
+    const claims = await verifyJWTWithKeyManager(token, this.signingKeyManager, { crit: [AUD_BOUND_HEADER], clockTolerance: 0 })
+    if (!claims || typeof claims.jti !== 'string' || typeof claims.exp !== 'number') return null
+    if (claims.exp * 1000 <= Date.now()) return null
+    const record = await this.storage.get<AccessTokenJwtRecord>(`access-jwt:${claims.jti}`)
+    if (!record || record.revoked || record.expiresAt <= Date.now()) return null
+    if (await this.isTokenRevoked(record)) return null
+    // The record is the authority; the claims must agree with it.
+    if (claims.sub !== record.identityId || claims.client_id !== record.clientId || claims.aud !== record.resource || claims.iss !== record.issuer) return null
+    return { ...record, claims }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1851,6 +2203,11 @@ export class OAuthProvider {
 
   private async getClient(clientId: string): Promise<OAuthProviderClient | null> {
     if (!clientId) return null
+    // An https client_id is a CIMD client: never looked up in `client:` storage.
+    if (looksLikeCimdClientId(clientId)) {
+      const resolved = await this.resolveCimdClient(clientId)
+      return resolved.ok ? resolved.client : null
+    }
     const client = await this.storage.get<OAuthProviderClient>(`client:${clientId}`)
     return client ?? null
   }
@@ -1860,6 +2217,8 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private async revokeRefreshTokenFamily(family: string): Promise<void> {
+    // Tombstone first: a rotation racing this revocation is refused at use.
+    await this.storage.put(familyRevokedKey(family), { at: Date.now() })
     const tokens = await this.storage.list<RefreshToken>({ prefix: 'refresh:rt_' })
     const updates: Promise<void>[] = []
 
@@ -1875,6 +2234,191 @@ export class OAuthProvider {
     }
 
     await Promise.all(updates)
+    await this.revokeIndexedFamilyTokens(family)
+  }
+
+  /**
+   * RFC 7009 §2.1: revoking a grant's refresh token also invalidates the
+   * access tokens issued from it. Opaque access tokens are deleted; JWT access
+   * tokens are marked revoked (introspection says inactive at once; a
+   * resource server verifying locally sees it at expiry, ≤ 15 minutes).
+   */
+  private async revokeIndexedFamilyTokens(family: string): Promise<void> {
+    const index = await this.storage.list<unknown>({ prefix: `fam:${family}:` })
+    for (const key of index.keys()) {
+      const rest = key.slice(`fam:${family}:`.length)
+      const sep = rest.indexOf(':')
+      const kind = rest.slice(0, sep)
+      const id = rest.slice(sep + 1)
+      if (kind === 'at') {
+        await this.storage.delete(`access:${id}`)
+      } else if (kind === 'jwt') {
+        const rec = await this.storage.get<AccessTokenJwtRecord>(`access-jwt:${id}`)
+        if (rec && !rec.revoked) await this.storage.put(`access-jwt:${id}`, { ...rec, revoked: true } satisfies AccessTokenJwtRecord)
+      } else if (kind === 'rt') {
+        const rec = await this.storage.get<RefreshToken>(`refresh:${id}`)
+        if (rec && !rec.revoked) await this.storage.put(`refresh:${id}`, { ...rec, revoked: true } satisfies RefreshToken)
+      }
+    }
+  }
+
+  /**
+   * Is the grant a token (or code) belongs to revoked? Revocation writes its
+   * tombstone before anything else, and every point of use asks this, so a
+   * rotation, redemption or exchange racing a revocation cannot outlive it:
+   *   - the Person revoked the client's grant at or after the grant was made
+   *     (`grant-revoked:`), or
+   *   - the token's refresh family was revoked (`fam-revoked:`; RFC 7009).
+   * `grantedAt` falls back to `createdAt` for records made before it existed.
+   */
+  async isTokenRevoked(rec: { identityId?: string; clientId: string; createdAt: number; grantedAt?: number; family?: string }): Promise<boolean> {
+    return isTokenRevokedIn((key) => this.storage.get(key), rec)
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Grants: what a Person has delegated to each client
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** The clients a Person has consented to, with the scopes they hold. */
+  async listGrants(identityId: string): Promise<Array<{ client_id: string; scopes: string[]; created_at: number }>> {
+    const prefix = `consent:${identityId}:`
+    const consents = await this.storage.list<ConsentRecord>({ prefix })
+    const out = new Map<string, { client_id: string; scopes: string[]; created_at: number }>()
+    for (const [key, rec] of consents) out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes: rec.scopes, created_at: rec.createdAt })
+    // Clients holding tokens without a consent record (device flow, first-party
+    // clients) come from the grant index, unless revoked since.
+    const gPrefix = `grant:${encodeURIComponent(identityId)}:`
+    for (const [key, rec] of await this.storage.list<{ createdAt?: number }>({ prefix: gPrefix })) {
+      const rest = key.slice(gPrefix.length)
+      const clientId = decodeURIComponent(rest.slice(0, rest.lastIndexOf(':')))
+      if (out.has(clientId)) continue
+      const createdAt = rec?.createdAt ?? 0
+      if (await this.isTokenRevoked({ identityId, clientId, createdAt, grantedAt: createdAt })) continue
+      out.set(clientId, { client_id: clientId, scopes: [], created_at: createdAt })
+    }
+    return [...out.values()]
+  }
+
+  /**
+   * Revoke everything a Person delegated to one client: the consent record
+   * (the next authorization asks again), every refresh token of every grant
+   * (so the client cannot mint new access tokens), opaque access tokens
+   * (deleted) and JWT access tokens (inactive at introspection; at a resource
+   * server verifying locally, expired within ACCESS_TOKEN_JWT_TTL).
+   */
+  async revokeGrant(identityId: string, clientId: string): Promise<{ revoked_families: number }> {
+    // The tombstone first: from here on every code, refresh token, access
+    // token and exchange from a grant made up to now is refused at use
+    // (isTokenRevoked), including tokens made before the family index existed
+    // and tokens a racing rotation is writing right now.
+    // Consent first, so no silent authorization can start after the tombstone
+    // from a consent read before it.
+    await this.storage.delete(`consent:${identityId}:${clientId}`)
+    await this.storage.put(grantRevokedKey(identityId, clientId), { at: Date.now() })
+    // Then tidy what the index knows about (opaque access tokens deleted, JWT
+    // records and refresh tokens marked), so the records say so too.
+    const families = new Set<string>()
+    const prefix = grantIndexPrefix(identityId, clientId)
+    for (const key of (await this.storage.list<unknown>({ prefix })).keys()) families.add(key.slice(prefix.length))
+    for (const family of families) await this.revokeIndexedFamilyTokens(family)
+    return { revoked_families: families.size }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Token Exchange (RFC 8693) — for api.sb's agents, via the AuthService binding
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Exchange a Person's access token for api.sb plus an agent identity for a
+   * narrower access token that names the agent: `sub` stays the Person,
+   * `act.sub` is the agent (RFC 8693 §4.1; an `act` already on the subject
+   * token is nested under it), `client_id` stays the client the Person
+   * delegated to, `aud` is an api.sb resource.
+   *
+   * Reachable only through the AuthService RPC binding (no HTTP route): the
+   * calling Worker is authenticated by the binding and asserts the actor.
+   * The result can only narrow the subject token (same Person, same client,
+   * api.sb audience, a subset of its scopes, never past its expiry), carries
+   * no refresh token, and dies with the Person's grant.
+   */
+  async exchangeToken(input: {
+    subject_token?: unknown
+    subject_token_type?: unknown
+    requested_token_type?: unknown
+    actor?: unknown
+    resource?: unknown
+    scope?: unknown
+  }): Promise<
+    | { ok: true; access_token: string; issued_token_type: string; token_type: 'Bearer'; expires_in: number; scope: string }
+    | { ok: false; error: string; error_description: string }
+  > {
+    const fail = (error: string, error_description: string) => ({ ok: false as const, error, error_description })
+    const ACCESS = 'urn:ietf:params:oauth:token-type:access_token'
+    if (!this.signingKeyManager) return fail('server_error', 'token exchange needs a signing key')
+    if (input.subject_token_type !== ACCESS) return fail('invalid_request', `subject_token_type must be ${ACCESS}`)
+    if (input.requested_token_type !== undefined && input.requested_token_type !== ACCESS) {
+      return fail('invalid_request', `requested_token_type must be ${ACCESS}`)
+    }
+    const actorSub = input.actor && typeof input.actor === 'object' ? (input.actor as { sub?: unknown }).sub : undefined
+    if (typeof actorSub !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(actorSub)) {
+      return fail('invalid_request', 'actor.sub must be 1-256 visible ASCII characters')
+    }
+    if (typeof input.subject_token !== 'string' || input.subject_token === '') return fail('invalid_request', 'subject_token is required')
+    const subjectToken = input.subject_token
+
+    // ── The subject: a live access token of a Person, for api.sb ─────────
+    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number } | null = null
+    if (subjectToken.startsWith('at_')) {
+      const rec = await this.storage.get<AccessToken>(`access:${subjectToken}`)
+      if (rec && rec.identityId && rec.expiresAt > Date.now() && !(await this.isTokenRevoked(rec))) {
+        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+      }
+    } else {
+      const rec = await this.verifyAccessTokenJwt(subjectToken)
+      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+    }
+    if (!subject) return fail('invalid_grant', 'subject_token is not an active id.org.ai access token')
+    if (subject.resource === undefined || !isSbResource(subject.resource)) {
+      return fail('invalid_target', `only an access token for api.sb (${SB_RESOURCES.join(' or ')}) can be exchanged`)
+    }
+
+    // ── What the new token may say ─────────────────────────────────────────
+    const target = parseResourceIndicators([typeof input.resource === 'string' ? input.resource : undefined])
+    if (!target.ok) return fail('invalid_target', target.description)
+    // The subject's own audience, or the one narrowing the token endpoint
+    // allows (https://api.sb → https://api.sb/mcp); never sideways or wider.
+    const resource = target.resource ?? subject.resource
+    const narrows = sameResource(subject.resource, DEFAULT_SB_RESOURCE) && resource === 'https://api.sb/mcp'
+    if (!sameResource(resource, subject.resource) && !narrows) {
+      return fail('invalid_target', `the subject token is for ${subject.resource}; an exchange may keep it or narrow https://api.sb to https://api.sb/mcp`)
+    }
+    const scopes = typeof input.scope === 'string' ? splitScopes(input.scope) : subject.scopes
+    if (scopes.length === 0) return fail('invalid_scope', 'no scope requested')
+    const extra = scopes.filter((sc) => !subject!.scopes.includes(sc))
+    if (extra.length > 0) return fail('invalid_scope', `the subject token does not hold: ${extra.join(', ')}`)
+
+    let depth = 0
+    for (let a: ActorClaim | undefined = subject.act; a; a = a.act) depth++
+    if (depth >= 4) return fail('invalid_request', 'delegation chain too long')
+    const act: ActorClaim = { sub: actorSub, ...(subject.act && { act: subject.act }) }
+
+    let minted: { token: string; expiresIn: number }
+    try {
+      minted = await this.mintAccessTokenJwt({
+        clientId: subject.clientId,
+        identityId: subject.identityId,
+        scopes,
+        resource,
+        family: subject.family,
+        issuer: subject.issuer,
+        act,
+        notAfter: subject.expiresAt,
+        grantedAt: subject.grantedAt,
+      })
+    } catch (err) {
+      return fail('invalid_grant', err instanceof Error ? err.message : 'could not issue the token')
+    }
+    return { ok: true, access_token: minted.token, issued_token_type: ACCESS, token_type: 'Bearer', expires_in: minted.expiresIn, scope: scopes.join(' ') }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1941,11 +2485,15 @@ export class OAuthProvider {
     }
     const returnsTo = hostOf(params.redirectUri)
     const audience = params.resource ? hostOf(params.resource) : undefined
+    // A CIMD client is named by the host of its client_id URL (which id.org.ai
+    // fetched it from); the document's client_name is only what it calls itself.
+    const cimd = looksLikeCimdClientId(client.id)
+    const appName = cimd ? hostOf(client.id) : client.name
 
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Authorize ${esc(client.name)} - id.org.ai</title>
+  <title>Authorize ${esc(appName)} - id.org.ai</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
@@ -1976,8 +2524,9 @@ export class OAuthProvider {
   <div class="app">
     ${client.logo ? `<img src="${esc(client.logo)}" alt="">` : ''}
     <div>
-      <div class="app-name">${esc(client.name)}</div>
-      ${client.website ? `<div class="app-url">${esc(client.website)}</div>` : ''}
+      <div class="app-name">${esc(appName)}</div>
+      ${cimd ? `<div class="app-url">Calls itself “${esc(client.name)}” · ${esc(client.id)}</div>` : ''}
+      ${client.website && !cimd ? `<div class="app-url">${esc(client.website)}</div>` : ''}
       <div class="app-url">Returns to ${esc(returnsTo)}</div>
       ${audience ? `<div class="app-url">Access for ${esc(audience)}</div>` : ''}
     </div>

@@ -22,6 +22,7 @@ import {
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { indexClientOrigins } from '../utils/relying-parties'
 import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
+import { fetchClientMetadataDocument } from '../utils/client-metadata'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -36,6 +37,10 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 // the diff small (no one-time bootstrap endpoint, no seeding step) and the
 // virtual client's metadata is fully derivable from env config.
 export const TRUSTED_ACCOUNT_CLIENT_ID = 'cid_trusted_account_v1'
+
+/** Uncached Client ID Metadata Document fetches allowed per caller IP per window. */
+const CIMD_FETCHES_PER_IP = 30
+const CIMD_FETCH_WINDOW_MS = 10 * 60 * 1000
 
 /** Parse a comma-separated env value into a Set of bare hostnames. */
 export function parseTrustedAccountDomains(value: string | undefined): Set<string> {
@@ -57,19 +62,28 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
 // ── Helper ──────────────────────────────────────────────────────────────────
 
 export function getOAuthProvider(c: any): OAuthProvider {
+  return createOAuthProvider(c.env, c.req.raw)
+}
+
+/**
+ * The OAuth provider over the shared 'oauth' Durable Object shard. `request`
+ * (optional) supplies the IP and user agent for audit events; RPC callers
+ * (AuthService.exchangeToken) have none.
+ */
+export function createOAuthProvider(env: Env, request?: Request): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
-  const stub = getStubForIdentity(c.env, 'oauth')
-  const signingKeyManager = getSigningKeyManager(c.env)
+  const stub = getStubForIdentity(env, 'oauth')
+  const signingKeyManager = getSigningKeyManager(env)
   const base = 'https://id.org.ai'
-  const allowedDomains = parseTrustedAccountDomains(c.env.TRUSTED_ACCOUNT_DOMAINS)
+  const allowedDomains = parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS)
   // ADR-0007 (BLOCKER 2): wire audit emission through the existing
   // IdentityDO RPC. The DO routes to AuditService which writes immutable
   // `audit:*` rows. Fire-and-forget on the provider side — the request
   // flow never blocks on audit success. We layer the request's IP and UA
   // onto the metadata-only event the provider constructs.
-  const reqIp = c.req.raw.headers.get('cf-connecting-ip') ?? undefined
-  const reqUa = c.req.raw.headers.get('user-agent') ?? undefined
+  const reqIp = request?.headers.get('cf-connecting-ip') ?? undefined
+  const reqUa = request?.headers.get('user-agent') ?? undefined
   return new OAuthProvider({
     storage: {
       async get<T = unknown>(key: string): Promise<T | undefined> {
@@ -113,7 +127,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
     },
     getIdentity: async (id: string) => {
       // Identity data lives in the identity's own shard, not in the oauth shard
-      const identityStub = getStubForIdentity(c.env, id)
+      const identityStub = getStubForIdentity(env, id)
       const identity = await identityStub.getIdentity(id)
       if (!identity) return null
       // The stored Identity says `verified`; the provider reads `emailVerified`
@@ -126,6 +140,15 @@ export function getOAuthProvider(c: any): OAuthProvider {
       }
     },
     signingKeyManager,
+    // Client ID Metadata Documents: an https client_id is fetched (SSRF-guarded),
+    // at most CIMD_FETCHES_PER_IP uncached documents per caller IP per window,
+    // so the unauthenticated authorize endpoint is not an open fetch relay.
+    fetchClientMetadata: async (url: string) => {
+      const ip = request?.headers.get('cf-connecting-ip') ?? 'no-ip'
+      const budget = await stub.consumeBudget({ key: `cimd-fetch:${ip}`, max: CIMD_FETCHES_PER_IP, windowMs: CIMD_FETCH_WINDOW_MS })
+      if (!budget.allowed) return { ok: false, error: 'too many client metadata fetches from this address; try again later', transient: true }
+      return fetchClientMetadataDocument(url)
+    },
     // ADR-0007: enable trusted-account mode only when the allowlist is non-empty.
     ...(allowedDomains.size > 0 && {
       trustedAccount: {
@@ -450,11 +473,22 @@ app.get('/oauth/userinfo', async (c) => {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const tokenResult = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${tokenId}` })
   const tokenData = tokenResult.value as
-    | { identityId?: string; expiresAt?: number; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
+    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
     | undefined
 
   if (!tokenData) {
     return c.json({ error: 'invalid_token' }, 401)
+  }
+  if (
+    await getOAuthProvider(c).isTokenRevoked({
+      identityId: tokenData.identityId,
+      clientId: tokenData.clientId ?? '',
+      createdAt: tokenData.createdAt ?? 0,
+      grantedAt: tokenData.grantedAt,
+      family: tokenData.family,
+    })
+  ) {
+    return c.json({ error: 'invalid_token', error_description: 'Token has been revoked' }, 401)
   }
 
   if (tokenData.expiresAt && tokenData.expiresAt < Date.now()) {
