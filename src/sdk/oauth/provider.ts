@@ -228,6 +228,7 @@ interface DeviceCode {
   scopes: string[]
   status: 'pending' | 'approved' | 'denied' | 'expired'
   identityId?: string          // set when user approves
+  approvedAt?: number          // when the Person approved (the grant's time, see isTokenRevoked)
   interval: number             // polling interval in seconds
   expiresAt: number
   createdAt: number
@@ -1235,6 +1236,7 @@ export class OAuthProvider {
         ...deviceCode,
         status: approved ? 'approved' : 'denied',
         identityId: approved ? identityId : undefined,
+        ...(approved && { approvedAt: Date.now() }),
       } satisfies DeviceCode)
 
       if (approved) {
@@ -1272,6 +1274,12 @@ export class OAuthProvider {
 
     if (tokenData.expiresAt < Date.now()) {
       return jsonResponse({ error: 'invalid_token', error_description: 'Token has expired' }, 401, {
+        'WWW-Authenticate': 'Bearer error="invalid_token"',
+      })
+    }
+
+    if (await this.isTokenRevoked(tokenData)) {
+      return jsonResponse({ error: 'invalid_token', error_description: 'Token has been revoked' }, 401, {
         'WWW-Authenticate': 'Bearer error="invalid_token"',
       })
     }
@@ -1820,12 +1828,19 @@ export class OAuthProvider {
         await this.storage.delete(`device:${deviceCodeId}`)
         await this.storage.delete(`device-user:${deviceCode.userCode}`)
 
+        // The grant is the approval: if the Person revoked this client since
+        // approving, the approval is dead too.
+        const grantedAt = deviceCode.approvedAt ?? deviceCode.createdAt
+        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt })) {
+          return oauthError('invalid_grant', 'The grant for this device code has been revoked')
+        }
+
         // Issue tokens
         return this.issueTokenPair({
           clientId,
           identityId: deviceCode.identityId,
           scopes: deviceCode.scopes,
-          grantedAt: Date.now(),
+          grantedAt,
         })
       }
 
@@ -2268,9 +2283,20 @@ export class OAuthProvider {
   async listGrants(identityId: string): Promise<Array<{ client_id: string; scopes: string[]; created_at: number }>> {
     const prefix = `consent:${identityId}:`
     const consents = await this.storage.list<ConsentRecord>({ prefix })
-    const out: Array<{ client_id: string; scopes: string[]; created_at: number }> = []
-    for (const [key, rec] of consents) out.push({ client_id: key.slice(prefix.length), scopes: rec.scopes, created_at: rec.createdAt })
-    return out
+    const out = new Map<string, { client_id: string; scopes: string[]; created_at: number }>()
+    for (const [key, rec] of consents) out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes: rec.scopes, created_at: rec.createdAt })
+    // Clients holding tokens without a consent record (device flow, first-party
+    // clients) come from the grant index, unless revoked since.
+    const gPrefix = `grant:${encodeURIComponent(identityId)}:`
+    for (const [key, rec] of await this.storage.list<{ createdAt?: number }>({ prefix: gPrefix })) {
+      const rest = key.slice(gPrefix.length)
+      const clientId = decodeURIComponent(rest.slice(0, rest.lastIndexOf(':')))
+      if (out.has(clientId)) continue
+      const createdAt = rec?.createdAt ?? 0
+      if (await this.isTokenRevoked({ identityId, clientId, createdAt, grantedAt: createdAt })) continue
+      out.set(clientId, { client_id: clientId, scopes: [], created_at: createdAt })
+    }
+    return [...out.values()]
   }
 
   /**
@@ -2285,8 +2311,10 @@ export class OAuthProvider {
     // token and exchange from a grant made up to now is refused at use
     // (isTokenRevoked), including tokens made before the family index existed
     // and tokens a racing rotation is writing right now.
-    await this.storage.put(grantRevokedKey(identityId, clientId), { at: Date.now() })
+    // Consent first, so no silent authorization can start after the tombstone
+    // from a consent read before it.
     await this.storage.delete(`consent:${identityId}:${clientId}`)
+    await this.storage.put(grantRevokedKey(identityId, clientId), { at: Date.now() })
     // Then tidy what the index knows about (opaque access tokens deleted, JWT
     // records and refresh tokens marked), so the records say so too.
     const families = new Set<string>()
