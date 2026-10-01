@@ -59,6 +59,7 @@ import {
 } from '../../src/sdk/workos/tenant-vault'
 import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../../src/sdk/workos/pipes'
 import type { PipesProvider } from '../../src/sdk/workos/pipes'
+import { legacyOpenRoutes, requireOrgAccess, requirePlatform, requireSelfOrPlatform } from '../utils/org-authz'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -310,6 +311,9 @@ app.get('/api/orgs/:id/members', async (c) => {
 
   const orgId = c.req.param('id')
   const apiKey = c.env.WORKOS_API_KEY
+  // Members of :id may read it (B13.3).
+  const denied = await requireOrgAccess(c, orgId, 'member')
+  if (denied) return denied
 
   // Active memberships + pending invitations, fetched in parallel.
   const [memberships, invitations] = await Promise.all([
@@ -344,6 +348,10 @@ app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
+  // Only an owner or admin of :id changes roles (B13.3).
+  const denied = await requireOrgAccess(c, c.req.param('id'), 'admin')
+  if (denied) return denied
+
   const membershipId = c.req.param('membershipId')
   const body = (await c.req.json().catch(() => ({}))) as { role?: string }
   if (!body.role) {
@@ -372,6 +380,10 @@ app.delete('/api/orgs/:id/members/:membershipId', async (c) => {
   if (!orgAuth.ok) {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
+
+  // Only an owner or admin of :id removes members or rescinds invites (B13.3).
+  const denied = await requireOrgAccess(c, c.req.param('id'), 'admin')
+  if (denied) return denied
 
   const id = c.req.param('membershipId')
   const apiKey = c.env.WORKOS_API_KEY
@@ -415,6 +427,9 @@ async function handleInvite(c: any): Promise<Response> {
   }
 
   const orgId = c.req.param('id')
+  // Only an owner or admin of :id invites (B13.3).
+  const denied = await requireOrgAccess(c, orgId, 'admin')
+  if (denied) return denied
   const body = (await c.req.json().catch(() => ({}))) as { email?: string; role?: string }
   if (!body.email) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'email is required')
@@ -549,6 +564,11 @@ app.get('/admin-portal', async (c) => {
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
+  // An owner or admin of the organization (or a platform caller) only (B13.2).
+  if (!legacyOpenRoutes(c.env)) {
+    const denied = await requireOrgAccess(c, orgId, 'admin')
+    if (denied) return denied
+  }
 
   try {
     const result = await getAdminPortalUrl(orgId, c.env.WORKOS_API_KEY)
@@ -565,6 +585,8 @@ app.get('/admin-portal', async (c) => {
 // POST /fga/setup — Initialize FGA resource types (admin only, run once)
 app.post('/fga/setup', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   await defineResourceTypes(c.env.WORKOS_API_KEY)
   return c.json({ ok: true, resourceTypes: FGA_RESOURCE_TYPES.length })
 })
@@ -572,6 +594,8 @@ app.post('/fga/setup', async (c) => {
 // POST /fga/check — Check a permission
 app.post('/fga/check', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as FGACheckRequest
   const authorized = await checkPermission(c.env.WORKOS_API_KEY, body)
   return c.json({ authorized })
@@ -580,6 +604,8 @@ app.post('/fga/check', async (c) => {
 // POST /fga/share — Share a resource cross-tenant
 app.post('/fga/share', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
   const fgaType = entityTypeToFGA(body.resourceType)
   if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
@@ -590,6 +616,8 @@ app.post('/fga/share', async (c) => {
 // DELETE /fga/share — Revoke cross-tenant sharing
 app.delete('/fga/share', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
   const fgaType = entityTypeToFGA(body.resourceType)
   if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
@@ -600,6 +628,8 @@ app.delete('/fga/share', async (c) => {
 // GET /fga/accessible — List resources accessible by a user
 app.get('/fga/accessible', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const resourceType = c.req.query('type')
   const userId = c.req.query('user')
   if (!resourceType || !userId) return c.json({ error: 'type and user query params required' }, 400)
@@ -816,6 +846,8 @@ app.post('/pipes/token', async (c) => {
   if (!PIPES_PROVIDERS.includes(body.provider as PipesProvider)) {
     return c.json({ error: `Unsupported provider: ${body.provider}. Supported: ${PIPES_PROVIDERS.join(', ')}` }, 400)
   }
+  const denied = legacyOpenRoutes(c.env) ? null : await requireSelfOrPlatform(c, body.userId, body.organizationId)
+  if (denied) return denied
   const token = await getAccessToken(c.env.WORKOS_API_KEY, body.provider as PipesProvider, body.userId, body.organizationId)
   return c.json(token)
 })
@@ -826,6 +858,9 @@ app.get('/pipes/connections', async (c) => {
   const userId = c.req.query('user_id')
   const orgId = c.req.query('organization_id')
   const provider = c.req.query('provider')
+  // Listing every connection (no user_id) is a platform view; a person may list their own.
+  const denied = legacyOpenRoutes(c.env) ? null : userId ? await requireSelfOrPlatform(c, userId, orgId || undefined) : await requirePlatform(c)
+  if (denied) return denied
   const result = await listConnections(c.env.WORKOS_API_KEY, {
     userId: userId || undefined,
     organizationId: orgId || undefined,
@@ -837,6 +872,8 @@ app.get('/pipes/connections', async (c) => {
 // GET /pipes/connections/:id — Get a specific connection
 app.get('/pipes/connections/:id', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   try {
     const connection = await getConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
     return c.json(connection)
@@ -848,6 +885,8 @@ app.get('/pipes/connections/:id', async (c) => {
 // DELETE /pipes/connections/:id — Disconnect a provider
 app.delete('/pipes/connections/:id', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   await disconnectConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
   return c.json({ ok: true })
 })
@@ -858,6 +897,8 @@ app.get('/pipes/status', async (c) => {
   const userId = c.req.query('user_id')
   const orgId = c.req.query('organization_id')
   if (!userId) return c.json({ error: 'user_id query param required' }, 400)
+  const denied = legacyOpenRoutes(c.env) ? null : await requireSelfOrPlatform(c, userId, orgId || undefined)
+  if (denied) return denied
   const status = await getConnectionStatus(c.env.WORKOS_API_KEY, userId, orgId || undefined)
   return c.json({ providers: status })
 })

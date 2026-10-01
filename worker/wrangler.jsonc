@@ -70,6 +70,11 @@
     // AuthService.sendMagicLink over an OAUTH binding instead (no listing).
     //   cid_6024fce7… — api.sb's web client (confidential, client_secret_basic)
     "MAGIC_LINK_CLIENTS": "cid_6024fce72d8ce25066e6e876361ea3d7e12d8f4dc23566a8",
+
+    // ── Auth UI redesign flags (docs/product-update/README.md#flags) ──
+    // Escape hatch: "1" restores the old unauthenticated /admin-portal,
+    // /fga/* and /pipes/* if an unknown estate caller breaks. "0" is secure.
+    "LEGACY_OPEN_WORKOS_ROUTES": "0",
   },
 
   "routes": [

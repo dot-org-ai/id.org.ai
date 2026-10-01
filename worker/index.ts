@@ -933,6 +933,15 @@ app.use('/agent/*', authenticateRequest)
 // /vault/* ONLY so the other workosRoutes (org/portal/FGA/pipes) that authenticate
 // themselves on bare paths are unaffected.
 app.use('/vault/*', authenticateRequest)
+// /admin-portal, /fga/* and /pipes/* authenticate like every other protected
+// route (B13.2); each handler then authorises against the organization or user
+// (worker/utils/org-authz.ts). LEGACY_OPEN_WORKOS_ROUTES=1 restores the old
+// open routes if an unknown estate caller breaks.
+const authenticateWorkOSRoutes: typeof authenticateRequest = async (c, next) =>
+  c.env.LEGACY_OPEN_WORKOS_ROUTES === '1' ? next() : authenticateRequest(c, next)
+app.use('/admin-portal', authenticateWorkOSRoutes)
+app.use('/fga/*', authenticateWorkOSRoutes)
+app.use('/pipes/*', authenticateWorkOSRoutes)
 app.route('', auditRoutes)
 app.route('', grantRoutes)
 app.route('', mcpRoutes)

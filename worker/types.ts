@@ -73,6 +73,11 @@ export interface Env {
    * Only loopback URLs are honoured (src/sdk/workos/base.ts).
    */
   WORKOS_API_BASE?: string
+  /**
+   * Escape hatch (B13.2): `1` restores the old unauthenticated /admin-portal,
+   * /fga/* and /pipes/* if an unknown estate caller breaks. `0` (secure) by default.
+   */
+  LEGACY_OPEN_WORKOS_ROUTES?: string
   /** `1` serves the design gallery at /__design (worker/.dev.vars only; never in wrangler.jsonc). */
   DESIGN_GALLERY?: string
 }
