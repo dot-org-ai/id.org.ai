@@ -54,6 +54,11 @@ export interface InputProps {
   placeholder?: string
   autocomplete?: string
   required?: boolean
+  /**
+   * Only for the invalid field on a server-rendered error, so focus lands on it
+   * (accessibility.md#forms-and-errors). Never on a page's first render.
+   */
+  autofocus?: boolean
   maxlength?: number
   /** Matches the Field's hint/error ids. */
   hint?: boolean
@@ -72,6 +77,7 @@ export function Input(p: InputProps): JSX.Element {
       placeholder={p.placeholder}
       autocomplete={p.autocomplete}
       required={p.required ? true : undefined}
+      autofocus={p.autofocus ? true : undefined}
       maxlength={p.maxlength}
       aria-invalid={p.error ? 'true' : undefined}
       aria-describedby={describedBy}

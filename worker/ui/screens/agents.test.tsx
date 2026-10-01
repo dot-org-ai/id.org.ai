@@ -110,7 +110,9 @@ describe('5b · Approve an action', () => {
   it('the header counts down; the status region sits outside the card so the expiry is announced after the swap', async () => {
     const { doc } = await render(<ActionApproval {...action} />)
     const cd = doc.querySelector('header [data-js="countdown"]')!
-    expect(cd.getAttribute('data-expires-at')).toBe(action.expiresAt)
+    expect(cd.getAttribute('data-seconds-left')).toBe(String(action.secondsLeft))
+    expect(cd.getAttribute('data-expired-template')).toBe('expired')
+    expect(cd.hasAttribute('data-announce')).toBe(true)
     expect(cd.getAttribute('data-urgent-at')).toBe('60')
     expect(cd.textContent).toBe('4:32 left')
     const status = doc.querySelector('[role="status"][data-status]')!

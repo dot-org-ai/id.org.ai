@@ -38,21 +38,3 @@ export function Countdown({ secondsLeft, urgent, expiredTemplate }: CountdownPro
     </span>
   )
 }
-
-/**
- * 1b's resend timer: "Resend in 0:42" (m:ss, always fg-3), which becomes the
- * "Resend code" button at 0. Quiet: no announcements, never urgent.
- */
-export function ResendTimer({ secondsLeft, children }: { secondsLeft: number; children: JSX.Element }): JSX.Element {
-  return (
-    <div class="id-resend">
-      <span data-js="countdown" data-seconds-left={String(Math.max(0, Math.floor(secondsLeft)))} hidden={secondsLeft <= 0 ? true : undefined}>
-        {'Resend in '}
-        <span data-countdown-text>{formatCountdown(secondsLeft)}</span>
-      </span>
-      <span data-countdown-done hidden={secondsLeft > 0 ? true : undefined}>
-        {children}
-      </span>
-    </div>
-  )
-}

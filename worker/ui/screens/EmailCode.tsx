@@ -32,8 +32,6 @@ export interface EmailCodeProps {
   code?: string
   /** Seconds until a new code can be sent (the send budget, B4). */
   resendIn: number
-  /** When the resend wait ends (ISO 8601). */
-  resendAt: string
   error?: EmailCodeError
   /** Gallery only: draw this box focused (the mock shows the 5th). */
   focusIndex?: number
@@ -82,7 +80,7 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
           />
           {p.error ? (
             <Stack gap={8}>
-              <CodeInput length={6} label="Enter the 6-digit code" value={code} focusIndex={p.focusIndex} errorId={ERROR_ID} />
+              <CodeInput length={6} label="Enter the 6-digit code" value={code} focusIndex={p.focusIndex} errorId={ERROR_ID} disabled={locked} />
               <CodeHint id={ERROR_ID} error>
                 {ERRORS[p.error]}
               </CodeHint>
@@ -90,7 +88,7 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
           ) : (
             <CodeInput length={6} label="Enter the 6-digit code" value={code} focusIndex={p.focusIndex} />
           )}
-          <Resend availableIn={locked ? 0 : p.resendIn} availableAt={p.resendAt} form={RESEND_FORM} />
+          <Resend availableIn={locked ? 0 : p.resendIn} form={RESEND_FORM} />
           <span class="id-sr" role="status"></span>
         </Card>
       </form>

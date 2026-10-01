@@ -1326,6 +1326,11 @@ button.id-link {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
+.id-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .id-stat__num {
   font-size: 22px;
   line-height: normal;

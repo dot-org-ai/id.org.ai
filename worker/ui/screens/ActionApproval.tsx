@@ -3,7 +3,7 @@
  * phone: the link arrives by push, email or the CLI.
  *
  * A Trusted agent asks before it sends, deletes or spends. The header counts
- * down to `expiresAt`; unanswered requests expire as a no. At 0 the card
+ * down from the server's `secondsLeft`; unanswered requests expire as a no. At 0 the card
  * swaps to the expired template (the 7b shape: "This request expired"), which
  * is also what the server renders once the request has expired (`expired`).
  * The connector runs agent → id.org.ai: the agent is the requester.
@@ -59,9 +59,7 @@ export interface ActionApprovalProps {
     tile: TileContent
   }
   action: ActionPreview
-  /** ISO time the request expires (drives the header countdown). */
-  expiresAt: string
-  /** Seconds left at render time ("4:32 left"). */
+  /** Seconds left at render time ("4:32 left"); the header counts down from it. */
   secondsLeft: number
   /** "Always allow Susan to send renewal emails": the checkbox creates a standing rule. */
   alwaysAllowLabel: string
@@ -128,7 +126,7 @@ export function ActionApproval(p: ActionApprovalProps): JSX.Element {
     )
   }
   return (
-    <Page headerRight={<Countdown expiresAt={p.expiresAt} secondsLeft={p.secondsLeft} urgent />}>
+    <Page headerRight={<Countdown secondsLeft={p.secondsLeft} urgent expiredTemplate="expired" />}>
       <form class="id-form" method="post" action={p.formAction} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         <Card

@@ -212,7 +212,7 @@ describe('6d · TwoStep', () => {
 
   it('wrong code: the boxes are invalid and described by the error', async () => {
     const d = await dom(<TwoStep {...p} error="That code didn’t work." />)
-    const err = d.querySelector('.id-inline-error')!
+    const err = d.querySelector('.id-codehint--error')!
     expect(err.textContent).toBe('That code didn’t work.')
     for (const box of Array.from(d.querySelectorAll('input[name=code]'))) {
       expect(box.getAttribute('aria-invalid')).toBe('true')
@@ -261,7 +261,8 @@ describe('7 · ErrorPage', () => {
     const d = await dom(<ErrorPage {...app} copied />)
     const copy = d.querySelector('button[data-js=copy]')!
     expect(copy.hasAttribute('data-copied')).toBe(true)
-    expect(copy.querySelector('[role=status]')!.textContent).toBe('Copied')
+    expect(copy.nextElementSibling!.getAttribute('role')).toBe('status')
+    expect(copy.nextElementSibling!.textContent).toBe('Copied')
   })
 
   it('escapes every piece of request data, details included', async () => {

@@ -28,9 +28,3 @@
 .id-linkbtn[hidden] {
   display: none;
 }
-
-/* ── Error under centred controls (1b code boxes) ─────────────────────── */
-
-.id-errortext--center {
-  text-align: center;
-}

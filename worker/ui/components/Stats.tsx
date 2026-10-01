@@ -8,7 +8,7 @@ export function Stats({ items, footer }: { items: { n: string; label: string }[]
     <Well variant="stats">
       <div class="id-stats">
         {items.map((s) => (
-          <div>
+          <div class="id-stat">
             <div class="id-stat__num">{s.n}</div>
             <div class="id-stat__label">{s.label}</div>
           </div>

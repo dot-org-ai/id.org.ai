@@ -7,16 +7,6 @@
   gap: 12px;
 }
 
-/*
- * 5c: each stat is a column with a 2px gap between the number and its label
- * (components.md#stats-5c, the mock). Stats renders the cell as a bare <div>
- * that ui.css doesn't style yet; this belongs next to .id-stats in ui.css.
- */
-.id-stats > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 
 /*
  * 5c's "Claim into" select sits at a half-pixel y (the card is centred). The

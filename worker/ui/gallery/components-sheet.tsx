@@ -40,7 +40,6 @@ import {
   PermissionList,
   Pill,
   Pre,
-  ResendTimer,
   ProviderButton,
   Providers,
   QuoteWell,
@@ -61,6 +60,7 @@ import {
   type ConnectorState,
 } from '../components'
 import { Icon, type IconName } from '../icons'
+import { CodeHint, FootLinks, OrgRow, ProviderAction, Resend } from '../components'
 
 const ICONS: IconName[] = ['chev_r', 'chev_d', 'chev_ud', 'check', 'key', 'mail', 'copy', 'user', 'search', 'pen', 'laptop', 'terminal', 'shield', 'alert', 'clock', 'plus', 'globe', 'logout', 'lock', 'x', 'send', 'commit', 'building', 'bot', 'external']
 const STATES: ConnectorState[] = ['idle', 'connecting', 'done', 'broken', 'ok', 'fail']
@@ -241,12 +241,21 @@ export function ComponentSheet(): JSX.Element {
             <Dotted label="or" />
             <Countdown secondsLeft={272} />
             <Countdown secondsLeft={42} urgent />
-            <ResendTimer secondsLeft={42}>
-              <button type="button" class="id-link">Resend code</button>
-            </ResendTimer>
-            <ResendTimer secondsLeft={0}>
-              <button type="button" class="id-link">Resend code</button>
-            </ResendTimer>
+            <Resend availableIn={42} form="sheet-resend" />
+            <Resend availableIn={0} form="sheet-resend" />
+            <ProviderAction provider="github" href="#">
+              Continue with GitHub
+            </ProviderAction>
+            <OrgRow name="Acme" sub="acme.com · Okta" />
+            <CodeHint>Codes look like WDJB-MJHT and last 30 minutes.</CodeHint>
+            <CodeHint error>That code didn’t match. Check the email and try again.</CodeHint>
+            <FootLinks>
+              <Link href="#">Use a passkey instead</Link>
+              <Link href="#">Use a recovery code</Link>
+            </FootLinks>
+            <RadioGroup legend="How far to sign out" layout="stack" hideLabel>
+              <RadioCard id="sheet-s1" name="sheet-scope" value="app" checked title="This app" description="Sign out of headless.ly only." />
+            </RadioGroup>
           </Section>
           <Section title="Icons">
             <div class="id-sheet__row">

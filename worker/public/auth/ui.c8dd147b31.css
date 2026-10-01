@@ -622,6 +622,15 @@ details[data-x][open] > summary [data-chev-d] {
   border-color: var(--id-select);
   box-shadow: var(--id-sh-input), var(--id-ring);
 }
+/* The line under code boxes: 4c's hint, and every code screen's error (accent, role=alert). */
+.id-codehint {
+  font-size: 13px;
+  color: var(--id-fg-3);
+  text-align: center;
+}
+.id-codehint--error {
+  color: var(--id-accent);
+}
 .id-code__sep {
   color: var(--id-fg-3);
   font-size: 18px;
@@ -762,7 +771,7 @@ details[data-x][open] > summary [data-chev-d] {
   background: var(--id-fg);
 }
 .id-check:has(.id-hidden-input:checked) .id-check__tick {
-  display: block;
+  display: flex;
 }
 .id-check:has(.id-hidden-input:focus-visible) .id-check__box {
   outline: 2px solid var(--id-select);
@@ -1412,6 +1421,11 @@ button.id-link {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
+.id-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .id-stat__num {
   font-size: 22px;
   line-height: normal;
@@ -1730,4 +1744,76 @@ button.id-link {
   .id-actions > * {
     min-height: var(--id-control-h-phone) !important;
   }
+}
+
+/*
+ * Accounts and devices group (2a, 2b, 2c, 2e, 4c, 4d): the components only
+ * these screens use. Tokens only.
+ */
+
+/* ── Agents (5a–5d) ─────────────────────────────────────────────────────── */
+
+/* 5a: spend limit and expiry side by side, one column on phones. */
+.id-agent-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+}
+
+
+/*
+ * 5c's "Claim into" select sits at a half-pixel y (the card is centred). The
+ * mock lays its select text out once, with the fallback font's 17px line box,
+ * and Chrome doesn't re-lay a <select>'s text when Geist swaps in (forcing a
+ * relayout moves the mock's text 1px and matches ours). An explicit 17px line
+ * box reproduces the mock; at whole-pixel positions it renders the same as
+ * Geist's own 18px. See the agents report for the global form of this fix.
+ */
+.id-claim-into .id-select {
+  line-height: 17px;
+}
+
+/*
+ * Security and error screens (6a–6d, 7a–7c): the few component styles the
+ * shared sheet lacks. Tokens only.
+ */
+
+/* FootLinks: alternate links under a single foot action (6d). */
+.id-footlinks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 20px;
+  font-size: 13px;
+}
+
+/*
+ * Sign-in screens (1a–1g): the few components only they use.
+ * Tokens only (tokens.css); values match docs/product-update/mocks.
+ */
+
+/* ── Organisation row (1c SSO well) ───────────────────────────────────── */
+
+.id-orgrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── A <button> that reads as a Link (1b "Resend code") ─────────────────
+   Pair with .id-link, which gives the type, colour and underline. */
+
+.id-linkbtn {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+.id-linkbtn[hidden] {
+  display: none;
 }

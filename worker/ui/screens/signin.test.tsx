@@ -162,7 +162,6 @@ const code: EmailCodeProps = {
   csrf: 'tok',
   differentEmailHref: '/login',
   resendIn: 42,
-  resendAt: '2026-01-01T00:00:42.000Z',
 }
 
 describe('1b email code', () => {
@@ -198,7 +197,7 @@ describe('1b email code', () => {
     expect(resendForm!.closest('form[data-js="submit"]')).toBeNull()
     const countdown = doc.querySelector('[data-js="countdown"]')
     expect(text(countdown)).toBe('Resend in 0:42')
-    expect(countdown?.getAttribute('data-expires-at')).toBe('2026-01-01T00:00:42.000Z')
+    expect(countdown?.getAttribute('data-seconds-left')).toBe('42')
     const back = [...doc.querySelectorAll('a')].find((a) => text(a) === 'Use a different email')
     expect(back?.getAttribute('href')).toBe('/login')
   })

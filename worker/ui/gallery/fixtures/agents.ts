@@ -51,7 +51,6 @@ const action: ActionApprovalProps = {
     excerpt: 'Hi Maria, your auto.dev plan renews on the 15th. Nothing changes unless you want it to — reply here with any questions.',
     viewHref: '/approvals/apr_q3renewals/preview',
   },
-  expiresAt: '2026-10-01T12:04:32Z',
   secondsLeft: 272,
   alwaysAllowLabel: 'Always allow Susan to send renewal emails',
   formAction: '/approvals/apr_q3renewals',

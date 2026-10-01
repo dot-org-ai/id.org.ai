@@ -11,6 +11,8 @@ export interface CodeInputProps {
   label: string
   /** Links the error text. */
   errorId?: string
+  /** No more guesses (1b too many tries). */
+  disabled?: boolean
 }
 
 /**
@@ -18,7 +20,7 @@ export interface CodeInputProps {
  * so without JS the form posts the characters in order and the server joins
  * them; code-input.ts adds auto-advance, backspace, arrows and paste-to-fill.
  */
-export function CodeInput({ length, value = '', focusIndex, label, errorId }: CodeInputProps): JSX.Element {
+export function CodeInput({ length, value = '', focusIndex, label, errorId, disabled }: CodeInputProps): JSX.Element {
   const device = length === 8
   const chars = value.replace(/[\s-]/g, '').toUpperCase().split('')
   const boxes: JSX.Element[] = []
@@ -36,6 +38,7 @@ export function CodeInput({ length, value = '', focusIndex, label, errorId }: Co
         aria-label={`Character ${i + 1} of ${length}`}
         aria-invalid={errorId ? 'true' : undefined}
         aria-describedby={errorId}
+        disabled={disabled ? true : undefined}
       />,
     )
     if (device && i === 3) boxes.push(<span class="id-code__sep" aria-hidden="true">–</span>)

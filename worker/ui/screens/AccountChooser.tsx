@@ -68,7 +68,7 @@ export function AccountChooser(p: AccountChooserProps): JSX.Element {
             </>
           }
         />
-        <form class="id-form" method="post" action={p.action} data-js="submit">
+        <form class="id-form" method="post" action={p.action} data-js="submit" data-connect>
           <input type="hidden" name="csrf" value={p.csrf} />
           <AccountList>
             {[

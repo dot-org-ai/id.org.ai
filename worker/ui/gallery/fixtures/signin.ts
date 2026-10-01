@@ -36,7 +36,6 @@ const emailCode: EmailCodeProps = {
   differentEmailHref: '/login',
   code: '4829',
   resendIn: 42,
-  resendAt: '2026-01-01T00:00:42.000Z',
   focusIndex: 4,
 }
 
