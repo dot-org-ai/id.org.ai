@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { SELF, env } from 'cloudflare:test'
-import { parseContinueHosts, resolveBrowserRedirect, continuePolicy } from '../worker/utils/relying-parties'
+import { parseContinueHosts, resolveBrowserRedirect, resolveBrowserRedirectStrict, continuePolicy } from '../worker/utils/relying-parties'
 import { authRoutes } from '../worker/routes/auth'
 import type { Env } from '../worker/types'
 
@@ -148,5 +148,34 @@ describe('/logout?return_url= uses the same policy', () => {
   it('under report, follows an unlisted https target but still refuses injection shapes', async () => {
     expect(await logoutTo('https://some-startup.example/', reportEnv)).toBe('https://some-startup.example/')
     expect(await logoutTo('//evil.com', reportEnv)).toBe('/')
+  })
+})
+
+describe('resolveBrowserRedirectStrict (the redesigned screens)', () => {
+  const opts = { requestOrigin: BASE }
+
+  it('refuses an unlisted target even under report', async () => {
+    expect(await resolveBrowserRedirectStrict(reportEnv, 'https://some-startup.example/auth/callback', opts)).toEqual({
+      url: null,
+      outcome: 'refused',
+      host: 'some-startup.example',
+    })
+  })
+
+  it('accepts what the policy accepts, under either setting', async () => {
+    for (const env of [enforceEnv, reportEnv]) {
+      expect(await resolveBrowserRedirectStrict(env, 'https://management.studio/api/auth/callback', opts)).toEqual({
+        url: 'https://management.studio/api/auth/callback',
+        outcome: 'accepted',
+      })
+      expect(await resolveBrowserRedirectStrict(env, '/dash/profile', opts)).toEqual({ url: '/dash/profile', outcome: 'accepted' })
+    }
+  })
+
+  it('refuses injection shapes and reports none for nothing', async () => {
+    for (const bad of ['//evil.com', 'javascript:alert(1)', 'https://evil.com/\nx']) {
+      expect((await resolveBrowserRedirectStrict(reportEnv, bad, opts)).outcome, bad).toBe('refused')
+    }
+    expect(await resolveBrowserRedirectStrict(reportEnv, '', opts)).toEqual({ url: null, outcome: 'none' })
   })
 })

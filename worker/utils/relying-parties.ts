@@ -185,6 +185,22 @@ export async function resolveBrowserRedirect(
   return { url: null, outcome: 'refused', host }
 }
 
+/**
+ * resolveBrowserRedirect for the redesigned screens (spec/security.md#redirects):
+ * always enforce, whatever LOGIN_CONTINUE_POLICY says, so a new route never
+ * follows an unlisted target even while the legacy routes run in `report`
+ * (D10 leaves the global switch to the owners).
+ */
+export async function resolveBrowserRedirectStrict(
+  env: Env,
+  raw: string | null | undefined,
+  opts: { requestOrigin: string; clientId?: string },
+): Promise<{ url: string | null; outcome: 'none' | 'accepted' | 'refused'; host?: string }> {
+  if (!raw) return { url: null, outcome: 'none' }
+  const accepted = await resolveContinue(env, raw, opts)
+  return accepted ? { url: accepted, outcome: 'accepted' } : { url: null, outcome: 'refused', host: hostForLog(raw) }
+}
+
 /** The host of a redirect target, for logs (never the full URL). */
 export function hostForLog(url: string): string {
   try {
