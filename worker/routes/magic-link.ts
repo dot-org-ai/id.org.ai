@@ -51,14 +51,14 @@ import { Hono } from 'hono'
 import type { Env, Variables } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
-import { constantTimeEqual } from '../../src/sdk/oauth/pkce'
+import { checkClientSecret, clientHasSecret } from '../../src/sdk/oauth/client-secret'
 import {
   createWorkOSMagicAuth,
   authenticateWorkOSMagicAuth,
   encodeLoginState,
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
-import { resolveContinue, getRegisteredClient, canonicalOrigin, requestOriginOf } from '../utils/relying-parties'
+import { resolveContinue, getRegisteredClient, canonicalOrigin, requestOriginOf, rehashLegacyClientSecret } from '../utils/relying-parties'
 import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
@@ -311,8 +311,11 @@ app.post('/api/magic-link', async (c) => {
   // ── Caller authentication: a confidential client, by its secret ──────
   // Only that. Callers inside the account use AuthService.sendMagicLink.
   const client = clientId ? await getRegisteredClient(c.env, clientId) : null
-  const confidential = !!client?.secret && client.tokenEndpointAuthMethod !== 'none'
-  if (!client || !confidential || !clientSecret || !(await constantTimeEqual(clientSecret, client.secret!))) {
+  const confidential = clientHasSecret(client) && client!.tokenEndpointAuthMethod !== 'none'
+  const match = confidential ? await checkClientSecret(client, clientSecret) : null
+  // A legacy plaintext secret is rewritten hashed on its first good use (B13.5).
+  if (match === 'legacy') await rehashLegacyClientSecret(c.env, clientId)
+  if (!client || !match) {
     return c.json(
       { error: 'invalid_client', error_description: 'A registered confidential client (client_id + client_secret) is required' },
       401,

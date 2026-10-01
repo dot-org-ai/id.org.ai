@@ -83,6 +83,7 @@ import {
   scopeProblem,
   splitScopes,
 } from './delegation'
+import { checkClientSecret, clientHasSecret, hashClientSecret, withHashedSecret } from './client-secret'
 
 export interface OAuthConfig {
   issuer: string
@@ -120,7 +121,8 @@ export interface TrustedAccountConfig {
 export interface OAuthProviderClient {
   id: string                   // cid_xxx
   name: string
-  secret?: string              // hashed for confidential clients; absent for public
+  secret?: string              // legacy plaintext secret (pre-B13.5); rewritten as secretHash on next use
+  secretHash?: string          // SHA-256 (hex) of the client secret; absent for public clients
   redirectUris: string[]
   grantTypes: string[]
   responseTypes: string[]
@@ -714,7 +716,8 @@ export class OAuthProvider {
     const client: OAuthProviderClient = {
       id: clientId,
       name: clientName,
-      secret: clientSecret,
+      // Only the hash is stored (B13.5); the secret is returned once, below.
+      ...(clientSecret ? { secretHash: await hashClientSecret(clientSecret) } : {}),
       redirectUris,
       grantTypes,
       responseTypes,
@@ -1535,12 +1538,12 @@ export class OAuthProvider {
       // No PKCE — confidential client must present valid secret.
       // (Trusted-account clients always have PKCE per /authorize enforcement.)
       const client = await this.getClient(clientId)
-      if (client?.secret && client.secret !== clientSecret) {
+      if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
       }
       // A code without PKCE is only ever issued to a confidential client;
       // a public one (no secret, or a CIMD client) must never redeem one.
-      if (!client?.secret) {
+      if (!clientHasSecret(client)) {
         return oauthError('invalid_grant', 'code_verifier is required')
       }
     }
@@ -1609,7 +1612,7 @@ export class OAuthProvider {
     // CIMD clients are public (no secret), so there is nothing to look up.
     if (!this.isTrustedAccountClient(clientId) && !looksLikeCimdClientId(clientId)) {
       const client = await this.getClient(clientId)
-      if (client?.secret && client.secret !== clientSecret) {
+      if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
       }
     }
@@ -1732,7 +1735,7 @@ export class OAuthProvider {
       return oauthError('unauthorized_client', 'Client is not authorized for client_credentials grant')
     }
 
-    if (!client.secret || client.secret !== clientSecret) {
+    if (!(await this.verifyClientSecret(client, clientSecret))) {
       return oauthError('invalid_client', 'Invalid client credentials', 401)
     }
 
@@ -2200,6 +2203,17 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Client Lookup
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Constant-time check of a presented client secret (B13.5). A legacy
+   * plaintext secret that matches is rewritten as a hash, so it is stored in
+   * plaintext no longer than until its next use.
+   */
+  private async verifyClientSecret(client: OAuthProviderClient, presented: string): Promise<boolean> {
+    const match = await checkClientSecret(client, presented)
+    if (match === 'legacy') await this.storage.put(`client:${client.id}`, await withHashedSecret(client))
+    return match !== null
+  }
 
   private async getClient(clientId: string): Promise<OAuthProviderClient | null> {
     if (!clientId) return null
