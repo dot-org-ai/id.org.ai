@@ -1,5 +1,7 @@
 /** Devices group fixtures: strings copied verbatim from the 4b/4c/4d mocks. */
 import { DeviceConfirm, type DeviceConfirmProps } from '../../screens/DeviceConfirm'
+import { DeviceDone, type DeviceDoneProps, type DeviceSignedProps } from '../../screens/DeviceDone'
+import { DeviceEntry, type DeviceEntryProps } from '../../screens/DeviceEntry'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const confirm: DeviceConfirmProps = {
@@ -28,6 +30,22 @@ const confirm: DeviceConfirmProps = {
 
 const title = (p: DeviceConfirmProps) => `Confirm ${p.client.name} · id.org.ai`
 
+const entry: DeviceEntryProps = {
+  focusIndex: 0,
+  action: '/device',
+  csrf: 'gallery',
+}
+
+const done: DeviceSignedProps = {
+  client: { name: 'auto.dev CLI', tile: { kind: 'icon', icon: 'terminal' } },
+  account: { email: 'bryant@driv.ly' },
+  workspace: { name: 'Drivly' },
+  device: 'macOS · Miami, FL',
+  revokeHref: '/device/revoke',
+}
+
+const doneTitle = (p: DeviceDoneProps) => (p.outcome === 'cancelled' ? 'Sign-in cancelled · id.org.ai' : `${p.client.name} is signed in · id.org.ai`)
+
 export const deviceFixtures: FixtureGroup = {
   '4b-device-confirm': defineFixture({
     screen: DeviceConfirm,
@@ -40,6 +58,25 @@ export const deviceFixtures: FixtureGroup = {
       signed: { ...confirm, state: 'signed' },
       cancelling: { ...confirm, state: 'cancelling' },
       cancelled: { ...confirm, state: 'cancelled' },
+    },
+  }),
+  '4c-device-entry': defineFixture({
+    screen: DeviceEntry,
+    title: () => 'Connect a device · id.org.ai',
+    scripts: ['code-input.js', 'submit.js'],
+    default: entry,
+    derived: {
+      // The code was invalid, expired or already used: the server renders 4c again with what was typed.
+      error: { value: 'WDJB-MJHX', error: 'That code is invalid or has expired. Check your terminal for the current code.', action: '/device', csrf: 'gallery' },
+    },
+  }),
+  '4d-device-done': defineFixture({
+    screen: DeviceDone,
+    title: doneTitle,
+    default: done,
+    derived: {
+      // GET /device/cancelled?code=: 4b's cancelled content on its own.
+      cancelled: { outcome: 'cancelled', client: done.client, cliName: 'auto.dev' },
     },
   }),
 }
