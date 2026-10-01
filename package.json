@@ -85,7 +85,8 @@
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:visual": "node scripts/test-visual.mjs",
     "gate": "node scripts/gate.mjs",
-    "test:stub-smoke": "node test-visual/stub-smoke.mjs"
+    "test:stub-smoke": "node test-visual/stub-smoke.mjs",
+    "test:motion": "node test-visual/motion-check.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",

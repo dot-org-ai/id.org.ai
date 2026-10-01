@@ -12,6 +12,7 @@ import type { JSX } from 'hono/jsx/jsx-runtime'
 import manifest from '../../../docs/product-update/mocks/manifest.json'
 import { Card, Page } from '../components'
 import { renderPage } from '../render'
+import { ComponentSheet } from './components-sheet'
 import type { Env, Variables } from '../../types'
 import { fixtures } from './fixtures'
 import type { BoundFixture, Variant } from './types'
@@ -43,6 +44,7 @@ function Index(): JSX.Element {
     <Page>
       <Card>
         <h1 class="id-gallery__title">Design gallery</h1>
+        <a href="/__design/components">Component sheet</a>
         <ul class="id-gallery">
           {SCREENS.map((s) => {
             const f = fixtures[s.slug]
@@ -58,7 +60,12 @@ function Index(): JSX.Element {
 
 galleryRoutes.get('/__design', async (c, next) => {
   if (!enabled(c.env)) return next()
-  return renderPage(c, <Index />, { title: 'Design gallery · id.org.ai' })
+  return renderPage(c, <Index />, { title: 'Design gallery · id.org.ai', styles: ['gallery.css'] })
+})
+
+galleryRoutes.get('/__design/components', async (c, next) => {
+  if (!enabled(c.env)) return next()
+  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js'], frozen: true })
 })
 
 galleryRoutes.get('/__design/:slug', async (c, next) => {

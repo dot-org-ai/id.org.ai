@@ -4,8 +4,10 @@
  * errors.ts and emails.ts).
  */
 import type { FixtureGroup } from '../types'
+import { deviceFixtures } from './devices'
 import { smokeFixtures } from './smoke'
 
 export const fixtures: FixtureGroup = {
   ...smokeFixtures,
+  ...deviceFixtures,
 }

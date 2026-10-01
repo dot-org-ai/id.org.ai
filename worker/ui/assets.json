@@ -1,3 +1,11 @@
 {
-  "ui.css": "/auth/ui.763af9aa69.css"
+  "claim-status.js": "/auth/claim-status.398f7bbbec.js",
+  "code-input.js": "/auth/code-input.74b8e5b145.js",
+  "copy.js": "/auth/copy.36ef424327.js",
+  "countdown.js": "/auth/countdown.34c2423b5e.js",
+  "device-confirm.js": "/auth/device-confirm.f03aaaf813.js",
+  "gallery.css": "/auth/gallery.6b8071658f.css",
+  "logo.js": "/auth/logo.6cc3a1e4e2.js",
+  "submit.js": "/auth/submit.822aa40494.js",
+  "ui.css": "/auth/ui.fa68a7cf5c.css"
 }
