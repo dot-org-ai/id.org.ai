@@ -1840,6 +1840,13 @@ button.id-link[hidden] {
   .id-actions > * {
     min-height: var(--id-control-h-phone) !important;
   }
+  /* Side-by-side radio cards (3a's Access) stack, in DOM order (owner direction, 2026-10-01). */
+  .id-radios--row {
+    flex-direction: column;
+  }
+  .id-radios--row > .id-radio {
+    flex-basis: auto;
+  }
 }
 
 /*

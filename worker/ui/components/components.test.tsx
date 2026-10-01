@@ -151,6 +151,13 @@ describe('Field, Select, CodeInput', () => {
 })
 
 describe('RadioGroup, RadioCard, Checkbox', () => {
+  it('side-by-side radio cards stack on phones (owner direction, 2026-10-01)', () => {
+    const css = readFileSync('worker/ui/ui.css', 'utf8')
+    const phone = css.slice(css.indexOf('@media (max-width: 480px)'))
+    expect(phone).toMatch(/\.id-radios--row\s*{\s*flex-direction:\s*column;/)
+    expect(phone).toMatch(/\.id-radios--row > \.id-radio\s*{\s*flex-basis:\s*auto;/)
+  })
+
   it('groups radio cards in a fieldset with a legend; inputs stay real and focusable', async () => {
     const d = await dom(
       <RadioGroup legend="Access" layout="row">
