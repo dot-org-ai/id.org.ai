@@ -9,10 +9,10 @@ The autopilot updates this file at the start and end of every phase (see `autopi
 **Tracking:** beads epic `id-6zy`, one child per phase (`id-6zy.1` = phase 0 … `id-6zy.14` = phase 13)
 
 ## Where we are (resume point)
-- **Phase 3 (Screens)**, in progress: six parallel subagents, one per screen group, each in its own git worktree and `wrangler dev` port, based on `9437f26`. They own `worker/ui/screens/*`, their group's `worker/ui/gallery/fixtures/<group>.ts` and optional `worker/ui/css/<group>.css`, never edit shared files, and commit only owned sources; the coordinator merges each branch into `product-update` and rebuilds assets. Groups: A sign-in 1a–1g · B accounts 2a/2b/2c/2e + devices 4c/4d (**done**, 12/12 at 0 px, branch `phase3-accounts`) · C authorize 3a–3d · D agents 5a–5d · E security 6a–6d + errors 7a–7c (**done**, 15/15 at 0 px, branch `phase3-security`) · F emails 8a–8c.
-- **Next step:** merge each finished group branch, consolidate duplicate components (B's `RadioList` and E's `RadioStack` are the same thing), apply the shared-file changes they asked for, rebuild, then run all 72 visual cases.
-- **Also done ahead of phase 4:** B13.2/B13.3 (`31f8499`): `/admin-portal`, `/fga/*`, `/pipes/*` authenticated and authorised; org member/invite routes check membership.
-- **Local dev on this machine:** ports 8787 and 8788 are held by other projects' long-running `workerd`, so this session runs `PORT=8797 pnpm dev:worker` and `STUB_PORT=8798 pnpm dev:stub`, with `WORKOS_API_BASE=http://127.0.0.1:8798` in `worker/.dev.vars`, and `pnpm test:visual --base http://127.0.0.1:8797`.
+- **Phase 3 (Screens):** all six groups merged; **72/72 manifest cases at 0 px** on the integrated build (`9ac8e45`). The phase 3 review found 3 blocking issues (screens that stay on id.org.ai built as forms that leave; missing result states for 5b/5c/6b and 4b's error templates; consent's unverified handling left to the caller). Shared fixes are in (`15c4ac7`, `1eda623`); three fix subagents are on branches `phase3fix-agents`, `phase3fix-accounts-security`, `phase3fix-authorize` (based on `1eda623`). **Next:** merge them, re-run all 72 visual cases and the gate, land phase 3.
+- **Phase 4 (Errors and security):** implemented ahead (`31f8499` B13.2/3, `bd18c83` B13.4, `8e3c200` B13.5, `2fa1453` strict redirects, `aaeec6e` B1 HTML errors); its reviewer was running. **Next:** fix its findings, land phase 4.
+- **Then phase 5 (Consent v2)**, starting with the scope registry.
+- **Local dev on this machine:** ports 8787 and 8788 are held by other projects' long-running `workerd`, so this session runs `PORT=8797 pnpm dev:worker` and `STUB_PORT=8798 pnpm dev:stub`, with `WORKOS_API_BASE=http://127.0.0.1:8798` in `worker/.dev.vars`, and `pnpm test:visual --base http://127.0.0.1:8797`. Subagents use ports 8811–8823.
 
 ## Phases
 
@@ -21,8 +21,8 @@ The autopilot updates this file at the start and end of every phase (see `autopi
 | 0 | Preflight | `prompts/00-preflight.md` | done (2026-10-01) | 2914 passed / 0 failed · visual n/a | Baseline recorded; push blocked (see Blocked) |
 | 1 | Foundation | `prompts/01-foundation.md` | done (2026-10-01) | 2938 passed / 0 failed (workers 2412, node 520, ui 6) · visual self-test 72/72 · dry-run OK | Reviewed: 1 blocking finding fixed (`form-action` dropped `[::1]`), 12 non-blocking, the important ones fixed (`79e0ffe`) |
 | 2 | Design system | `prompts/02-design-system.md` | done (2026-10-01) | 3023 passed / 0 failed (workers 2431, node 520, ui 72) · 4b 7/7 at 0 px · reduced motion 0 animated | Reviewed: 2 blocking (shared fetch path for forms that stay; component-sheet variants) fixed in `28cac3e`, with most non-blocking items |
-| 3 | Screens (UI) | `prompts/03-screens.md` | todo | | |
-| 4 | Errors and security prerequisites | `prompts/04-errors-and-security.md` | todo | | |
+| 3 | Screens (UI) | `prompts/03-screens.md` | in progress | 72/72 at 0 px · ui 223 tests | Built by six parallel groups, integrated; review fixes in progress |
+| 4 | Errors and security prerequisites | `prompts/04-errors-and-security.md` | in progress | workers 2448 passed | B1, B13.2–B13.5 and strict redirects done; review running |
 | 5 | Consent v2 | `prompts/05-consent.md` | todo | | |
 | 6 | Device flow v2 and CLI | `prompts/06-device.md` | todo | | |
 | 7 | Sign-in v2 | `prompts/07-sign-in.md` | todo | | |
