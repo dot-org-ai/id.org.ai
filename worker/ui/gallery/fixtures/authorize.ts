@@ -1,7 +1,7 @@
 /** Authorize (3a–3d) group fixtures: strings copied verbatim from the mocks. */
 import type { PermissionItem } from '../../components'
 import { AdminApprove, type AdminApproveProps } from '../../screens/AdminApprove'
-import { Consent, type ConsentProps } from '../../screens/Consent'
+import { Consent, consentAppName, consentVariant, type ConsentProps } from '../../screens/Consent'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const account = { name: 'Bryant Skarda', email: 'bryant@driv.ly' }
@@ -40,7 +40,17 @@ const consentPermissions: PermissionItem[] = [
 
 const consent: ConsentProps = {
   variant: 'full',
-  client: { name: 'Codex', tile: { kind: 'monogram', text: 'Cx' }, runsOnThisComputer: true },
+  client: {
+    displayName: 'Codex',
+    host: 'chatgpt.com',
+    verified: true,
+    runsOnThisComputer: true,
+    redirectHost: '127.0.0.1:57585',
+    cimdUrl: 'https://chatgpt.com/oauth/codex/client.json',
+    privacyUrl: 'https://example.com/codex/privacy',
+    termsUrl: 'https://example.com/codex/terms',
+    monogram: 'Cx',
+  },
   resource: 'api.sb',
   account,
   switchHref,
@@ -52,19 +62,11 @@ const consent: ConsentProps = {
   selectedWorkspace: 'org_do',
   access: { value: 'act', choice: { read: 'Search and read your Startups', act: 'Also run Verbs that change them' } },
   permissions: consentPermissions,
-  source: {
-    display: 'chatgpt.com/oauth/codex/client.json',
-    copyValue: 'https://chatgpt.com/oauth/codex/client.json',
-    details: [
-      { k: 'Runs on', v: 'This computer' },
-      { k: 'Returns to', v: '127.0.0.1:57585', mono: true },
-      { k: 'Identified by', v: 'chatgpt.com' },
-    ],
-    links: [
-      { href: 'https://example.com/codex/privacy', label: 'Codex privacy policy' },
-      { href: 'https://example.com/codex/terms', label: 'Codex terms' },
-    ],
-  },
+  sourceDetails: [
+    { k: 'Runs on', v: 'This computer' },
+    { k: 'Returns to', v: '127.0.0.1:57585', mono: true },
+    { k: 'Identified by', v: 'chatgpt.com' },
+  ],
   hidden: hidden('https://chatgpt.com/oauth/codex/client.json', 'http://127.0.0.1:57585/callback', 'openid profile email sb:read sb:do offline_access', 'https://api.sb'),
   action: '/oauth/authorize',
   csrf: 'gallery',
@@ -89,23 +91,25 @@ const CODEX_LOGO_URI = 'https://persistent.oaistatic.com/sonic/misc/openai-logo.
 
 const basic: ConsentProps = {
   variant: 'basic',
-  client: { name: 'api.sb', tile: { kind: 'monogram', text: 'sb' } },
+  client: {
+    displayName: 'api.sb',
+    host: 'api.sb',
+    verified: true,
+    runsOnThisComputer: false,
+    redirectHost: 'api.sb',
+    privacyUrl: 'https://example.com/api.sb/privacy',
+    termsUrl: 'https://example.com/api.sb/terms',
+    monogram: 'sb',
+  },
   resource: 'api.sb',
   scopesSummary: 'name, email address and profile photo',
   account,
   switchHref,
-  source: {
-    display: 'api.sb',
-    copyValue: 'api.sb',
-    details: [
-      { k: 'Identified by', v: 'api.sb' },
-      { k: 'Returns to', v: 'https://api.sb/auth/callback', mono: true },
-    ],
-    links: [
-      { href: 'https://example.com/api.sb/privacy', label: 'api.sb privacy policy' },
-      { href: 'https://example.com/api.sb/terms', label: 'api.sb terms' },
-    ],
-  },
+  // No CIMD document: the source row shows the client_id ("api.sb").
+  sourceDetails: [
+    { k: 'Identified by', v: 'api.sb' },
+    { k: 'Returns to', v: 'https://api.sb/auth/callback', mono: true },
+  ],
   hidden: hidden('api.sb', 'https://api.sb/auth/callback', 'openid profile email'),
   action: '/oauth/authorize',
   csrf: 'gallery',
@@ -113,9 +117,21 @@ const basic: ConsentProps = {
 
 // ── 3c · Unverified app ────────────────────────────────────────────────────
 
+/**
+ * The caller asks for the full screen; `verified: false` makes it 3c. The
+ * self-asserted name never renders: the host is the name, the monogram is its
+ * first letter, and the component adds the "Verified: No" row.
+ */
 const unverified: ConsentProps = {
-  variant: 'unverified',
-  client: { name: 'agent-tools.dev', tile: { kind: 'monogram', text: 'a' }, runsOnThisComputer: true },
+  variant: 'full',
+  client: {
+    displayName: 'Agent Tools',
+    host: 'agent-tools.dev',
+    verified: false,
+    runsOnThisComputer: true,
+    redirectHost: '127.0.0.1:61022',
+    cimdUrl: 'https://agent-tools.dev/oauth/client.json',
+  },
   resource: 'api.sb',
   intent: 'read your Startups',
   account,
@@ -126,15 +142,10 @@ const unverified: ConsentProps = {
     { icon: 'user', title: 'See your name, email and photo', detail: 'Your profile from id.org.ai.', scope: 'openid profile email' },
     { icon: 'search', title: 'Search and read your Startups on api.sb', detail: 'Read-only. It can’t change anything.', scope: 'sb:read · resource https://api.sb' },
   ],
-  source: {
-    display: 'agent-tools.dev/oauth/client.json',
-    copyValue: 'https://agent-tools.dev/oauth/client.json',
-    details: [
-      { k: 'Runs on', v: 'This computer' },
-      { k: 'Returns to', v: '127.0.0.1:61022', mono: true },
-      { k: 'Verified', v: 'No' },
-    ],
-  },
+  sourceDetails: [
+    { k: 'Runs on', v: 'This computer' },
+    { k: 'Returns to', v: '127.0.0.1:61022', mono: true },
+  ],
   hidden: hidden('https://agent-tools.dev/oauth/client.json', 'http://127.0.0.1:61022/callback', 'openid profile email sb:read', 'https://api.sb'),
   action: '/oauth/authorize',
   csrf: 'gallery',
@@ -172,7 +183,9 @@ const approve: AdminApproveProps = {
   csrf: 'gallery',
 }
 
-const consentTitle = (p: ConsentProps) => (p.variant === 'basic' ? `Sign in to ${p.client.name} · id.org.ai` : `Authorize ${p.client.name} · id.org.ai`)
+/** The document title names the app the way the screen does (the host for an unverified client). */
+const consentTitle = (p: ConsentProps) =>
+  consentVariant(p) === 'basic' ? `Sign in to ${consentAppName(p.client)} · id.org.ai` : `Authorize ${consentAppName(p.client)} · id.org.ai`
 const consentScripts: ['copy.js', 'submit.js', 'logo.js'] = ['copy.js', 'submit.js', 'logo.js']
 
 export const authorizeFixtures: FixtureGroup = {
@@ -183,8 +196,8 @@ export const authorizeFixtures: FixtureGroup = {
     default: consent,
     states: { copied: { ...consent, copied: true } },
     derived: {
-      logo: { ...consent, client: { ...consent.client, tile: { kind: 'logo', src: PLACEHOLDER_LOGO, monogram: 'Cx' } } },
-      'codex-logo': { ...consent, client: { ...consent.client, tile: { kind: 'logo', src: CODEX_LOGO_URI, monogram: 'Cx' } } },
+      logo: { ...consent, client: { ...consent.client, logoUrl: PLACEHOLDER_LOGO } },
+      'codex-logo': { ...consent, client: { ...consent.client, logoUrl: CODEX_LOGO_URI } },
       busy: { ...consent, busy: true },
     },
   }),
@@ -205,7 +218,8 @@ export const authorizeFixtures: FixtureGroup = {
   '3d-admin-approve': defineFixture({
     screen: AdminApprove,
     title: (p) => `Approve ${p.client.name} · id.org.ai`,
-    scripts: ['copy.js', 'submit.js', 'logo.js'],
+    // 3d stays on id.org.ai: fetch-form posts and swaps the approved / declined templates in place.
+    scripts: ['copy.js', 'fetch-form.js', 'logo.js'],
     default: approve,
     states: { copied: { ...approve, copied: true } },
     derived: {

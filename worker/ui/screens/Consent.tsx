@@ -9,12 +9,16 @@
  * the connector into `connecting` and the Allow button into "Allowing…" on
  * submit, then lets the post and the redirect to the app happen.
  *
- * Variants:
+ * The trust level is the component's job, not the caller's (security.md, D3).
+ * From `client.verified` it derives the variant, the name shown, the tile's
+ * monogram, the warning callout, the button order and the "Verified: No" row:
  * - `full` (3a): workspace select, the access level radios, permissions.
- * - `basic` (3b): identity scopes only; the primary reads "Continue as {first name}".
- * - `unverified` (3c): the host is the name, the warning callout replaces the
- *   rule under the head, and the buttons flip (Allow outlined on the left,
- *   Cancel primary on the right).
+ * - `basic` (3b): a verified client asking for identity scopes only; the
+ *   primary reads "Continue as {first name}".
+ * - `unverified` (3c): every unverified client, whatever the caller asked for.
+ *   The host is the name (never the self-asserted client_name), the warning
+ *   callout replaces the rule under the head, and the buttons flip (Allow
+ *   outlined on the left, Cancel primary on the right).
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
@@ -36,26 +40,52 @@ import {
   Who,
   Link,
   Page,
+  type KV,
   type PermissionItem,
   type SelectOption,
   type SourceRowProps,
   type TileContent,
 } from '../components'
 
+/** What the screen renders: 3a, 3b or 3c. Derived by `consentVariant`, never taken from the caller as is. */
 export type ConsentVariant = 'full' | 'basic' | 'unverified'
+/** What the caller asks for: the full screen (3a) or the identity-only one (3b). */
+export type ConsentRequest = 'full' | 'basic'
 export type AccessLevel = 'read' | 'act'
 
+/** The OAuth client, as the authorize request resolves it (screens.md#3a Data). */
 export interface ConsentClient {
-  /** The display name: a verified client's name, or the host for an unverified one (security.md). */
-  name: string
-  /** The app tile: its logo_uri, or the monogram fallback. */
-  tile: TileContent
-  /** The app runs on this computer (loopback redirect). 3c says so in its description. */
-  runsOnThisComputer?: boolean
+  /** The client's self-asserted `client_name`. Shown only when `verified` (security.md). */
+  displayName: string
+  /** The host the client is identified by (the CIMD host). The name shown for an unverified client. */
+  host: string
+  /** The client's logo_uri (https), or a first-party file; the monogram stands in without it (logos.md). */
+  logoUrl?: string
+  /** On the verified list (D3). False for every DCR client and any CIMD host not on the list. */
+  verified: boolean
+  /** The redirect is loopback: the app runs on this computer. 3c says so in its description. */
+  runsOnThisComputer: boolean
+  /** The redirect's host ("127.0.0.1:57585"). The Returns to row in `sourceDetails` words it per screen. */
+  redirectHost: string
+  /** The client metadata document URL. The source row shows it, or the client_id (DCR) without one (backend.md#b2). */
+  cimdUrl?: string
+  /** The app's privacy policy and terms (https only), linked in the source row under the shown name. */
+  privacyUrl?: string
+  termsUrl?: string
+  /**
+   * A verified client's 1–2 letter monogram ("Cx"). Default: the first letter of
+   * its name. An unverified client always gets the first letter of its host.
+   */
+  monogram?: string
 }
 
 export interface ConsentProps {
-  variant: ConsentVariant
+  /**
+   * The screen asked for. `basic` (3b) renders only for a verified client whose
+   * scopes are all identity scopes; anything else asked as `basic` renders 3a.
+   * An unverified client always renders 3c, whatever this says.
+   */
+  variant: ConsentRequest
   client: ConsentClient
   /** The API resource host ("api.sb"). */
   resource: string
@@ -79,8 +109,12 @@ export interface ConsentProps {
   access?: { value: AccessLevel; choice?: { read: string; act: string } }
   /** Permission rows from the scope registry (unused by 3b). */
   permissions?: PermissionItem[]
-  /** The source row: the CIMD URL (or client_id) and its details. */
-  source: Omit<SourceRowProps, 'icon' | 'copied'>
+  /**
+   * The source row's details in the order the screen shows them (Runs on,
+   * Returns to, Identified by). An unverified client gets "Verified: No" added
+   * last; a caller's own Verified row is dropped.
+   */
+  sourceDetails: KV[]
   /** Gallery: the source row's copied state. */
   copied?: boolean
   /** Submitting: the connector connects and Allow shows "Allowing…". */
@@ -93,15 +127,55 @@ export interface ConsentProps {
 }
 
 const ORG: TileContent = { kind: 'org' }
+const IDENTITY_SCOPES = new Set(['openid', 'profile', 'email'])
 
-function firstName(account: ConsentProps['account']): string {
-  return account.firstName ?? account.name.trim().split(/\s+/)[0] ?? account.name
+/** A person's first name: theirs when known, else the first word of their name. Shared with 3d. */
+export function firstName(person: { name: string; firstName?: string }): string {
+  return person.firstName ?? person.name.trim().split(/\s+/)[0] ?? person.name
+}
+
+/** The name shown for a client: the host when unverified, never the self-asserted name (security.md, screens.md#3c). */
+export function consentAppName(client: ConsentClient): string {
+  return client.verified ? client.displayName : client.host
+}
+
+function identityOnly(p: ConsentProps): boolean {
+  const scopes = (p.hidden.scope ?? '').split(/\s+/).filter(Boolean)
+  return scopes.length > 0 && scopes.every((s) => IDENTITY_SCOPES.has(s))
+}
+
+/** 3c whenever the client is unverified; 3b only for a verified, identity-only request; 3a otherwise. */
+export function consentVariant(p: ConsentProps): ConsentVariant {
+  if (!p.client.verified) return 'unverified'
+  return p.variant === 'basic' && identityOnly(p) ? 'basic' : 'full'
+}
+
+/** The app tile: its logo with the monogram fallback. An unverified client's monogram comes from its host. */
+function clientTile(c: ConsentClient): TileContent {
+  const monogram = (c.verified ? c.monogram : undefined) ?? (consentAppName(c).trim().charAt(0) || '?')
+  return c.logoUrl ? { kind: 'logo', src: c.logoUrl, monogram } : { kind: 'monogram', text: monogram }
+}
+
+/** The source row: the CIMD URL (or client_id) with copy, the details (plus Verified: No), the app's links under the shown name. */
+function sourceRow(p: ConsentProps, v: ConsentVariant, app: string): Omit<SourceRowProps, 'icon' | 'copied'> {
+  const value = p.client.cimdUrl ?? p.hidden.client_id ?? p.client.host
+  const details = p.sourceDetails.filter((d) => d.k !== 'Verified')
+  if (v === 'unverified') details.push({ k: 'Verified', v: 'No' })
+  const links: { href: string; label: string }[] = []
+  if (p.client.privacyUrl) links.push({ href: p.client.privacyUrl, label: `${app} privacy policy` })
+  if (p.client.termsUrl) links.push({ href: p.client.termsUrl, label: `${app} terms` })
+  return { display: value.replace(/^https:\/\//, ''), copyValue: value, details, links }
+}
+
+/** Everything the trust level decides, worked out once per render. */
+interface View {
+  v: ConsentVariant
+  app: string
 }
 
 /** Title and description per variant (screens.md#3a, mocks 3b and 3c). */
-function heading(p: ConsentProps): { title: string; description: string } {
-  const app = p.client.name
-  switch (p.variant) {
+function heading(p: ConsentProps, { v, app }: View): { title: string; description: string } {
+  switch (v) {
     case 'basic':
       return { title: `Sign in to ${app}`, description: `${app} will get your ${p.scopesSummary ?? 'name and email address'}.` }
     case 'unverified': {
@@ -115,8 +189,8 @@ function heading(p: ConsentProps): { title: string; description: string } {
 }
 
 /** The primary action's label and progressive form. */
-function allowLabels(p: ConsentProps): { label: string; busy: string } {
-  return p.variant === 'basic' ? { label: `Continue as ${firstName(p.account)}`, busy: 'Continuing…' } : { label: 'Allow', busy: 'Allowing…' }
+function allowLabels(p: ConsentProps, { v }: View): { label: string; busy: string } {
+  return v === 'basic' ? { label: `Continue as ${firstName(p.account)}`, busy: 'Continuing…' } : { label: 'Allow', busy: 'Allowing…' }
 }
 
 function Workspace({ p }: { p: ConsentProps }): JSX.Element | null {
@@ -141,30 +215,30 @@ function Access({ p }: { p: ConsentProps }): JSX.Element | null {
   )
 }
 
-function Body({ p }: { p: ConsentProps }): JSX.Element {
-  const { title, description } = heading(p)
-  const unverified = p.variant === 'unverified'
-  const permissions = p.variant !== 'basic' && p.permissions && p.permissions.length ? p.permissions : null
+function Body({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
+  const { title, description } = heading(p, view)
+  const { v, app } = view
+  const permissions = v !== 'basic' && p.permissions && p.permissions.length ? p.permissions : null
   return (
     <Stack gap={22}>
-      <CardHead connector={<Connector left={ORG} right={p.client.tile} state={p.busy ? 'connecting' : 'idle'} />} title={title} description={description} />
-      {unverified ? (
-        <WarningCallout title="id.org.ai can’t vouch for this app">{`Only continue if you trust ${p.client.name} and started this yourself.`}</WarningCallout>
+      <CardHead connector={<Connector left={ORG} right={clientTile(p.client)} state={p.busy ? 'connecting' : 'idle'} />} title={title} description={description} />
+      {v === 'unverified' ? (
+        <WarningCallout title="id.org.ai can’t vouch for this app">{`Only continue if you trust ${app} and started this yourself.`}</WarningCallout>
       ) : (
         <Dotted />
       )}
       <Who name={p.account.name} sub={p.account.email} avatar={p.account.avatar} right={<Link href={p.switchHref}>Switch</Link>} />
       <Workspace p={p} />
       <Access p={p} />
-      {permissions ? <PermissionList heading={`${p.client.name} would like to`} items={permissions} /> : null}
+      {permissions ? <PermissionList heading={`${app} would like to`} items={permissions} /> : null}
       {permissions ? <Dotted /> : null}
-      <SourceRow icon="globe" {...p.source} copied={p.copied} />
+      <SourceRow icon="globe" {...sourceRow(p, v, app)} copied={p.copied} />
     </Stack>
   )
 }
 
-function Foot({ p }: { p: ConsentProps }): JSX.Element {
-  const allow = allowLabels(p)
+function Foot({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
+  const allow = allowLabels(p, view)
   const busy = !!p.busy
   const cancelButton = (variant: 'primary' | 'secondary') => (
     <Button variant={variant} block name="approved" value="false" disabled={busy} on="cancel">
@@ -180,7 +254,7 @@ function Foot({ p }: { p: ConsentProps }): JSX.Element {
   return (
     <CardFoot>
       <Actions>
-        {p.variant === 'unverified' ? (
+        {view.v === 'unverified' ? (
           <>
             {allowButton('secondary')}
             {cancelButton('primary')}
@@ -197,6 +271,7 @@ function Foot({ p }: { p: ConsentProps }): JSX.Element {
 }
 
 export function Consent(p: ConsentProps): JSX.Element {
+  const view: View = { v: consentVariant(p), app: consentAppName(p.client) }
   const showsWorkspaces = !!(p.workspaces && p.workspaces.length)
   return (
     <Page>
@@ -207,10 +282,10 @@ export function Consent(p: ConsentProps): JSX.Element {
         ))}
         {!showsWorkspaces && p.selectedWorkspace ? <input type="hidden" name="org_id" value={p.selectedWorkspace} /> : null}
         {p.access && !p.access.choice ? <input type="hidden" name="access" value={p.access.value} /> : null}
-        <Card foot={<Foot p={p} />}>
-          <Body p={p} />
+        <Card foot={<Foot p={p} view={view} />}>
+          <Body p={p} view={view} />
           <span class="id-sr" role="status" data-status>
-            {p.busy ? allowLabels(p).busy : ''}
+            {p.busy ? allowLabels(p, view).busy : ''}
           </span>
         </Card>
       </form>
