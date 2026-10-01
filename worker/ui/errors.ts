@@ -118,17 +118,20 @@ export function errorPageProps(kind: ErrorKind, ctx: ErrorContext): ErrorPagePro
     case 'expired': {
       const what = ctx.expired?.what ?? 'sign-in'
       const resend = ctx.expired?.resend
+      if (!resend) {
+        // Only the agent can ask again after an expired approval, so the way out is home.
+        const primary = what === 'approval' ? HOME : { label: 'Start again', href: ctx.startHref ?? '/login' }
+        return { tile: { kind: 'icon', icon: 'clock' }, ...EXPIRED_COPY[what], actions: { primary } }
+      }
       return {
         tile: { kind: 'icon', icon: 'clock' },
         ...EXPIRED_COPY[what],
-        actions: resend
-          ? {
-              secondary: { label: 'Sign in another way', href: '/login' },
-              primary: { label: 'Send a new code', href: resend.href, icon: 'mail', post: true, busyLabel: 'Sending…' },
-            }
-          : // Only the agent can ask again after an expired approval, so the way out is home.
-            { primary: what === 'approval' ? HOME : { label: 'Start again', href: ctx.startHref ?? '/login' } },
-        ...(resend ? { csrf: resend.csrf, fields: resend.fields } : {}),
+        actions: {
+          secondary: { label: 'Sign in another way', href: '/login' },
+          primary: { label: 'Send a new code', href: resend.href, icon: 'mail', post: true, busyLabel: 'Sending…' },
+        },
+        csrf: resend.csrf,
+        fields: resend.fields,
       }
     }
     case 'already_used': {

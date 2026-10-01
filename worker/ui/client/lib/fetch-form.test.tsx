@@ -83,6 +83,8 @@ describe('4b on lib/fetch-form.ts (motion.md#device-confirm-4b-the-reference-sta
   it('a refusal with no template gives the buttons back, so Try again works', async () => {
     const post = vi.fn(async () => ({ ok: false, error: 'server_error' }))
     const m = await mount(post)
+    // 4b ships a generic `error` template; take it out to reach the no-template path.
+    for (const t of document.querySelectorAll('template[data-state="error"]')) t.remove()
     m.click('approve')
     await flush()
     m.advance(1820)

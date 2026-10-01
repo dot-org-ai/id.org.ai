@@ -49,8 +49,15 @@ const invitation: InvitationProps = {
   expiresIn: 'in 6 days',
   account: { name: 'Bryant Skarda', email: 'bryant@driv.ly' },
   switchHref: '/account/choose',
+  continueHref: '/',
   action: '/invite/gallery',
   csrf: 'gallery',
+}
+
+const invitationTitle = (p: InvitationProps) => {
+  if (p.state === 'joined') return `Welcome to ${p.workspace.name} · id.org.ai`
+  if (p.state === 'declined') return 'Invitation declined · id.org.ai'
+  return `Join ${p.workspace.name} · id.org.ai`
 }
 
 export const accountsFixtures: FixtureGroup = {
@@ -84,12 +91,14 @@ export const accountsFixtures: FixtureGroup = {
   }),
   '2e-invitation': defineFixture({
     screen: Invitation,
-    title: (p) => (p.state === 'declined' ? 'Invitation declined · id.org.ai' : `Join ${p.workspace.name} · id.org.ai`),
-    scripts: ['submit.js'],
+    title: invitationTitle,
+    scripts: ['fetch-form.js'],
     default: invitation,
     derived: {
-      // Signed in as a different email than the invited one: Join disabled, Switch prominent.
+      // Signed in as a different email than the invited one: Join and Decline disabled, Switch prominent.
       mismatch: { ...invitation, account: { name: 'Bryant Skarda', email: 'bryant@do.industries' } },
+      // The results (the templates' content, and the no-JS pages). Join normally continues to 2c instead.
+      joined: { ...invitation, state: 'joined' },
       declined: { ...invitation, state: 'declined' },
     },
   }),

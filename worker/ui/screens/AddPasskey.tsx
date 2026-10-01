@@ -4,7 +4,8 @@
  * GET/POST /passkeys/new?continue=. Offered once, right after a code sign-in,
  * when the browser supports WebAuthn and the person has no passkey. Both
  * buttons submit: `decision=add` is the WebAuthn create (the passkey script
- * takes it over, B7), `decision=later` remembers the dismissal for 30 days.
+ * takes it over through `data-on="passkey"`, B7), `decision=later` remembers
+ * the dismissal for 30 days.
  * Either continues.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
@@ -33,7 +34,7 @@ export function AddPasskey(p: AddPasskeyProps): JSX.Element {
                 <Button variant="secondary" block name="decision" value="later" disabled={p.busy}>
                   Not now
                 </Button>
-                <Button variant="primary" block name="decision" value="add" icon="key" busy={p.busy} busyLabel="Adding…">
+                <Button variant="primary" block name="decision" value="add" icon="key" busy={p.busy} busyLabel="Adding…" on="passkey">
                   Add a passkey
                 </Button>
               </Actions>

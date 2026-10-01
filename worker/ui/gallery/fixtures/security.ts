@@ -56,13 +56,19 @@ export const securityFixtures: FixtureGroup = {
   }),
   '6b-sign-out': defineFixture({
     screen: SignOut,
-    title: () => 'Sign out · id.org.ai',
-    scripts: ['submit.js'],
+    title: (p) => (p.state === 'signed-out' ? 'You’re signed out · id.org.ai' : 'Sign out · id.org.ai'),
+    scripts: ['fetch-form.js'],
     default: signOut,
     derived: {
       everywhere: { ...signOut, scope: 'everywhere' },
       busy: { ...signOut, busy: true },
       'no-app': { ...signOut, app: undefined, clientId: undefined, scope: undefined },
+      // The result (the template's content, and the no-JS page), named for each scope.
+      'signed-out': { ...signOut, state: 'signed-out' },
+      'signed-out-browser': { ...signOut, state: 'signed-out', scope: 'browser' },
+      'signed-out-everywhere': { ...signOut, state: 'signed-out', scope: 'everywhere' },
+      // No app and no return_url: nothing to continue to.
+      'signed-out-no-app': { ...signOut, state: 'signed-out', app: undefined, clientId: undefined, scope: 'browser', returnUrl: undefined, cancelHref: '/' },
     },
   }),
   '6c-add-passkey': defineFixture({

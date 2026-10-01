@@ -76,7 +76,7 @@ export function ProviderFallback(p: ProviderFallbackProps): JSX.Element {
             description={`${p.reason} Verify with an emailed code instead.`}
           />
           <Field id="fallback-email" label={p.emailLabel ?? 'Email'} error={p.emailError}>
-            <Input id="fallback-email" name="email" type="email" value={p.email} autocomplete="email" required error={Boolean(p.emailError)} />
+            <Input id="fallback-email" name="email" type="email" value={p.email} autocomplete="email" required autofocus={Boolean(p.emailError)} error={Boolean(p.emailError)} />
           </Field>
           {p.details ? (
             <Disclosure summary="Developer details">

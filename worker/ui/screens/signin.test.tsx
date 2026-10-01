@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { renderHtml } from '../render'
+import { signinFixtures } from '../gallery/fixtures/signin'
 import { EmailCode, type EmailCodeProps } from './EmailCode'
 import { FirstRun, type FirstRunProps } from './FirstRun'
 import { LinkAccount, type LinkAccountProps } from './LinkAccount'
@@ -72,6 +73,42 @@ function expectEscaped(doc: Document, html: string): void {
 }
 
 const app = { name: 'headless.ly', tile: { kind: 'monogram' as const, text: 'h' } }
+
+// ── Every fixture state ────────────────────────────────────────────────────
+
+describe('every sign-in fixture, state and derived state', () => {
+  const variants = Object.entries(signinFixtures).flatMap(([slug, f]) => [
+    [slug, f.default] as const,
+    ...Object.entries(f.states).map(([k, v]) => [`${slug}?state=${k}`, v] as const),
+    ...Object.entries(f.derived).map(([k, v]) => [`${slug}?state=${k}`, v] as const),
+  ])
+
+  it.each(variants)('%s: one h1, labelled controls, a status region where it submits, the narrow column, no inline style or script', async (_name, v) => {
+    const html = await renderHtml(v.render(), { title: v.title })
+    expect(html).not.toMatch(/\sstyle=/i)
+    expect(html).not.toMatch(/<style[\s>]/i)
+    expect(html).not.toMatch(/\son[a-z]+=/i)
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.querySelectorAll('h1').length).toBe(1)
+    expect(doc.querySelector('script:not([src])')).toBeNull()
+    expectLabelled(doc)
+    // 1c and 1e only link onward (no form, nothing changes in place), so they need no status region.
+    if (doc.querySelector('form')) expect(doc.querySelector('main [role="status"]')).not.toBeNull()
+    expect(doc.querySelector('.id-column')?.classList.contains('id-column--narrow')).toBe(true)
+    expect(v.title).toMatch(/ · id\.org\.ai$/)
+    for (const form of doc.querySelectorAll('form')) {
+      expect(form.getAttribute('method')).toBe('post')
+      expect(form.querySelector('input[type="hidden"][name="csrf"]')?.getAttribute('value')).toBe('gallery')
+    }
+  })
+
+  it.each(variants)('%s: focus only ever lands on one invalid field (accessibility.md#forms-and-errors)', async (_name, v) => {
+    const doc = new DOMParser().parseFromString(await renderHtml(v.render(), { title: v.title }), 'text/html')
+    const focused = doc.querySelectorAll('[autofocus]')
+    expect(focused.length).toBeLessThanOrEqual(1)
+    if (focused.length) expect(focused[0]!.getAttribute('aria-invalid')).toBe('true')
+  })
+})
 
 // ── 1a / 1g ────────────────────────────────────────────────────────────────
 
@@ -332,6 +369,31 @@ describe('1d first run', () => {
     expect(doc.querySelector('[data-actions] a')?.getAttribute('href')).toBe('/workspace/choose')
   })
 
+  it('a server-rendered error marks, describes and focuses the first invalid field; a first render focuses nothing', async () => {
+    const plain = await dom(<FirstRun {...firstRun} />)
+    expect(plain.querySelector('[autofocus]')).toBeNull()
+
+    const name = await dom(<FirstRun {...firstRun} name="" nameError="Enter your name." />)
+    const nameInput = name.querySelector('input[name="name"]')!
+    expect(nameInput.hasAttribute('autofocus')).toBe(true)
+    expect(nameInput.getAttribute('aria-invalid')).toBe('true')
+    expect(text(name.getElementById(nameInput.getAttribute('aria-describedby')!))).toBe('Enter your name.')
+    expect(name.querySelectorAll('[autofocus]')).toHaveLength(1)
+
+    const ws = await dom(<FirstRun {...firstRun} workspaceName="" workspaceError="Enter a workspace name." />)
+    const wsInput = ws.querySelector('input[name="workspace"]')!
+    expect(wsInput.hasAttribute('autofocus')).toBe(true)
+    expect(wsInput.getAttribute('aria-invalid')).toBe('true')
+    expect(text(ws.getElementById(wsInput.getAttribute('aria-describedby')!))).toBe('Enter a workspace name.')
+    expect(ws.querySelector('input[name="name"]')!.hasAttribute('autofocus')).toBe(false)
+
+    const both = await dom(<FirstRun {...firstRun} nameError="Enter your name." workspaceError="Enter a workspace name." />)
+    expect(Array.from(both.querySelectorAll('[autofocus]')).map((el) => el.getAttribute('name'))).toEqual(['name'])
+
+    const fresh = await dom(<FirstRun variant="new-workspace" action="/workspace/new" csrf="tok" workspaceError="Enter a workspace name." />)
+    expect(fresh.querySelector('input[name="workspace"]')!.hasAttribute('autofocus')).toBe(true)
+  })
+
   it('escapes request data', async () => {
     const html = await renderHtml(<FirstRun {...firstRun} name={HOSTILE} workspaceName={HOSTILE} providerUsername={HOSTILE} />, { title: 't' })
     expectEscaped(new DOMParser().parseFromString(html, 'text/html'), html)
@@ -412,6 +474,17 @@ describe('1f provider fallback', () => {
     expect(details.hasAttribute('open')).toBe(false)
     expect(text(details.querySelector('summary'))).toBe('Developer details')
     expect(details.querySelector('[data-js="copy"]')?.getAttribute('data-value')).toBe('request=req_1')
+  })
+
+  it('an email error marks, describes and focuses the field; a first render focuses nothing', async () => {
+    const plain = await dom(<ProviderFallback {...fallback} />)
+    expect(plain.querySelector('[autofocus]')).toBeNull()
+    const doc = await dom(<ProviderFallback {...fallback} email="bryant@northwind" emailError="Enter a full email address, like you@company.com." />)
+    const input = doc.querySelector('input[name="email"]')!
+    expect(input.hasAttribute('autofocus')).toBe(true)
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(input.getAttribute('value')).toBe('bryant@northwind')
+    expect(text(doc.getElementById(input.getAttribute('aria-describedby')!))).toBe('Enter a full email address, like you@company.com.')
   })
 
   it('escapes request data', async () => {

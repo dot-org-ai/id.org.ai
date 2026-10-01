@@ -120,6 +120,16 @@ export const signinFixtures: FixtureGroup = {
     default: firstRun,
     derived: {
       'new-workspace': { variant: 'new-workspace', action: '/workspace/new', csrf: 'gallery', backHref: '/workspace/choose' },
+      // Server-rendered validation errors: focus lands on the first invalid field.
+      'name-error': { ...firstRun, name: '', nameError: 'Enter your name.' },
+      'workspace-error': { ...firstRun, workspaceName: '', workspaceError: 'Enter a workspace name.' },
+      'new-workspace-error': {
+        variant: 'new-workspace',
+        action: '/workspace/new',
+        csrf: 'gallery',
+        backHref: '/workspace/choose',
+        workspaceError: 'Enter a workspace name.',
+      },
     },
   }),
   '1e-link-account': defineFixture({
@@ -133,6 +143,8 @@ export const signinFixtures: FixtureGroup = {
     scripts: ['submit.js', 'copy.js'],
     default: fallback,
     derived: {
+      // The email form came back invalid: the field is marked, described and focused.
+      'email-error': { ...fallback, email: 'bryant@northwind', emailError: 'Enter a full email address, like you@company.com.' },
       details: {
         ...fallback,
         details: {

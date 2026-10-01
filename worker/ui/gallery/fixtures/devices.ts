@@ -1,11 +1,14 @@
 /** Devices group fixtures: strings copied verbatim from the 4b/4c/4d mocks. */
-import { DeviceConfirm, type DeviceConfirmProps } from '../../screens/DeviceConfirm'
+import { DEVICE_CONFIRM_ERRORS, DeviceConfirm, type DeviceConfirmProps } from '../../screens/DeviceConfirm'
 import { DeviceDone, type DeviceDoneProps, type DeviceSignedProps } from '../../screens/DeviceDone'
 import { DeviceEntry, type DeviceEntryProps } from '../../screens/DeviceEntry'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const confirm: DeviceConfirmProps = {
   code: 'WDJB-MJHT',
+  // Requested 1 min ago; device codes last 30 minutes.
+  expiresInMinutes: 29,
+  requestId: 'req_gallery',
   client: { name: 'auto.dev CLI', tile: { kind: 'icon', icon: 'terminal' } },
   cliName: 'auto.dev',
   deviceMeta: 'macOS · Miami, FL · requested 1 min ago',
@@ -59,6 +62,8 @@ export const deviceFixtures: FixtureGroup = {
       cancelling: { ...confirm, state: 'cancelling' },
       cancelled: { ...confirm, state: 'cancelled' },
     },
+    // The error templates the live page carries, each shown on its own.
+    derived: Object.fromEntries(DEVICE_CONFIRM_ERRORS.map((e) => [e, { ...confirm, state: e }])),
   }),
   '4c-device-entry': defineFixture({
     screen: DeviceEntry,

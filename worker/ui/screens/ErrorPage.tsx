@@ -2,9 +2,11 @@
  * 7 · The error template (docs/product-update/spec/screens.md#7): one page
  * for every error a browser can see. 7a misconfigured app, 7b expired link,
  * 7c blocked by workspace policy, and the generic server error (500), rate
- * limit (429), CSRF failure and not found all render through it, with copy
- * from the catalogue (worker/ui/errors.ts maps error codes onto
- * ErrorCatalogueEntry).
+ * limit (429), CSRF failure and not found all render through it.
+ * `errorPageProps(kind, ctx)` in worker/ui/errors.ts builds these props from
+ * the catalogue for each error kind, and `renderErrorPage` there renders the
+ * page. ErrorCard is the same card without the page shell, for an error shown
+ * in place inside another page.
  *
  * The human reason comes first; developer details fold underneath with a copy
  * action. Everything here is request data and is escaped by JSX. A rejected
@@ -33,23 +35,31 @@ import {
 } from '../components'
 import type { IconName } from '../icons'
 
-/** An action on the error page. Links navigate; `post` submits the card's form instead. */
+/** An action on the error page that navigates: a link. */
 export interface ErrorAction {
   label: string
   href: string
   icon?: IconName
-  /**
-   * Primary only: POST to `href` with the page's CSRF token and `fields`, for
-   * actions with side effects (send a new code, request access).
-   */
-  post?: boolean
+  post?: false
+}
+
+/**
+ * Primary only: an action with side effects (send a new code, request
+ * access). It submits the card's form, POSTing to `href` with the page's CSRF
+ * token and `fields`.
+ */
+export interface ErrorPostAction {
+  label: string
+  href: string
+  icon?: IconName
+  post: true
   /** The progressive label while posting ("Sending…"). */
   busyLabel?: string
 }
 
 export interface ErrorActions {
   /** The primary: on the right, or the full width when alone. */
-  primary: ErrorAction
+  primary: ErrorAction | ErrorPostAction
   /** The outlined action on the left. Always a link. */
   secondary?: ErrorAction
 }
@@ -82,14 +92,12 @@ export interface ErrorCatalogueEntry {
   footnote?: { icon?: IconName; text: string }
 }
 
-export interface ErrorPageProps extends ErrorCatalogueEntry {
+interface ErrorPageCommon extends ErrorCatalogueEntry {
   /**
    * The right tile, after id.org.ai: the app when it is known (7a, 7c),
    * otherwise an icon for the kind (clock for expired).
    */
   tile: TileContent
-  /** Required when the primary posts. */
-  csrf?: string
   /** Hidden fields posted with the primary (client, org, flow). */
   fields?: Record<string, string>
   /**
@@ -100,6 +108,25 @@ export interface ErrorPageProps extends ErrorCatalogueEntry {
   accessRequest?: { note?: string; sent?: boolean }
   /** Gallery only: the copy button's copied state. */
   copied?: boolean
+}
+
+/** Every action is a link, so there is no form. */
+export interface ErrorLinkPageProps extends ErrorPageCommon {
+  actions: { primary: ErrorAction; secondary?: ErrorAction }
+  csrf?: string
+}
+
+/** The primary posts, so the card is a form and the CSRF token is required. */
+export interface ErrorPostPageProps extends ErrorPageCommon {
+  actions: { primary: ErrorPostAction; secondary?: ErrorAction }
+  csrf: string
+}
+
+export type ErrorPageProps = ErrorLinkPageProps | ErrorPostPageProps
+
+/** The primary posts (and so the props carry a CSRF token). */
+export function postsPrimary(p: ErrorPageProps): p is ErrorPostPageProps {
+  return p.actions.primary.post === true
 }
 
 const ORG: TileContent = { kind: 'org' }
@@ -134,7 +161,7 @@ function Details({ d, copied }: { d: ErrorDetails; copied?: boolean }): JSX.Elem
 }
 
 /** A posting primary is the form's submit; everything else is a link. `grow` when it is the only action. */
-function ActionButton({ a, variant, grow }: { a: ErrorAction; variant: 'primary' | 'secondary'; grow?: boolean }): JSX.Element {
+function ActionButton({ a, variant, grow }: { a: ErrorAction | ErrorPostAction; variant: 'primary' | 'secondary'; grow?: boolean }): JSX.Element {
   if (a.post && variant === 'primary') {
     return (
       <Button variant="primary" block grow={grow} icon={a.icon} busyLabel={a.busyLabel}>
@@ -193,8 +220,9 @@ function Body({ p }: { p: ErrorPageProps }): JSX.Element {
 
 /**
  * The error card on its own (and its form, when the primary posts), for
- * places that show an error inside another page: 5b's expired template, 4b's
- * error templates. ErrorPage is this card in the page shell.
+ * places that show a whole error card inside another page (5b's expired
+ * template). ErrorPage is this card in the page shell. A posting form runs
+ * submit.js, so list it in the page's scripts.
  */
 export function ErrorCard(p: ErrorPageProps): JSX.Element {
   const card = (
@@ -202,10 +230,10 @@ export function ErrorCard(p: ErrorPageProps): JSX.Element {
       <Body p={p} />
     </Card>
   )
-  if (!p.actions.primary.post) return card
+  if (!postsPrimary(p)) return card
   return (
     <form class="id-form" method="post" action={p.actions.primary.href} data-js="submit">
-      <input type="hidden" name="csrf" value={p.csrf ?? ''} />
+      <input type="hidden" name="csrf" value={p.csrf} />
       {Object.entries(p.fields ?? {}).map(([name, value]) => (
         <input type="hidden" name={name} value={value} />
       ))}

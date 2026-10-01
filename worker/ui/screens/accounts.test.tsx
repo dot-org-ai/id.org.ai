@@ -1,22 +1,66 @@
 /**
  * Accessibility and wiring contracts for the accounts and devices screens
- * (2a, 2b, 2c, 2e, 4c, 4d; docs/product-update/spec/screens.md sections 2 and 4):
- * one h1, every control labelled, forms posting to their route with a CSRF
- * field, a role=status region, request data escaped, no inline style.
+ * (2a, 2b, 2c, 2e, 4b, 4c, 4d; docs/product-update/spec/screens.md sections 2
+ * and 4): one h1, every control labelled, forms posting to their route with a
+ * CSRF field, a role=status region, request data escaped, no inline style.
+ * The screens that stay on id.org.ai (2e, 4b) run through the real
+ * lib/fetch-form.ts with a fake clock and a fake server.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { renderHtml } from '../render'
+import { initFetchForm, type FetchDeps } from '../client/lib/fetch-form'
+import { errorPageProps } from '../errors'
 import { accountsFixtures } from '../gallery/fixtures/accounts'
 import { deviceFixtures } from '../gallery/fixtures/devices'
 import { AccountChooser, type AccountChooserProps } from './AccountChooser'
 import { WorkspaceChooser, type WorkspaceChooserProps } from './WorkspaceChooser'
 import { Handoff, type HandoffProps } from './Handoff'
-import { Invitation, emailMismatch, type InvitationProps } from './Invitation'
+import { Invitation, article, emailMismatch, type InvitationProps } from './Invitation'
+import { DEVICE_CONFIRM_ERRORS, DeviceConfirm, type DeviceConfirmProps } from './DeviceConfirm'
 import { DeviceEntry } from './DeviceEntry'
 import { DeviceDone, type DeviceSignedProps } from './DeviceDone'
 
 const EVIL = '<script>alert(1)</script>'
+
+const flush = () => new Promise((r) => setTimeout(r, 0))
+
+/** A screen's real markup in the document, driven by lib/fetch-form.ts with a fake clock and server. */
+async function mountFetchForm(el: JSX.Element, post: FetchDeps['post']) {
+  const html = await renderHtml(el, { title: 't' })
+  document.body.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML
+  const timers: { fn: () => void; at: number }[] = []
+  let now = 0
+  const later = (fn: () => void, ms: number) => void timers.push({ fn, at: now + ms })
+  const advance = (ms: number) => {
+    now += ms
+    for (const t of timers.filter((t) => t.at <= now)) {
+      timers.splice(timers.indexOf(t), 1)
+      t.fn()
+    }
+  }
+  const go = vi.fn()
+  const form = document.querySelector<HTMLFormElement>('form[data-js="fetch-form"]')!
+  initFetchForm(form, { post, later, go })
+  const click = (value: string) => {
+    const btn = form.querySelector<HTMLButtonElement>(`button[value="${value}"]`)!
+    form.dispatchEvent(Object.assign(new Event('submit', { bubbles: true, cancelable: true }), { submitter: btn }))
+  }
+  return {
+    form,
+    click,
+    advance,
+    go,
+    connector: () => document.querySelector('[data-js="connector"]')!.getAttribute('data-state'),
+    title: () => document.querySelector('[data-region] h1')!.textContent,
+    desc: () => document.querySelector('[data-region] .id-desc')?.textContent,
+    foot: () => document.querySelector('[data-region="foot"]')!,
+    status: () => document.querySelector('[data-status]')!.textContent,
+    buttons: () => Array.from(form.querySelectorAll('button')),
+  }
+}
+
+afterEach(() => (document.body.innerHTML = ''))
 
 async function dom(el: JSX.Element): Promise<Document> {
   const html = await renderHtml(el, { title: 't' })
@@ -225,52 +269,161 @@ describe('2e · Accept invitation', () => {
     expiresIn: 'in 6 days',
     account: { name: 'Bryant Skarda', email: 'bryant@driv.ly' },
     switchHref: '/account/choose',
+    continueHref: 'https://do.industries/',
     action: '/invite/tok_123',
     csrf: 'tok',
   }
 
-  it('posts accept or decline to /invite/:token', async () => {
+  it('posts accept or decline to /invite/:token through fetch-form, each naming its result template', async () => {
     const doc = await dom(<Invitation {...base} />)
     expectOneH1(doc, 'Join .do Industries')
     expect(doc.querySelector('.id-desc')?.textContent).toBe('Nathan Clevenger invited you as an Admin.')
     expectLabelled(doc)
     expectStatus(doc)
     const form = expectForm(doc, '/invite/tok_123')
+    expect(form.getAttribute('data-js')).toBe('fetch-form')
+    expect(doc.querySelector('.id-column')?.classList.contains('id-column--narrow')).toBe(true)
     const buttons = Array.from(form.querySelectorAll<HTMLButtonElement>('button[type="submit"][name="decision"]'))
-    expect(buttons.map((b) => [b.getAttribute('value'), b.textContent, b.hasAttribute('disabled')])).toEqual([
-      ['decline', 'Decline', false],
-      ['accept', 'Join workspace', false],
+    expect(buttons.map((b) => [b.getAttribute('value'), b.textContent, b.hasAttribute('disabled'), b.hasAttribute('data-deny'), b.getAttribute('data-done')])).toEqual([
+      ['decline', 'Decline', false, true, 'declined'],
+      ['accept', 'Join workspace', false, false, 'joined'],
     ])
     expect(form.querySelector('a.id-link[href="/account/choose"]')?.textContent).toBe('Switch')
   })
 
-  it('disables Join and makes Switch prominent when the signed-in email is not the invited one', async () => {
+  it('carries the joined and declined results as templates for both regions; the status region sits outside them', async () => {
+    const doc = await dom(<Invitation {...base} />)
+    const body = doc.querySelector('[data-region="body"]')!
+    const foot = doc.querySelector('[data-region="foot"]')!
+    for (const state of ['joined', 'declined']) {
+      expect(body.parentElement!.querySelector(`:scope > template[data-state="${state}"]`), `body ${state}`).not.toBeNull()
+      expect(foot.parentElement!.querySelector(`:scope > template[data-state="${state}"]`), `foot ${state}`).not.toBeNull()
+    }
+    expect(doc.querySelector('[data-status]')!.closest('[data-region]')).toBeNull()
+  })
+
+  it('disables Join and Decline and makes Switch prominent when the signed-in email is not the invited one', async () => {
     const props = { ...base, account: { name: 'Bryant Skarda', email: 'bryant@do.industries' } }
     expect(emailMismatch(props)).toBe(true)
     expect(emailMismatch({ ...base, account: { name: 'B', email: 'Bryant@Driv.ly' } })).toBe(false)
     const doc = await dom(<Invitation {...props} />)
     expect(doc.querySelector('button[value="accept"]')?.hasAttribute('disabled')).toBe(true)
-    expect(doc.querySelector('button[value="decline"]')?.hasAttribute('disabled')).toBe(false)
+    expect(doc.querySelector('button[value="decline"]')?.hasAttribute('disabled')).toBe(true)
     expect(doc.querySelector('a.id-btn[href="/account/choose"]')?.textContent).toBe('Switch account')
-    expect(doc.querySelector('.id-note')?.textContent).toBe('This invitation is for bryant@driv.ly. Switch to that account to join.')
+    expect(doc.querySelector('.id-note')?.textContent).toBe('This invitation is for bryant@driv.ly. Switch to that account to join or decline.')
   })
 
-  it('shows the declined confirmation in place', async () => {
+  it('declined result (no JS): a fail head, the inviter named, no form', async () => {
     const doc = await dom(<Invitation {...base} state="declined" />)
     expectOneH1(doc, 'Invitation declined')
+    expect(doc.querySelector('.id-desc')?.textContent).toBe('You didn’t join .do Industries. You can close this tab.')
     expect(expectStatus(doc).textContent).toBe('Declined')
     expect(doc.querySelector('.id-conn')?.getAttribute('data-state')).toBe('fail')
+    expect(doc.querySelector('.id-foottext')?.textContent).toBe('Changed your mind? Ask Nathan Clevenger to invite you again.')
+    expect(doc.querySelector('form')).toBeNull()
+    expect(doc.querySelector('template')).toBeNull()
+  })
+
+  it('joined result (no JS, or no redirect): an ok head, the role, and the way on', async () => {
+    const doc = await dom(<Invitation {...base} state="joined" />)
+    expectOneH1(doc, 'Welcome to .do Industries')
+    expect(doc.querySelector('.id-desc')?.textContent).toBe('You joined as an Admin.')
+    expect(expectStatus(doc).textContent).toBe('Joined')
+    expect(doc.querySelector('.id-conn')?.getAttribute('data-state')).toBe('ok')
+    expect(doc.querySelector('.id-foottext a')?.getAttribute('href')).toBe('https://do.industries/')
+    expect(doc.querySelector('.id-foottext a')?.textContent).toBe('Continue to .do Industries')
     expect(doc.querySelector('form')).toBeNull()
   })
 
-  it('uses "a" before a consonant role', async () => {
-    const doc = await dom(<Invitation {...base} role="Member" />)
-    expect(doc.querySelector('.id-desc')?.textContent).toBe('Nathan Clevenger invited you as a Member.')
+  it('the article goes by sound: a User, an Admin, an Owner, a Member', async () => {
+    expect(['User', 'Admin', 'Owner', 'Member', 'editor'].map((r) => `${article(r)} ${r}`)).toEqual(['a User', 'an Admin', 'an Owner', 'a Member', 'an editor'])
+    const user = await dom(<Invitation {...base} role="User" />)
+    expect(user.querySelector('.id-desc')?.textContent).toBe('Nathan Clevenger invited you as a User.')
+    const member = await dom(<Invitation {...base} role="Member" />)
+    expect(member.querySelector('.id-desc')?.textContent).toBe('Nathan Clevenger invited you as a Member.')
   })
 
   it('escapes invitation data', async () => {
-    const html = await renderHtml(<Invitation {...base} inviter={{ name: EVIL }} role={EVIL} invitedEmail={EVIL} />, { title: 't' })
+    const html = await renderHtml(<Invitation {...base} inviter={{ name: EVIL }} role={EVIL} invitedEmail={EVIL} workspace={{ name: EVIL, tile: { kind: 'monogram', text: 'x' } }} />, {
+      title: 't',
+    })
     expectEscaped(new DOMParser().parseFromString(html, 'text/html'), html)
+  })
+})
+
+describe('2e on lib/fetch-form.ts (motion.md#where-the-person-goes-next)', () => {
+  const live = () => accountsFixtures['2e-invitation']!.default.render()
+
+  it('Join: connecting and "Joining…" at once; a {redirect} answer leaves for 2c at once', async () => {
+    let resolve!: (r: { ok: boolean; redirect?: string }) => void
+    const post = vi.fn<FetchDeps['post']>(() => new Promise((r) => (resolve = r)))
+    const m = await mountFetchForm(live(), post)
+    m.click('accept')
+    expect(m.connector()).toBe('connecting')
+    const join = m.form.querySelector<HTMLButtonElement>('button[value="accept"]')!
+    expect(join.getAttribute('aria-busy')).toBe('true')
+    expect(join.textContent).toBe('Joining…')
+    expect(m.form.querySelector<HTMLButtonElement>('button[value="decline"]')!.disabled).toBe(true)
+    expect(m.status()).toBe('Joining…')
+    expect(post.mock.calls[0]![1]!.value).toBe('accept')
+    resolve({ ok: true, redirect: '/oauth/authorize?resume=x' })
+    await flush()
+    expect(m.go).toHaveBeenCalledWith('/oauth/authorize?resume=x')
+    expect(m.title()).toBe('Join .do Industries')
+  })
+
+  it('Join with a plain {ok}: done, then the joined result 2150ms later in both regions, focus on its title', async () => {
+    const m = await mountFetchForm(live(), async () => ({ ok: true }))
+    m.click('accept')
+    await flush()
+    expect(m.connector()).toBe('done')
+    m.advance(2149)
+    expect(m.title()).toBe('Join .do Industries')
+    m.advance(1)
+    expect(m.title()).toBe('Welcome to .do Industries')
+    expect(m.connector()).toBe('ok')
+    expect(m.foot().textContent).toBe('Continue to .do Industries')
+    expect(m.foot().querySelector('a')?.getAttribute('href')).toBe('/')
+    expect(document.activeElement).toBe(document.querySelector('[data-region] h1'))
+    expect(m.go).not.toHaveBeenCalled()
+  })
+
+  it('Decline: broken at once, both disabled, the declined result once 1820ms passed and the server agreed', async () => {
+    let resolve!: (r: { ok: boolean }) => void
+    const post = vi.fn<FetchDeps['post']>(() => new Promise((r) => (resolve = r)))
+    const m = await mountFetchForm(live(), post)
+    m.click('decline')
+    expect(m.connector()).toBe('broken')
+    for (const b of m.buttons()) expect(b.disabled).toBe(true)
+    expect(post.mock.calls[0]![1]!.value).toBe('decline')
+    m.advance(1820)
+    expect(m.title()).toBe('Join .do Industries')
+    resolve({ ok: true })
+    await flush()
+    expect(m.title()).toBe('Invitation declined')
+    expect(m.connector()).toBe('fail')
+    expect(m.foot().textContent).toBe('Changed your mind? Ask Nathan Clevenger to invite you again.')
+  })
+
+  it('Decline answered quickly still waits for 1820ms', async () => {
+    const m = await mountFetchForm(live(), async () => ({ ok: true }))
+    m.click('decline')
+    await flush()
+    m.advance(1819)
+    expect(m.title()).toBe('Join .do Industries')
+    m.advance(1)
+    expect(m.title()).toBe('Invitation declined')
+  })
+
+  it('a refusal has no 2e template: the buttons come back and the status region says so', async () => {
+    const m = await mountFetchForm(live(), async () => ({ ok: false, error: 'server_error' }))
+    m.click('accept')
+    await flush()
+    expect(m.connector()).toBe('broken')
+    m.advance(1820)
+    expect(m.title()).toBe('Join .do Industries')
+    expect(m.status()).toBe('Something went wrong. Try again.')
+    for (const b of m.buttons()) expect(b.disabled).toBe(false)
   })
 })
 
@@ -290,7 +443,7 @@ describe('4c · Enter device code', () => {
     expect(form.querySelector('button[type="submit"]')?.textContent).toBe('Continue')
   })
 
-  it('links the error to every box and announces it', async () => {
+  it('links the error to every box and announces it once, through role=alert', async () => {
     const doc = await dom(<DeviceEntry action="/device" csrf="tok" value="WDJB-MJHX" error="That code is invalid or has expired." />)
     const boxes = Array.from(doc.querySelectorAll('input[name="code"]'))
     expect(boxes.map((b) => b.getAttribute('value')).join('')).toBe('WDJBMJHX')
@@ -298,13 +451,131 @@ describe('4c · Enter device code', () => {
       expect(b.getAttribute('aria-invalid')).toBe('true')
       expect(b.getAttribute('aria-describedby')).toBe('device-code-error')
     }
-    expect(doc.getElementById('device-code-error')?.textContent).toBe('That code is invalid or has expired.')
-    expect(expectStatus(doc).textContent).toBe('That code is invalid or has expired.')
+    const error = doc.getElementById('device-code-error')!
+    expect(error.textContent).toBe('That code is invalid or has expired.')
+    expect(error.getAttribute('role')).toBe('alert')
+    // The status region stays (submit.js writes "Checking…" there) but doesn't repeat the error.
+    expect(expectStatus(doc).textContent).toBe('')
+    const live = Array.from(doc.querySelectorAll('[role="alert"], [role="status"]')).filter((el) => el.textContent?.includes('That code'))
+    expect(live).toHaveLength(1)
   })
 
   it('escapes the typed value and the error', async () => {
     const html = await renderHtml(<DeviceEntry action="/device" csrf="tok" error={EVIL} />, { title: 't' })
     expectEscaped(new DOMParser().parseFromString(html, 'text/html'), html)
+  })
+})
+
+describe('4b · Confirm device code: the error templates', () => {
+  const p: DeviceConfirmProps = {
+    code: 'WDJB-MJHT',
+    expiresInMinutes: 29,
+    requestId: 'req_gallery',
+    client: { name: 'auto.dev CLI', tile: { kind: 'icon', icon: 'terminal' } },
+    cliName: 'auto.dev',
+    deviceMeta: 'macOS · Miami, FL · requested 1 min ago',
+    device: 'macOS · Miami, FL',
+    account: { name: 'Bryant Skarda', email: 'bryant@driv.ly' },
+    switchHref: '/account/choose',
+    workspaces: [{ value: 'org_drivly', label: 'Drivly' }],
+    selectedWorkspace: 'org_drivly',
+    permissions: [],
+    revokeHref: '/device/revoke',
+    action: '/device/decision',
+    csrf: 'tok',
+  }
+  const expired = errorPageProps('expired', { requestId: 'req_gallery', expired: { what: 'device code' } })
+  const used = errorPageProps('already_used', { requestId: 'req_gallery', expired: { what: 'device code' } })
+  const server = errorPageProps('server_error', { requestId: 'req_gallery' })
+
+  it('the live page carries error-expired, error-already_used, error-cancel and error for both regions', async () => {
+    const doc = await dom(<DeviceConfirm {...p} />)
+    const body = doc.querySelector('[data-region="body"]')!
+    const foot = doc.querySelector('[data-region="foot"]')!
+    expect(DEVICE_CONFIRM_ERRORS).toEqual(['error-expired', 'error-already_used', 'error-cancel', 'error'])
+    for (const state of ['signed', 'cancelled', ...DEVICE_CONFIRM_ERRORS]) {
+      expect(body.parentElement!.querySelector(`:scope > template[data-state="${state}"]`), `body ${state}`).not.toBeNull()
+      expect(foot.parentElement!.querySelector(`:scope > template[data-state="${state}"]`), `foot ${state}`).not.toBeNull()
+    }
+  })
+
+  it('only the live (idle) page carries templates', async () => {
+    for (const state of ['connecting', 'verdict', 'signed', 'cancelling', 'cancelled', ...DEVICE_CONFIRM_ERRORS] as const) {
+      const doc = await dom(<DeviceConfirm {...p} state={state} />)
+      expect(doc.querySelector('template'), state).toBeNull()
+    }
+  })
+
+  it('expired and already used: a fail head with the 7b copy, and Start again to /device', async () => {
+    for (const [state, copy] of [
+      ['error-expired', expired],
+      ['error-already_used', used],
+    ] as const) {
+      const doc = await dom(<DeviceConfirm {...p} state={state} />)
+      expectOneH1(doc, copy.title)
+      expect(doc.querySelector('.id-desc')?.textContent).toBe(copy.reason)
+      expect(doc.querySelector('.id-conn')?.getAttribute('data-state')).toBe('fail')
+      const again = doc.querySelector('[data-region="foot"] a.id-btn--primary')!
+      expect(again.textContent).toBe('Start again')
+      expect(again.getAttribute('href')).toBe('/device')
+    }
+    expect(expired.title).toBe('This code has expired')
+    expect(expired.reason).toBe('Device codes last 30 minutes and work once. Run the sign-in command again for a new one.')
+    expect(used.reason).toBe('This device code was already used. Run the sign-in command again for a new one.')
+  })
+
+  it('a failed Cancel: the request may still be pending, so close the tab before the code expires', async () => {
+    const doc = await dom(<DeviceConfirm {...p} state="error-cancel" />)
+    expectOneH1(doc, 'We couldn’t cancel this request')
+    expect(doc.querySelector('.id-desc')?.textContent).toBe('Close this tab; the code expires in 29 minutes.')
+    expect(doc.querySelector('.id-conn')?.getAttribute('data-state')).toBe('fail')
+    expect(doc.querySelector('[data-region="foot"]')?.textContent).toBe('Nothing is shared with auto.dev CLI unless you confirm.')
+    const one = await dom(<DeviceConfirm {...p} state="error-cancel" expiresInMinutes={1} />)
+    expect(one.querySelector('.id-desc')?.textContent).toBe('Close this tab; the code expires in 1 minute.')
+  })
+
+  it('anything else: the generic error, and Try again back to /device?code=', async () => {
+    const doc = await dom(<DeviceConfirm {...p} state="error" />)
+    expectOneH1(doc, server.title)
+    expect(doc.querySelector('.id-desc')?.textContent).toBe(server.reason)
+    const again = doc.querySelector('[data-region="foot"] a.id-btn--primary')!
+    expect(again.textContent).toBe('Try again')
+    expect(again.getAttribute('href')).toBe('/device?code=WDJB-MJHT')
+  })
+
+  it('swaps in on lib/fetch-form.ts: a refused Confirm shows its code’s template 1820ms later', async () => {
+    for (const [error, title] of [
+      ['expired', expired.title],
+      ['already_used', used.title],
+      ['server_error', server.title],
+      [undefined, server.title],
+    ] as const) {
+      const m = await mountFetchForm(<DeviceConfirm {...p} />, async () => ({ ok: false, error }))
+      m.click('approve')
+      await flush()
+      expect(m.connector()).toBe('broken')
+      m.advance(1819)
+      expect(m.title()).toBe('Confirm sign-in on auto.dev CLI')
+      m.advance(1)
+      expect(m.title(), String(error)).toBe(title)
+      expect(m.connector()).toBe('fail')
+      expect(m.foot().querySelector('button')).toBeNull()
+    }
+  })
+
+  it('swaps in on lib/fetch-form.ts: a failed Cancel shows error-cancel', async () => {
+    const m = await mountFetchForm(<DeviceConfirm {...p} />, async () => ({ ok: false, error: 'server_error' }))
+    m.click('deny')
+    await flush()
+    m.advance(1820)
+    expect(m.title()).toBe('We couldn’t cancel this request')
+    expect(m.foot().textContent).toBe('Nothing is shared with auto.dev CLI unless you confirm.')
+  })
+
+  it('escapes the client name and code in the error templates', async () => {
+    const html = await renderHtml(<DeviceConfirm {...p} code={EVIL} client={{ name: EVIL, tile: { kind: 'icon', icon: 'terminal' } }} />, { title: 't' })
+    expect(html).not.toContain(EVIL)
+    expect(html).toContain(`href="/device?code=${encodeURIComponent(EVIL)}"`)
   })
 })
 
