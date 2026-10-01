@@ -118,16 +118,18 @@ export function errorPageProps(kind: ErrorKind, ctx: ErrorContext): ErrorPagePro
     case 'expired': {
       const what = ctx.expired?.what ?? 'sign-in'
       const resend = ctx.expired?.resend
+      if (!resend) {
+        return { tile: { kind: 'icon', icon: 'clock' }, ...EXPIRED_COPY[what], actions: { primary: { label: 'Start again', href: ctx.startHref ?? '/login' } } }
+      }
       return {
         tile: { kind: 'icon', icon: 'clock' },
         ...EXPIRED_COPY[what],
-        actions: resend
-          ? {
-              secondary: { label: 'Sign in another way', href: '/login' },
-              primary: { label: 'Send a new code', href: resend.href, icon: 'mail', post: true, busyLabel: 'Sending…' },
-            }
-          : { primary: { label: 'Start again', href: ctx.startHref ?? '/login' } },
-        ...(resend ? { csrf: resend.csrf, fields: resend.fields } : {}),
+        actions: {
+          secondary: { label: 'Sign in another way', href: '/login' },
+          primary: { label: 'Send a new code', href: resend.href, icon: 'mail', post: true, busyLabel: 'Sending…' },
+        },
+        csrf: resend.csrf,
+        fields: resend.fields,
       }
     }
     case 'already_used': {

@@ -6,7 +6,8 @@
  * STEP_UP_REASONS, never from the query string. Both factors submit the same
  * form: `factor=email` starts the email code flow in step-up mode (1b) and
  * `factor=passkey` is the WebAuthn get (B7), which the passkey script takes
- * over. Either refreshes auth_time and resumes.
+ * over through `data-on="passkey"` (as on 1a). Either refreshes auth_time and
+ * resumes.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Actions, Button, Card, CardFoot, CardHead, Connector, Dotted, Page, Who, WhoMeta, type TileContent } from '../components'
@@ -45,7 +46,7 @@ function Foot({ factors }: { factors: StepUpProps['factors'] }): JSX.Element {
     </Button>
   )
   const passkey = (
-    <Button variant="primary" block grow={!both} name="factor" value="passkey" icon="key" busyLabel="Checking…">
+    <Button variant="primary" block grow={!both} name="factor" value="passkey" icon="key" busyLabel="Checking…" on="passkey">
       Use passkey
     </Button>
   )

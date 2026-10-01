@@ -5,21 +5,57 @@
  * data, and the rules each screen carries (D8, the reason catalogue, never
  * linking a rejected redirect_uri).
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { renderHtml } from '../render'
+import { initFetchForm, type FetchDeps } from '../client/lib/fetch-form'
+import { errorPageProps } from '../errors'
 import { errorsFixtures } from '../gallery/fixtures/errors'
 import { securityFixtures } from '../gallery/fixtures/security'
 import type { BoundFixture, Variant } from '../gallery/types'
 import { AddPasskey } from './AddPasskey'
-import { ErrorPage, detailsText, type ErrorPageProps } from './ErrorPage'
-import { SignOut, type SignOutProps } from './SignOut'
+import { ErrorCard, ErrorPage, detailsText, postsPrimary, type ErrorPageProps } from './ErrorPage'
+import { SignOut, signedOutDescription, type SignOutProps } from './SignOut'
 import { STEP_UP_REASONS, StepUp, type StepUpProps } from './StepUp'
 import { TwoStep, type TwoStepProps } from './TwoStep'
 
 async function html(el: JSX.Element): Promise<string> {
   return renderHtml(el, { title: 't' })
 }
+
+const flush = () => new Promise((r) => setTimeout(r, 0))
+
+/** A screen's real markup in the document, driven by lib/fetch-form.ts with a fake clock and server. */
+async function mountFetchForm(el: JSX.Element, post: FetchDeps['post']) {
+  document.body.innerHTML = new DOMParser().parseFromString(await html(el), 'text/html').body.innerHTML
+  const timers: { fn: () => void; at: number }[] = []
+  let now = 0
+  const later = (fn: () => void, ms: number) => void timers.push({ fn, at: now + ms })
+  const advance = (ms: number) => {
+    now += ms
+    for (const t of timers.filter((t) => t.at <= now)) {
+      timers.splice(timers.indexOf(t), 1)
+      t.fn()
+    }
+  }
+  const go = vi.fn()
+  const form = document.querySelector<HTMLFormElement>('form[data-js="fetch-form"]')!
+  initFetchForm(form, { post, later, go })
+  const submit = (btn: HTMLButtonElement) => form.dispatchEvent(Object.assign(new Event('submit', { bubbles: true, cancelable: true }), { submitter: btn }))
+  return {
+    form,
+    submit,
+    advance,
+    go,
+    connector: () => document.querySelector('[data-js="connector"]')?.getAttribute('data-state'),
+    title: () => document.querySelector('[data-region] h1')!.textContent,
+    desc: () => document.querySelector('[data-region] .id-desc')?.textContent,
+    foot: () => document.querySelector('[data-region="foot"]')!,
+    status: () => document.querySelector('[data-status]')!.textContent,
+  }
+}
+
+afterEach(() => (document.body.innerHTML = ''))
 
 async function dom(el: JSX.Element): Promise<Document> {
   return new DOMParser().parseFromString(await html(el), 'text/html')
@@ -94,8 +130,12 @@ describe('6a · StepUp', () => {
   it('posts to /step-up with the resume id and CSRF; each factor is a named submit', async () => {
     const d = await dom(<StepUp {...p} />)
     expectForms(d, /^\/step-up\?resume=[^&]+&reason=act_permissions$/)
-    const factors = Array.from(d.querySelectorAll('button[type=submit][name=factor]')).map((b) => b.getAttribute('value'))
-    expect(factors).toEqual(['email', 'passkey'])
+    const factors = Array.from(d.querySelectorAll('button[type=submit][name=factor]')).map((b) => [b.getAttribute('value'), b.getAttribute('data-on')])
+    // The passkey factor carries the passkey script's hook, as 1a's passkey button does.
+    expect(factors).toEqual([
+      ['email', null],
+      ['passkey', 'passkey'],
+    ])
     expect(d.querySelector('h1')!.textContent).toBe('Confirm it’s you')
     expect(d.querySelector('.id-who__meta')!.textContent).toBe('Confirmed 3 hours ago')
   })
@@ -166,15 +206,128 @@ describe('6b · SignOut', () => {
     const out = await html(<SignOut {...p} app={{ name: EVIL, tile: { kind: 'monogram', text: 'X' } }} returnUrl={`"><script>x</script>`} />)
     expect(out).not.toContain(EVIL)
     expect(out).not.toContain('<script>x</script>')
+    const result = await html(<SignOut {...p} state="signed-out" app={{ name: EVIL, tile: { kind: 'monogram', text: 'X' } }} returnUrl={`"><script>x</script>`} />)
+    expect(result).not.toContain(EVIL)
+    expect(result).not.toContain('<script>x</script>')
+  })
+
+  it('stays on id.org.ai: a fetch-form whose Sign out names the signed-out template; Cancel stays a link', async () => {
+    const d = await dom(<SignOut {...p} />)
+    const form = d.querySelector('form')!
+    expect(form.getAttribute('data-js')).toBe('fetch-form')
+    const signOut = form.querySelector('button[type=submit]')!
+    expect(signOut.textContent).toBe('Sign out')
+    expect(signOut.getAttribute('data-done')).toBe('signed-out')
+    expect(signOut.hasAttribute('data-deny')).toBe(false)
+    expect(form.querySelectorAll('button').length).toBe(1)
+    expect(form.querySelector('[data-region="foot"] a.id-btn')!.getAttribute('href')).toBe('https://headless.ly/')
+    for (const region of ['body', 'foot']) {
+      const r = d.querySelector(`[data-region="${region}"]`)!
+      expect(r.parentElement!.querySelector(':scope > template[data-state="signed-out"]'), region).not.toBeNull()
+    }
+    expect(d.querySelector('[data-status]')!.closest('[data-region]')).toBeNull()
+    expect(d.querySelector('.id-column')!.classList.contains('id-column--narrow')).toBe(true)
+  })
+
+  it('signed out (no JS): an ok head and a description naming what each scope signed out', async () => {
+    const cases: [SignOutProps['scope'], string][] = [
+      ['app', 'You’re signed out of headless.ly. You’re still signed in to id.org.ai and your other apps.'],
+      ['browser', 'You’re signed out of id.org.ai and every app using it in this browser.'],
+      ['everywhere', 'You’re signed out of id.org.ai on every browser, CLI and device.'],
+    ]
+    for (const [scope, desc] of cases) {
+      const d = await dom(<SignOut {...p} state="signed-out" scope={scope} />)
+      expect(d.querySelectorAll('h1').length).toBe(1)
+      expect(d.querySelector('h1')!.textContent).toBe('You’re signed out')
+      expect(d.querySelector('.id-desc')!.textContent, scope).toBe(desc)
+      expect(d.querySelector('.id-conn')!.getAttribute('data-state')).toBe('ok')
+      expect(d.querySelector('main [data-status]')!.textContent).toBe('Signed out')
+      expect(d.querySelector('form')).toBeNull()
+      expect(d.querySelector('.id-column')!.classList.contains('id-column--narrow')).toBe(true)
+    }
+  })
+
+  it('signed out: "Continue to {app}" goes to return_url; without one, close the tab', async () => {
+    const withReturn = await dom(<SignOut {...p} state="signed-out" />)
+    const link = withReturn.querySelector('.id-card__foot a')!
+    expect(link.textContent).toBe('Continue to headless.ly')
+    expect(link.getAttribute('href')).toBe('https://headless.ly/')
+    const noApp = await dom(<SignOut {...p} state="signed-out" app={undefined} clientId={undefined} scope="browser" />)
+    expect(noApp.querySelector('.id-card__foot a')!.textContent).toBe('Continue')
+    expect(noApp.querySelector('.id-conn')).toBeNull()
+    const none = await dom(<SignOut {...p} state="signed-out" returnUrl={undefined} />)
+    expect(none.querySelector('.id-card__foot a')).toBeNull()
+    expect(none.querySelector('.id-card__foot')!.textContent).toBe('You can close this tab.')
+  })
+
+  it('the template is rendered before the choice, so it says only what every scope did', async () => {
+    const text = async (app: string | undefined) => (await dom(<>{signedOutDescription(app, undefined)}</>)).body.textContent
+    expect(await text('headless.ly')).toBe('You’re signed out of headless.ly.')
+    expect(await text(undefined)).toBe('You’re signed out of id.org.ai in this browser.')
+    // And the live page's template is exactly that.
+    const live = await dom(<SignOut {...p} />)
+    const tpl = live.querySelector<HTMLTemplateElement>('[data-card-body] > template[data-state="signed-out"]')!
+    expect(tpl.content.querySelector('.id-desc')!.textContent).toBe('You’re signed out of headless.ly.')
+    expect(tpl.content.querySelector('.id-conn')!.getAttribute('data-state')).toBe('ok')
+  })
+
+  it('on lib/fetch-form.ts: connecting and "Signing out…", done on the OK, the signed-out result 2150ms later', async () => {
+    let resolve!: (r: { ok: boolean }) => void
+    const post = vi.fn<FetchDeps['post']>(() => new Promise((r) => (resolve = r)))
+    const m = await mountFetchForm(securityFixtures['6b-sign-out']!.default.render(), post)
+    const everywhere = m.form.querySelector<HTMLInputElement>('#signout-everywhere')!
+    everywhere.checked = true
+    const btn = m.form.querySelector<HTMLButtonElement>('button[type=submit]')!
+    m.submit(btn)
+    expect(m.connector()).toBe('connecting')
+    expect(btn.getAttribute('aria-busy')).toBe('true')
+    expect(btn.textContent).toBe('Signing out…')
+    expect(m.status()).toBe('Signing out…')
+    const sent = new FormData(post.mock.calls[0]![0])
+    expect([sent.get('scope'), sent.get('client_id'), sent.get('return_url')]).toEqual(['everywhere', 'headless.ly', 'https://headless.ly/'])
+    resolve({ ok: true })
+    await flush()
+    expect(m.connector()).toBe('done')
+    m.advance(2149)
+    expect(m.title()).toBe('Sign out')
+    m.advance(1)
+    expect(m.title()).toBe('You’re signed out')
+    expect(m.desc()).toBe('You’re signed out of headless.ly.')
+    expect(m.connector()).toBe('ok')
+    expect(m.foot().querySelector('a')!.getAttribute('href')).toBe('https://headless.ly/')
+    expect(m.foot().textContent).toBe('Continue to headless.ly')
+    expect(document.activeElement).toBe(document.querySelector('[data-region] h1'))
+  })
+
+  it('on lib/fetch-form.ts: a step-up {redirect} (everywhere with a stale auth_time) leaves at once', async () => {
+    const m = await mountFetchForm(securityFixtures['6b-sign-out']!.default.render(), async () => ({ ok: true, redirect: '/step-up?resume=rsm_1&reason=sign_out_everywhere' }))
+    m.submit(m.form.querySelector<HTMLButtonElement>('button[type=submit]')!)
+    await flush()
+    expect(m.go).toHaveBeenCalledWith('/step-up?resume=rsm_1&reason=sign_out_everywhere')
+  })
+
+  it('on lib/fetch-form.ts: a refusal gives the button back and says so', async () => {
+    const m = await mountFetchForm(securityFixtures['6b-sign-out']!.default.render(), async () => ({ ok: false }))
+    const btn = m.form.querySelector<HTMLButtonElement>('button[type=submit]')!
+    m.submit(btn)
+    await flush()
+    expect(m.connector()).toBe('broken')
+    m.advance(1820)
+    expect(m.title()).toBe('Sign out')
+    expect(m.status()).toBe('Something went wrong. Try again.')
+    expect(btn.disabled).toBe(false)
   })
 })
 
 describe('6c · AddPasskey', () => {
-  it('posts the decision to /passkeys/new with CSRF', async () => {
+  it('posts the decision to /passkeys/new with CSRF; Add carries the passkey hook', async () => {
     const d = await dom(<AddPasskey action="/passkeys/new?continue=%2Fhome" csrf="gallery" />)
     expectForms(d, /^\/passkeys\/new\?continue=/)
-    const decisions = Array.from(d.querySelectorAll('button[type=submit][name=decision]')).map((b) => b.getAttribute('value'))
-    expect(decisions).toEqual(['later', 'add'])
+    const decisions = Array.from(d.querySelectorAll('button[type=submit][name=decision]')).map((b) => [b.getAttribute('value'), b.getAttribute('data-on')])
+    expect(decisions).toEqual([
+      ['later', null],
+      ['add', 'passkey'],
+    ])
     expect(d.querySelector('h1')!.textContent).toBe('Sign in faster with a passkey')
   })
 
@@ -321,6 +474,46 @@ describe('7 · ErrorPage', () => {
     expect(note.hasAttribute('required')).toBe(false)
     expect(d.querySelector(`label[for="${note.getAttribute('id')}"]`)!.textContent).toBe('Note to your admins (optional)')
     expect(d.querySelector('.id-footnote')!.textContent).toBe('Admins get an email and can approve in one click.')
+  })
+
+  it('a posting primary needs a CSRF token (the props are a union); a link-only page doesn’t', async () => {
+    const post: ErrorPageProps = {
+      tile: { kind: 'icon', icon: 'clock' },
+      title: 'This code has expired',
+      reason: 'Send a new one.',
+      actions: { primary: { label: 'Send a new code', href: '/resend', post: true } },
+      csrf: 'gallery',
+    }
+    expect(postsPrimary(post)).toBe(true)
+    // @ts-expect-error a posting primary without csrf does not type-check
+    const missing: ErrorPageProps = { tile: post.tile, title: 't', reason: 'r', actions: { primary: { label: 'Send', href: '/resend', post: true } } }
+    expect(missing.csrf).toBeUndefined()
+    // The same without `post` is a plain link page.
+    const link: ErrorPageProps = { tile: post.tile, title: 't', reason: 'r', actions: { primary: { label: 'Home', href: '/' } } }
+    expect(postsPrimary(link)).toBe(false)
+    expect(postsPrimary(app)).toBe(false)
+    const d = await dom(<ErrorPage {...post} />)
+    expect(d.querySelector('form input[name=csrf]')!.getAttribute('value')).toBe('gallery')
+  })
+
+  it('the ErrorCard call other screens make (5b’s expired approval) renders a link-only card, no form', async () => {
+    const d = await dom(<>{ErrorCard(errorPageProps('expired', { requestId: 'req_1', expired: { what: 'approval' } }))}</>)
+    expect(d.querySelector('h1')!.textContent).toBe('This request expired')
+    expect(d.querySelector('form')).toBeNull()
+    expect(d.querySelector('a.id-btn')!.textContent).toBe('Start again')
+  })
+
+  it('errorPageProps: an expired code with a resend posts with its CSRF token and fields', async () => {
+    const props = errorPageProps('expired', { requestId: 'req_1', expired: { what: 'code', resend: { href: '/login/code/flw_1/resend', csrf: 'gallery', fields: { flow: 'flw_1' } } } })
+    expect(postsPrimary(props)).toBe(true)
+    const d = await dom(<ErrorPage {...props} />)
+    expectForms(d, /^\/login\/code\/flw_1\/resend$/)
+    expect(d.querySelector('form')!.getAttribute('data-js')).toBe('submit')
+    expect(d.querySelector('input[name=flow]')!.getAttribute('value')).toBe('flw_1')
+  })
+
+  it('7b and 7c load submit.js for their posting form', () => {
+    for (const slug of ['7b-error-expired', '7c-error-blocked']) expect(errorsFixtures[slug]!.scripts, slug).toContain('submit.js')
   })
 
   it('7c request sent: shown in place, announced, the note quoted back (escaped)', async () => {

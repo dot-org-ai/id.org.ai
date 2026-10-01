@@ -40,7 +40,8 @@ export interface NewWorkspaceProps extends Common {
 
 export type FirstRunProps = FirstRunIdentityProps | NewWorkspaceProps
 
-function WorkspaceField({ p, hint, placeholder }: { p: Common; hint?: string; placeholder?: string }): JSX.Element {
+/** `focus`: this is the first invalid field of a server-rendered error, so focus lands on it. */
+function WorkspaceField({ p, hint, placeholder, focus }: { p: Common; hint?: string; placeholder?: string; focus: boolean }): JSX.Element {
   return (
     <Field id="workspace" label="Workspace" hint={hint} error={p.workspaceError}>
       <Input
@@ -51,6 +52,7 @@ function WorkspaceField({ p, hint, placeholder }: { p: Common; hint?: string; pl
         autocomplete="organization"
         maxlength={64}
         required
+        autofocus={focus}
         hint={Boolean(hint)}
         error={Boolean(p.workspaceError)}
       />
@@ -82,9 +84,9 @@ function Identity(p: FirstRunIdentityProps): JSX.Element {
       />
       <Stack gap={18}>
         <Field id="name" label="Name" aside={p.name ? `From ${p.provider}` : undefined} error={p.nameError}>
-          <Input id="name" name="name" value={p.name} autocomplete="name" maxlength={128} required error={Boolean(p.nameError)} />
+          <Input id="name" name="name" value={p.name} autocomplete="name" maxlength={128} required autofocus={Boolean(p.nameError)} error={Boolean(p.nameError)} />
         </Field>
-        <WorkspaceField p={p} hint="A workspace holds your team, apps and agents. Add more anytime." />
+        <WorkspaceField p={p} hint="A workspace holds your team, apps and agents. Add more anytime." focus={Boolean(p.workspaceError) && !p.nameError} />
       </Stack>
       <span class="id-sr" role="status" data-status></span>
     </Card>
@@ -115,7 +117,7 @@ function NewWorkspace(p: NewWorkspaceProps): JSX.Element {
       }
     >
       <CardHead connector={<SingleTile content={{ kind: 'org' }} />} title="Create a workspace" description="A workspace holds your team, apps and agents." />
-      <WorkspaceField p={p} placeholder="Your team or company" />
+      <WorkspaceField p={p} placeholder="Your team or company" focus={Boolean(p.workspaceError)} />
       <span class="id-sr" role="status" data-status></span>
     </Card>
   )

@@ -53,9 +53,8 @@ export function DeviceEntry(p: DeviceEntryProps): JSX.Element {
           ) : (
             <CodeHint>Codes look like WDJB-MJHT and last 30 minutes.</CodeHint>
           )}
-          <span class="id-sr" role="status" data-status>
-            {p.error ?? ''}
-          </span>
+          {/* The error is announced once, by the hint's role=alert; this region is for submit.js. */}
+          <span class="id-sr" role="status" data-status></span>
         </Card>
       </form>
     </Page>

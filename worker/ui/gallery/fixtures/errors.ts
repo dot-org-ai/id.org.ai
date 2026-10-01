@@ -94,14 +94,17 @@ export const errorsFixtures: FixtureGroup = {
       'not-found': notFound,
     },
   }),
+  // ErrorCard's posting form is data-js="submit" (its busy label).
   '7b-error-expired': defineFixture({
     screen: ErrorPage,
     title,
+    scripts: ['submit.js'],
     default: expired,
   }),
   '7c-error-blocked': defineFixture({
     screen: ErrorPage,
     title,
+    scripts: ['submit.js'],
     default: blocked,
     derived: {
       'request-sent': {
