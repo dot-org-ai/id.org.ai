@@ -11,7 +11,7 @@ export function isFrozen(doc: Document = document): boolean {
 /** Run `init` on every `[data-js="<name>"]` element once the DOM is parsed. */
 export function enhance<T extends HTMLElement>(name: string, init: (el: T) => void): void {
   const run = () => {
-    for (const el of Array.from(document.querySelectorAll<T>(`[data-js="${name}"]`))) {
+    for (const el of document.querySelectorAll<T>(`[data-js="${name}"]`)) {
       if (el.dataset.jsReady === '1') continue
       el.dataset.jsReady = '1'
       init(el)
