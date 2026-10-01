@@ -1849,11 +1849,6 @@ button.id-link[hidden] {
   }
 }
 
-/*
- * Accounts and devices group (2a, 2b, 2c, 2e, 4c, 4d): the components only
- * these screens use. Tokens only.
- */
-
 /* ── Agents (5a–5d) ─────────────────────────────────────────────────────── */
 
 /* 5a: spend limit and expiry side by side, one column on phones. */
@@ -1861,20 +1856,6 @@ button.id-link[hidden] {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: 12px;
-}
-
-/*
- * Security and error screens (6a–6d, 7a–7c): the few component styles the
- * shared sheet lacks. Tokens only.
- */
-
-/* FootLinks: alternate links under a single foot action (6d). */
-.id-footlinks {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 20px;
-  font-size: 13px;
 }
 
 /*
