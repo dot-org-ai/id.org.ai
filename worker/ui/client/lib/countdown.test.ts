@@ -77,4 +77,30 @@ describe('countdown.ts', () => {
     vi.advanceTimersByTime(1000)
     expect(document.querySelector('main h1')!.textContent).toBe('This request expired')
   })
+
+  it('stops, hides and stays quiet once a decision has replaced the expired template (5b)', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = `<span data-status></span><header><span data-js="countdown" data-seconds-left="61" data-announce data-expired-template="expired"><span data-countdown-text></span></span></header>
+      <main><div class="id-card"><div data-region="body">form<template data-state="expired"><div class="id-card"><h1>This request expired</h1></div></template></div></div></main>`
+    const el = document.querySelector<HTMLElement>('[data-js="countdown"]')!
+    initCountdown(el, () => Date.now())
+    // fetch-form swaps the body region for the "Sent" result; the expired template goes with it.
+    document.querySelector('[data-region="body"]')!.innerHTML = '<h1>Sent</h1>'
+    document.querySelector('[data-status]')!.textContent = 'Sent.'
+    vi.advanceTimersByTime(1000)
+    expect(el.hidden).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(120_000)
+    expect(document.querySelector('[data-status]')!.textContent).toBe('Sent.')
+    expect(document.querySelector('main h1')!.textContent).toBe('Sent')
+  })
+
+  it('a countdown already at 0 expires once and never starts a timer', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = `<span data-status></span><span data-js="countdown" data-seconds-left="0" data-announce><span data-countdown-text></span></span>`
+    const el = document.querySelector<HTMLElement>('[data-js="countdown"]')!
+    initCountdown(el, () => Date.now())
+    expect(document.querySelector('[data-status]')!.textContent).toBe('This request expired.')
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

@@ -126,7 +126,8 @@ export function errorPageProps(kind: ErrorKind, ctx: ErrorContext): ErrorPagePro
               secondary: { label: 'Sign in another way', href: '/login' },
               primary: { label: 'Send a new code', href: resend.href, icon: 'mail', post: true, busyLabel: 'Sending…' },
             }
-          : { primary: { label: 'Start again', href: ctx.startHref ?? '/login' } },
+          : // Only the agent can ask again after an expired approval, so the way out is home.
+            { primary: what === 'approval' ? HOME : { label: 'Start again', href: ctx.startHref ?? '/login' } },
         ...(resend ? { csrf: resend.csrf, fields: resend.fields } : {}),
       }
     }

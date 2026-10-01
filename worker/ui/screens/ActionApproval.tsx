@@ -119,7 +119,7 @@ function Preview({ action }: { action: ActionPreview }): JSX.Element {
 
 /** The 7b error card with the approval copy and the agent's tile: swapped in by countdown.ts at 0, or rendered by the server. */
 function ExpiredCard({ p }: { p: ActionApprovalProps }): JSX.Element {
-  return <ErrorCard {...errorPageProps('expired', { requestId: p.requestId, expired: { what: 'approval' }, startHref: '/' })} tile={p.agent.tile} />
+  return <ErrorCard {...errorPageProps('expired', { requestId: p.requestId, expired: { what: 'approval' } })} tile={p.agent.tile} />
 }
 
 function PendingBody({ p }: { p: ActionApprovalProps }): JSX.Element {

@@ -310,7 +310,9 @@ describe('5b · Approve an action', () => {
     expect(doc.querySelector('form')).toBeNull()
     expect(doc.querySelector('[data-js="countdown"]')).toBeNull()
     expect(doc.querySelector('.id-conn')!.getAttribute('data-state')).toBe('fail')
-    expect(doc.querySelector('.id-card__foot a.id-btn')!.getAttribute('href')).toBe('/')
+    const way = doc.querySelector('.id-card__foot a.id-btn')!
+    // Only the agent can ask again, so the way out is home, not "Start again" at sign-in.
+    expect([way.textContent?.trim(), way.getAttribute('href')]).toEqual(['Go to id.org.ai', '/'])
   })
 
   it('sent and denied also render as pages (no JS): no countdown, no buttons, the verdict announced', async () => {

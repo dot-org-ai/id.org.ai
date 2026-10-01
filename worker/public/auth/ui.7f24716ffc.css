@@ -1851,7 +1851,11 @@ button.id-link[hidden] {
 
 /* ── Agents (5a–5d) ─────────────────────────────────────────────────────── */
 
-/* 5a: spend limit and expiry side by side, one column on phones. */
+/*
+ * 5a: spend limit and expiry side by side, one column on phones (the mock's
+ * grid at a 12px gap). The only grid of its kind now that the sign-in
+ * providers (.id-providers) stack one per row.
+ */
 .id-agent-limits {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
