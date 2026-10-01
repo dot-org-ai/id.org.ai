@@ -2,10 +2,17 @@
  * 5a · Approve an agent (docs/product-update/spec/screens.md#5a).
  *
  * A delegated agent registered and is pending. The person approves it once,
- * with a trust level, spend limit and expiry, or rejects it. The POST renders
- * the result in place (`approved` / `rejected`), still: the motion happened on
- * the click (submit.js), so the page reached afterwards shows the verdict.
+ * with a trust level, spend limit and expiry, or rejects it. The page stays on
+ * id.org.ai (spec/motion.md#where-the-person-goes-next): the live page renders
+ * the `pending` form, and the approved and rejected bodies and feet ride along
+ * in <template data-state> elements that fetch-form.ts swaps in. Without JS
+ * the form posts and the server renders `approved` or `rejected` directly.
+ *
+ * The templates are rendered before the person picks, so they only name what
+ * can't change (the agent, the workspace). The server-rendered `approved`
+ * page also lists the policy that was stored.
  */
+import type { Child } from 'hono/jsx'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
   Actions,
@@ -15,6 +22,7 @@ import {
   CardHead,
   Connector,
   Dotted,
+  Em,
   Field,
   FootText,
   KeyValues,
@@ -24,6 +32,7 @@ import {
   RadioGroup,
   Select,
   SourceRow,
+  Stack,
   Well,
   type ConnectorState,
   type SelectOption,
@@ -59,6 +68,7 @@ export interface AgentApproveProps {
   }
   workspace: string
   trustLevels: TrustLevel[]
+  /** The default choice; on the `approved` page, the stored one. */
   selectedTrust: string
   spendLimits: SelectOption[]
   selectedSpend: string
@@ -80,7 +90,7 @@ export function shortFingerprint(fp: string): string {
   return fp.length > 9 ? `${fp.slice(0, 4)}…${fp.slice(-4)}` : fp
 }
 
-function Head({ p, connector, title, description }: { p: AgentApproveProps; connector: ConnectorState; title: string; description: string }): JSX.Element {
+function Head({ p, connector, title, description }: { p: AgentApproveProps; connector: ConnectorState; title: string; description: Child }): JSX.Element {
   return <CardHead connector={<Connector left={ORG} right={p.agent.tile} state={connector} />} title={title} description={description} />
 }
 
@@ -90,7 +100,7 @@ function label(options: SelectOption[], value: string): string {
 
 function PendingBody({ p }: { p: AgentApproveProps }): JSX.Element {
   return (
-    <>
+    <Stack gap={22}>
       <Head p={p} connector="idle" title={`${p.agent.name} wants to work as your agent`} description="It gets its own identity, linked to you. Pause or remove it anytime." />
       <Dotted />
       <SourceRow
@@ -126,82 +136,148 @@ function PendingBody({ p }: { p: AgentApproveProps }): JSX.Element {
           <Select id="agent-expiry" name="expires" options={p.expiries} selected={p.selectedExpiry} />
         </Field>
       </div>
-    </>
+    </Stack>
   )
 }
 
-function ApprovedBody({ p }: { p: AgentApproveProps }): JSX.Element {
+function PendingFoot(): JSX.Element {
+  return (
+    <Actions>
+      <Button variant="secondary" block name="decision" value="reject" deny done="rejected">
+        Reject
+      </Button>
+      <Button variant="primary" block name="decision" value="approve" busyLabel="Approving…" done="approved">
+        Approve agent
+      </Button>
+    </Actions>
+  )
+}
+
+/** `policy`: list the stored trust level, spend limit and expiry (the server-rendered page only). */
+function ApprovedBody({ p, policy }: { p: AgentApproveProps; policy: boolean }): JSX.Element {
   const trust = p.trustLevels.find((t) => t.value === p.selectedTrust)?.title ?? ''
   return (
-    <>
-      <Head p={p} connector="ok" title={`${p.agent.name} is now your agent`} description="It can start working now. You can close this tab." />
-      <Well>
-        <KeyValues
-          items={[
-            { k: 'Trust level', v: trust },
-            { k: 'Spend limit', v: label(p.spendLimits, p.selectedSpend) },
-            { k: 'Expires', v: label(p.expiries, p.selectedExpiry) },
-            { k: 'Workspace', v: p.workspace },
-          ]}
-        />
-      </Well>
-    </>
+    <Stack gap={22}>
+      <Head
+        p={p}
+        connector="ok"
+        title={`${p.agent.name} is now your agent`}
+        description={
+          <>
+            It can start working in <Em>{p.workspace}</Em> now. You can close this tab.
+          </>
+        }
+      />
+      {policy ? (
+        <Stack gap={22} class="id-fade">
+          <Well>
+            <KeyValues
+              items={[
+                { k: 'Trust level', v: trust },
+                { k: 'Spend limit', v: label(p.spendLimits, p.selectedSpend) },
+                { k: 'Expires', v: label(p.expiries, p.selectedExpiry) },
+              ]}
+            />
+          </Well>
+        </Stack>
+      ) : null}
+    </Stack>
+  )
+}
+
+function ApprovedFoot({ p }: { p: AgentApproveProps }): JSX.Element {
+  return (
+    <div class="id-fade">
+      <FootText>
+        Changed your mind? <Link href={p.manageHref}>Pause or remove it</Link>
+      </FootText>
+    </div>
   )
 }
 
 function RejectedBody({ p }: { p: AgentApproveProps }): JSX.Element {
-  return <Head p={p} connector="fail" title={`${p.agent.name} wasn’t approved`} description={`Its key won’t work, and it can’t see anything in ${p.workspace}.`} />
+  return (
+    <Stack gap={22}>
+      <Head
+        p={p}
+        connector="fail"
+        title={`${p.agent.name} wasn’t approved`}
+        description={
+          <>
+            Its key won’t work, and it can’t see anything in <Em>{p.workspace}</Em>.
+          </>
+        }
+      />
+    </Stack>
+  )
+}
+
+function RejectedFoot({ p }: { p: AgentApproveProps }): JSX.Element {
+  return (
+    <div class="id-fade">
+      <FootText>{`Rejected by mistake? Ask ${p.agent.name} to connect again.`}</FootText>
+    </div>
+  )
 }
 
 export function AgentApprove(p: AgentApproveProps): JSX.Element {
   const state = p.state ?? 'pending'
-  if (state === 'pending') {
-    return (
-      <Page>
-        <form class="id-form" method="post" action={p.action} data-js="submit">
-          <input type="hidden" name="csrf" value={p.csrf} />
-          <Card
-            foot={
-              <CardFoot>
-                <Actions>
-                  <Button variant="secondary" block name="decision" value="reject">
-                    Reject
-                  </Button>
-                  <Button variant="primary" block name="decision" value="approve" busyLabel="Approving…">
-                    Approve agent
-                  </Button>
-                </Actions>
-              </CardFoot>
-            }
-          >
-            <PendingBody p={p} />
-            <span class="id-sr" role="status" data-status></span>
-          </Card>
-        </form>
-      </Page>
-    )
+  const live = state === 'pending'
+  let body: JSX.Element
+  let foot: JSX.Element
+  let verdict = ''
+  switch (state) {
+    case 'approved':
+      body = <ApprovedBody p={p} policy />
+      foot = <ApprovedFoot p={p} />
+      verdict = `${p.agent.name} approved.`
+      break
+    case 'rejected':
+      body = <RejectedBody p={p} />
+      foot = <RejectedFoot p={p} />
+      verdict = `${p.agent.name} rejected.`
+      break
+    default:
+      body = <PendingBody p={p} />
+      foot = <PendingFoot />
   }
-  const approved = state === 'approved'
   return (
     <Page>
-      <Card
-        foot={
-          <CardFoot>
-            {approved ? (
-              <FootText>
-                Changed your mind? <Link href={p.manageHref}>Pause or remove it</Link>
-              </FootText>
-            ) : (
-              <FootText>{`Rejected by mistake? Ask ${p.agent.name} to connect again.`}</FootText>
-            )}
-          </CardFoot>
-        }
-      >
-        {approved ? <ApprovedBody p={p} /> : <RejectedBody p={p} />}
-        <span class="id-sr" role="status" data-status>
-          {approved ? `${p.agent.name} approved.` : `${p.agent.name} rejected.`}
-        </span>
-      </Card>
+      <form class="id-form" method="post" action={p.action} data-js="fetch-form">
+        <input type="hidden" name="csrf" value={p.csrf} />
+        <Card
+          foot={
+            <CardFoot>
+              <div data-region="foot">{foot}</div>
+              {live ? (
+                <>
+                  <template data-state="approved">
+                    <ApprovedFoot p={p} />
+                  </template>
+                  <template data-state="rejected">
+                    <RejectedFoot p={p} />
+                  </template>
+                </>
+              ) : null}
+            </CardFoot>
+          }
+        >
+          <div data-region="body">{body}</div>
+          {live ? (
+            <>
+              <template data-state="approved">
+                <ApprovedBody p={p} policy={false} />
+              </template>
+              <template data-state="rejected">
+                <RejectedBody p={p} />
+              </template>
+            </>
+          ) : null}
+          <span class="id-sr" role="status" data-status>
+            {verdict}
+          </span>
+        </Card>
+      </form>
     </Page>
   )
 }

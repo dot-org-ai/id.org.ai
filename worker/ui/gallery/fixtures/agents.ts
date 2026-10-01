@@ -55,11 +55,13 @@ const action: ActionApprovalProps = {
   alwaysAllowLabel: 'Always allow Susan to send renewal emails',
   formAction: '/approvals/apr_q3renewals',
   csrf: 'gallery',
+  requestId: 'req_5Rb8Vn2c',
 }
 
 const claim: ClaimProps = {
   agent: { name: 'Claude', tile: { kind: 'icon', icon: 'bot' } },
   app: 'headless.ly',
+  appHref: 'https://headless.ly',
   stats: [
     { n: '47', label: 'contacts' },
     { n: '12', label: 'deals' },
@@ -95,12 +97,13 @@ export const agentsFixtures: FixtureGroup = {
   '5a-agent-approve': defineFixture({
     screen: AgentApprove,
     title: (p) => `Approve ${p.agent.name} · id.org.ai`,
-    scripts: ['copy.js', 'submit.js'],
+    scripts: ['copy.js', 'fetch-form.js'],
     default: approve,
     states: {
       copied: { ...approve, copied: true },
     },
     derived: {
+      // Without JS the POST renders the verdict; with JS fetch-form.ts swaps in the same body and foot.
       approved: { ...approve, state: 'approved' },
       rejected: { ...approve, state: 'rejected' },
     },
@@ -108,17 +111,23 @@ export const agentsFixtures: FixtureGroup = {
   '5b-action-approval': defineFixture({
     screen: ActionApproval,
     title: (p) => `Approve ${p.agent.name}’s request · id.org.ai`,
-    scripts: ['countdown.js', 'submit.js'],
+    scripts: ['countdown.js', 'fetch-form.js'],
     default: action,
     derived: {
+      sent: { ...action, state: 'sent' },
+      denied: { ...action, state: 'denied' },
+      // The countdown hit 0, or the link was opened late: the 7b card with the approval copy.
       expired: { ...action, state: 'expired', secondsLeft: 0 },
     },
   }),
   '5c-claim': defineFixture({
     screen: Claim,
     title: (p) => `Claim ${p.app} · id.org.ai`,
-    scripts: ['submit.js'],
+    scripts: ['fetch-form.js'],
     default: claim,
+    derived: {
+      claimed: { ...claim, state: 'claimed', claimedInto: 'Drivly' },
+    },
   }),
   '5d-claim-repo': defineFixture({
     screen: ClaimRepo,
