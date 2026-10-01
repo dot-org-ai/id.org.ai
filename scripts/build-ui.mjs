@@ -65,6 +65,12 @@ const cssOut = `ui.${hash(css)}.css`
 writeFileSync(join(OUT_AUTH, cssOut), css)
 assets['ui.css'] = `/auth/${cssOut}`
 
+// ── Gallery stylesheet (dev only; never linked from a production page) ───────
+const galleryCss = readFileSync(join(UI, 'gallery/gallery.css'))
+const galleryOut = `gallery.${hash(galleryCss)}.css`
+writeFileSync(join(OUT_AUTH, galleryOut), galleryCss)
+assets['gallery.css'] = `/auth/${galleryOut}`
+
 // ── Fonts (byte-identical to docs/product-update/mocks/fonts) ────────────────
 cpSync(require_('geist/dist/fonts/geist-sans/Geist-Variable.woff2'), join(OUT_FONTS, 'Geist-Variable.woff2'))
 cpSync(require_('geist/dist/fonts/geist-mono/GeistMono-Variable.woff2'), join(OUT_FONTS, 'GeistMono-Variable.woff2'))

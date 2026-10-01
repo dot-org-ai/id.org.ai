@@ -4,13 +4,15 @@
  */
 import type { Context } from 'hono'
 import type { JSX } from 'hono/jsx/jsx-runtime'
-import { assetUrl, FONT_PRELOAD, type ClientScript } from './assets'
+import { assetUrl, FONT_PRELOAD, type ClientScript, type Stylesheet } from './assets'
 
 export interface RenderOptions {
   /** Document title, for example "Sign in · id.org.ai". */
   title: string
   /** Client scripts this page needs (module scripts, by logical name). */
   scripts?: ClientScript[]
+  /** Extra stylesheets after ui.css (the gallery's own, dev only). */
+  styles?: Stylesheet[]
   /**
    * Origins this page's forms may post or redirect to, beyond 'self'. Only
    * already-validated origins (for example the OAuth redirect_uri's origin).
@@ -66,7 +68,7 @@ export function securityHeaders(csp: string): Record<string, string> {
   }
 }
 
-export function Document({ title, scripts = [], frozen, children }: { title: string; scripts?: ClientScript[]; frozen?: boolean; children: JSX.Element }): JSX.Element {
+export function Document({ title, scripts = [], styles = [], frozen, children }: { title: string; scripts?: ClientScript[]; styles?: Stylesheet[]; frozen?: boolean; children: JSX.Element }): JSX.Element {
   return (
     <html lang="en" data-frozen={frozen ? '' : undefined}>
       <head>
@@ -75,6 +77,9 @@ export function Document({ title, scripts = [], frozen, children }: { title: str
         <title>{title}</title>
         <link rel="preload" href={FONT_PRELOAD} as="font" type="font/woff2" crossorigin="anonymous" />
         <link rel="stylesheet" href={assetUrl('ui.css')} />
+        {styles.map((s) => (
+          <link rel="stylesheet" href={assetUrl(s)} />
+        ))}
         {scripts.map((s) => (
           <script type="module" src={assetUrl(s)}></script>
         ))}
@@ -84,8 +89,12 @@ export function Document({ title, scripts = [], frozen, children }: { title: str
   )
 }
 
-export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'frozen'>): Promise<string> {
-  const doc = <Document title={opts.title} scripts={opts.scripts} frozen={opts.frozen}>{element}</Document>
+export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'styles' | 'frozen'>): Promise<string> {
+  const doc = (
+    <Document title={opts.title} scripts={opts.scripts} styles={opts.styles} frozen={opts.frozen}>
+      {element}
+    </Document>
+  )
   return '<!doctype html>' + String(await doc)
 }
 

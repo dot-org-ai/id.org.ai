@@ -5,7 +5,8 @@
 import assets from './assets.json'
 
 export type AssetName = keyof typeof assets
-export type ClientScript = Exclude<AssetName, 'ui.css'>
+export type Stylesheet = Extract<AssetName, `${string}.css`>
+export type ClientScript = Exclude<AssetName, Stylesheet>
 
 export const FONT_PRELOAD = '/fonts/geist/Geist-Variable.woff2'
 
