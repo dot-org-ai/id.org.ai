@@ -1,8 +1,8 @@
 // Foundations
 export { Page } from './Page'
 export type { PageProps } from './Page'
-export { Header } from './Header'
-export type { HeaderProps } from './Header'
+export { Header, AppBrand } from './Header'
+export type { HeaderProps, AppBrandProps } from './Header'
 export { Footer } from './Footer'
 export type { FooterProps } from './Footer'
 export { Card, CardFoot } from './Card'

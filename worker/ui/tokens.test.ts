@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 describe('design tokens', () => {
@@ -9,7 +9,7 @@ describe('design tokens', () => {
   })
 
   it('component CSS uses tokens, never colour literals', () => {
-    const css = readFileSync('worker/ui/ui.css', 'utf8')
-    expect(css).not.toMatch(/oklch\(|#[0-9a-f]{3,8}\b|rgba?\(/i)
+    const files = ['worker/ui/ui.css', 'worker/ui/gallery/gallery.css', ...readdirSync('worker/ui/css').filter((f) => f.endsWith('.css')).map((f) => `worker/ui/css/${f}`)]
+    for (const f of files) expect(readFileSync(f, 'utf8'), f).not.toMatch(/oklch\(|#[0-9a-f]{3,8}\b|rgba?\(/i)
   })
 })

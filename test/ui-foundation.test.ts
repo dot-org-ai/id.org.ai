@@ -27,7 +27,7 @@ const EXPECTED_CSP =
 
 describe('design gallery gate', () => {
   it('is a plain 404 without DESIGN_GALLERY', async () => {
-    for (const path of ['/__design', '/__design/smoke', '/__design/smoke?state=x']) {
+    for (const path of ['/__design', '/__design/4b-device-confirm', '/__design/4b-device-confirm?state=signed', '/__design/components']) {
       const res = await SELF.fetch(`${BASE}${path}`)
       expect(res.status, path).toBe(404)
       expect(await res.text(), path).not.toContain('Design gallery')
@@ -43,9 +43,10 @@ describe('design gallery gate', () => {
     expect(html).toContain('4b · Confirm device code')
     expect(html).toContain('8c')
 
-    const smoke = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/smoke')
-    expect(smoke.status).toBe(200)
-    expect(await smoke.text()).toContain('<html lang="en" data-frozen="">')
+    const screen = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/4b-device-confirm?state=signed')
+    expect(screen.status).toBe(200)
+    expect(await screen.text()).toContain('<html lang="en" data-frozen="">')
+    expect((await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/components')).status).toBe(200)
   })
 
   it('does not treat other values as on', async () => {
@@ -57,13 +58,13 @@ describe('design gallery gate', () => {
 
   it('404s an unknown slug or state', async () => {
     expect((await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/nope')).status).toBe(404)
-    expect((await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/smoke?state=nope')).status).toBe(404)
+    expect((await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/4b-device-confirm?state=nope')).status).toBe(404)
   })
 })
 
 describe('renderPage', () => {
   it('sends every security header from spec/security.md', async () => {
-    const res = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/smoke')
+    const res = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/4b-device-confirm')
     expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(res.headers.get('cache-control')).toBe('no-store')
     expect(res.headers.get('x-frame-options')).toBe('DENY')
@@ -73,7 +74,7 @@ describe('renderPage', () => {
   })
 
   it('has no inline script or style', async () => {
-    const html = await (await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/smoke')).text()
+    const html = await (await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/4b-device-confirm')).text()
     expect(html).not.toMatch(/\sstyle=/i)
     expect(html).not.toMatch(/<style[\s>]/i)
     // every <script> has a src
@@ -97,7 +98,7 @@ describe('renderPage', () => {
 
 describe('request IDs', () => {
   it('puts X-Request-Id on HTML and JSON responses', async () => {
-    const html = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/smoke')
+    const html = await fetchWith({ DESIGN_GALLERY: '1' }, '/__design/4b-device-confirm')
     expect(html.headers.get('x-request-id')).toMatch(/^req_[0-9A-Za-z]{8}$/)
     const json = await SELF.fetch(`${BASE}/health`)
     expect(json.headers.get('x-request-id')).toMatch(/^req_[0-9A-Za-z]{8}$/)

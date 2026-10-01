@@ -1,13 +1,24 @@
 /**
- * Every gallery fixture, merged from one file per screen group (phase 3 adds
- * signin.ts, accounts.ts, authorize.ts, devices.ts, agents.ts, security.ts,
- * errors.ts and emails.ts).
+ * Every gallery fixture, merged from one file per screen group
+ * (docs/product-update/prompts/03-screens.md). Each group owns its file.
  */
 import type { FixtureGroup } from '../types'
+import { accountsFixtures } from './accounts'
+import { agentsFixtures } from './agents'
+import { authorizeFixtures } from './authorize'
 import { deviceFixtures } from './devices'
-import { smokeFixtures } from './smoke'
+import { emailsFixtures } from './emails'
+import { errorsFixtures } from './errors'
+import { securityFixtures } from './security'
+import { signinFixtures } from './signin'
 
 export const fixtures: FixtureGroup = {
-  ...smokeFixtures,
+  ...signinFixtures,
+  ...accountsFixtures,
+  ...authorizeFixtures,
   ...deviceFixtures,
+  ...agentsFixtures,
+  ...securityFixtures,
+  ...errorsFixtures,
+  ...emailsFixtures,
 }

@@ -11,7 +11,7 @@ import { Hono } from 'hono'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import manifest from '../../../docs/product-update/mocks/manifest.json'
 import { Card, Page } from '../components'
-import { renderPage } from '../render'
+import { EMAIL_PREVIEW_CSP, renderPage, securityHeaders } from '../render'
 import { ComponentSheet } from './components-sheet'
 import type { Env, Variables } from '../../types'
 import { fixtures } from './fixtures'
@@ -76,8 +76,8 @@ galleryRoutes.get('/__design/:slug', async (c, next) => {
   const variant: Variant | undefined = state ? (f.states[state] ?? f.derived[state]) : f.default
   if (!variant) return c.notFound()
   if (f.document === 'email') {
-    // Emails are inline-styled; they render through the email preview frame (phase 3), never the page CSP.
-    return c.text('email previews are not built yet', 501)
+    // An email fixture renders its whole preview document (frame + template); inline styles allowed here only.
+    return new Response('<!doctype html>' + String(await variant.render()), { headers: securityHeaders(EMAIL_PREVIEW_CSP) })
   }
   return renderPage(c, variant.render(), { title: variant.title, scripts: f.scripts, frozen: true })
 })

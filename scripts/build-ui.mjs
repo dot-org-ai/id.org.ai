@@ -3,7 +3,7 @@
  * Build the auth UI's static assets into worker/public (docs/product-update/prompts/01-foundation.md).
  *
  *   worker/ui/client/<name>.ts      → worker/public/auth/<name>.<hash>.js   (esbuild, esm, minified)
- *   worker/ui/tokens.css + ui.css   → worker/public/auth/ui.<hash>.css      (concatenated as is)
+ *   worker/ui/tokens.css + ui.css + css/*.css → worker/public/auth/ui.<hash>.css (concatenated as is)
  *   geist@1.7.2 variable woff2      → worker/public/fonts/geist/
  *   worker/ui/static/**             → worker/public/**
  *   worker/ui/assets.json           ← logical name → hashed path
@@ -60,7 +60,15 @@ for (const file of entries) {
 }
 
 // ── Stylesheet ──────────────────────────────────────────────────────────────
-const css = Buffer.from(readFileSync(join(UI, 'tokens.css'), 'utf8') + '\n' + readFileSync(join(UI, 'ui.css'), 'utf8'))
+// tokens.css, ui.css, then component CSS kept in worker/ui/css/*.css (sorted).
+const CSS_DIR = join(UI, 'css')
+const moduleCss = existsSync(CSS_DIR)
+  ? readdirSync(CSS_DIR)
+      .filter((f) => f.endsWith('.css'))
+      .sort()
+      .map((f) => readFileSync(join(CSS_DIR, f), 'utf8'))
+  : []
+const css = Buffer.from([readFileSync(join(UI, 'tokens.css'), 'utf8'), readFileSync(join(UI, 'ui.css'), 'utf8'), ...moduleCss].join('\n'))
 const cssOut = `ui.${hash(css)}.css`
 writeFileSync(join(OUT_AUTH, cssOut), css)
 assets['ui.css'] = `/auth/${cssOut}`

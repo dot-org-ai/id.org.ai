@@ -56,6 +56,12 @@ export function contentSecurityPolicy(formActionOrigins: readonly string[] = [])
   ].join('; ')
 }
 
+/**
+ * Gallery email previews only (spec/emails.md#gallery-preview): email templates
+ * are inline-styled, so these dev-only pages allow inline styles and nothing else.
+ */
+export const EMAIL_PREVIEW_CSP = "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+
 /** The fixed headers on every auth page. */
 export function securityHeaders(csp: string): Record<string, string> {
   return {
