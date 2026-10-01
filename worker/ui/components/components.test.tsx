@@ -95,6 +95,18 @@ describe('Button', () => {
 })
 
 describe('Field, Select, CodeInput', () => {
+  it('styles the open list only where the browser supports it, with no motion under reduced motion', () => {
+    const css = readFileSync('worker/ui/ui.css', 'utf8')
+    const start = css.indexOf('@supports (appearance: base-select)')
+    expect(start).toBeGreaterThan(-1)
+    // Every base-select rule sits inside the @supports block, so other browsers keep the native list.
+    const outside = css.slice(0, start).match(/appearance:\s*base-select/g) ?? []
+    expect(outside).toEqual([])
+    const block = css.slice(start)
+    expect(block).toMatch(/\.id-select::picker-icon\s*{\s*display:\s*none;/)
+    expect(block).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*{\s*\.id-select::picker\(select\)\s*{\s*transition:\s*none;/)
+  })
+
   it('labels its control and links the hint or error', async () => {
     const d = await dom(
       <>

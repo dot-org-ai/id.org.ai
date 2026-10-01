@@ -580,6 +580,86 @@ details[data-x][open] > summary [data-chev-d] {
   color: var(--id-fg-3);
   pointer-events: none;
 }
+/* The open list (owner direction, 2026-10-01). Where a select can be styled
+   (Chrome 135+), its list matches the card instead of the OS menu. It stays a
+   real <select>: keyboard, screen readers, autofill and form posts work with
+   no script. Safari and Firefox keep their native list. Our chevron replaces
+   the built-in picker icon. */
+@supports (appearance: base-select) {
+  .id-select,
+  .id-select::picker(select) {
+    appearance: base-select;
+  }
+  /* A styleable select lays its text out at the top; centre it as the native one does. */
+  .id-select {
+    display: flex;
+    align-items: center;
+  }
+  .id-select::picker-icon {
+    display: none;
+  }
+  /* Focus moves into the list while it's open; the box keeps its focus border. */
+  .id-select:open {
+    border-color: var(--id-select);
+  }
+  .id-select::picker(select) {
+    box-sizing: border-box;
+    margin-block: 6px;
+    padding: 4px;
+    border: 1px solid var(--id-line-2);
+    border-radius: var(--id-r-option);
+    background: var(--id-card);
+    box-shadow: var(--id-sh-card);
+    color: var(--id-fg);
+    opacity: 0;
+    translate: 0 -4px;
+    transition:
+      opacity 140ms var(--id-ease-out),
+      translate 140ms var(--id-ease-out),
+      display 140ms allow-discrete,
+      overlay 140ms allow-discrete;
+  }
+  .id-select::picker(select):popover-open {
+    opacity: 1;
+    translate: 0 0;
+  }
+  @starting-style {
+    .id-select::picker(select):popover-open {
+      opacity: 0;
+      translate: 0 -4px;
+    }
+  }
+  .id-select option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: var(--id-r-sm);
+    color: var(--id-fg-2);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .id-select option:hover,
+  .id-select option:focus-visible {
+    background: var(--id-hover-ghost);
+    color: var(--id-fg);
+    outline: none;
+  }
+  .id-select option:checked {
+    color: var(--id-fg);
+    font-weight: 500;
+  }
+  .id-select option::checkmark {
+    order: 1;
+    margin-left: auto;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .id-select::picker(select) {
+      transition: none;
+    }
+  }
+}
 .id-textarea {
   min-height: 0;
   height: auto;
