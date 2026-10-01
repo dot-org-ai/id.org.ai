@@ -1,1 +1,0 @@
-function n(o){let e=o.querySelector("img");if(!e)return;let t=()=>{o.textContent=o.dataset.monogram??""};e.complete&&e.naturalWidth===0?t():e.addEventListener("error",t,{once:!0})}function r(o,e){for(let t of document.querySelectorAll(`[data-js="${o}"]`))t.dataset.jsReady||(t.dataset.jsReady="1",e(t))}r("logo",n);

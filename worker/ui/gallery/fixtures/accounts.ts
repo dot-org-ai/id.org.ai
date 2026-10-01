@@ -79,6 +79,7 @@ export const accountsFixtures: FixtureGroup = {
   '2c-handoff': defineFixture({
     screen: Handoff,
     title: (p) => `Signing you in to ${p.app.name} · id.org.ai`,
+    scripts: ['handoff.js'],
     default: handoff,
   }),
   '2e-invitation': defineFixture({

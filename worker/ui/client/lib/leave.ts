@@ -8,10 +8,10 @@
  */
 import { setConnector } from './connector'
 
+/** A Button's last child is always its label span (components/Button.tsx). */
 export function busy(btn: HTMLButtonElement, label: string): void {
   btn.setAttribute('aria-busy', 'true')
-  const span = btn.querySelector('span:last-child')
-  if (span) span.textContent = label
+  btn.lastElementChild!.textContent = label
 }
 
 export function initLeave(form: HTMLFormElement): void {

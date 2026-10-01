@@ -20,6 +20,11 @@ export interface RenderOptions {
   formActionOrigins?: string[]
   /** Gallery only: `<html data-frozen>`, so client scripts never tick, poll, redirect or autofocus. */
   frozen?: boolean
+  /**
+   * 2c's no-JS fallback: `<meta http-equiv="refresh">` in the head. Only for an
+   * already-validated URL (the client's registered redirect). Never in the gallery.
+   */
+  refreshTo?: { url: string; seconds: number }
   status?: number
   /** Extra response headers (never the security headers: those are fixed). */
   headers?: Record<string, string>
@@ -74,13 +79,28 @@ export function securityHeaders(csp: string): Record<string, string> {
   }
 }
 
-export function Document({ title, scripts = [], styles = [], frozen, children }: { title: string; scripts?: ClientScript[]; styles?: Stylesheet[]; frozen?: boolean; children: JSX.Element }): JSX.Element {
+export function Document({
+  title,
+  scripts = [],
+  styles = [],
+  frozen,
+  refreshTo,
+  children,
+}: {
+  title: string
+  scripts?: ClientScript[]
+  styles?: Stylesheet[]
+  frozen?: boolean
+  refreshTo?: RenderOptions['refreshTo']
+  children: JSX.Element
+}): JSX.Element {
   return (
     <html lang="en" data-frozen={frozen ? '' : undefined}>
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
+        {refreshTo && !frozen ? <meta http-equiv="refresh" content={`${refreshTo.seconds};url=${refreshTo.url}`} /> : null}
         <link rel="preload" href={FONT_PRELOAD} as="font" type="font/woff2" crossorigin="anonymous" />
         <link rel="stylesheet" href={assetUrl('ui.css')} />
         {styles.map((s) => (
@@ -95,9 +115,9 @@ export function Document({ title, scripts = [], styles = [], frozen, children }:
   )
 }
 
-export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'styles' | 'frozen'>): Promise<string> {
+export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'styles' | 'frozen' | 'refreshTo'>): Promise<string> {
   const doc = (
-    <Document title={opts.title} scripts={opts.scripts} styles={opts.styles} frozen={opts.frozen}>
+    <Document title={opts.title} scripts={opts.scripts} styles={opts.styles} frozen={opts.frozen} refreshTo={opts.refreshTo}>
       {element}
     </Document>
   )

@@ -3,10 +3,11 @@
  * (lib/leave.ts). A page restored from the back/forward cache reloads, so it
  * never comes back busy.
  */
-import { enhance, isFrozen } from './lib/dom'
+import { enhance, guardEnter, isFrozen } from './lib/dom'
 import { initLeave } from './lib/leave'
 
 enhance<HTMLFormElement>('submit', (form) => {
+  guardEnter(form)
   if (!isFrozen()) initLeave(form)
 })
 addEventListener('pageshow', (e) => {

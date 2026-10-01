@@ -3,11 +3,10 @@
  *
  * The final response when the browser leaves id.org.ai for the app after a
  * choice made here. The connector shows `connecting` (this page is the
- * in-between moment). With `redirect`, the page carries the no-JS fallback
- * `<meta http-equiv="refresh" content="1;url=…">`; it also carries
- * data-js="handoff" and data-target, the hook for the script that runs
- * `location.replace(target)` on the next frame (wired with the route, B5).
- * The gallery omits `redirect`, so nothing navigates.
+ * in-between moment). With `redirect`, the page carries the hook for
+ * handoff.js, which runs `location.replace(target)` on the next frame; the
+ * route renders it with `refreshTo` (a 1s meta refresh in the head, the no-JS
+ * fallback). The gallery omits `redirect`, so nothing navigates.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Card, CardFoot, CardHead, Connector, Em, FootText, Link, Page, type TileContent } from '../components'
@@ -18,7 +17,7 @@ export interface HandoffProps {
   workspace?: { name: string }
   /** The redirect URL back to the app (already validated against the client's redirect URIs). */
   target: string
-  /** Production: emit the meta refresh (and the script hook). The gallery leaves it off. */
+  /** Production: the handoff.js hook (render with `refreshTo` for the no-JS fallback). The gallery leaves it off. */
   redirect?: boolean
 }
 
@@ -28,7 +27,7 @@ export function Handoff(p: HandoffProps): JSX.Element {
   const title = `Signing you in to ${p.app.name}`
   return (
     <Page>
-      {p.redirect ? <meta http-equiv="refresh" content={`1;url=${p.target}`} data-js="handoff" data-target={p.target} /> : null}
+      {p.redirect ? <span hidden data-js="handoff" data-target={p.target}></span> : null}
       <Card
         foot={
           <CardFoot>

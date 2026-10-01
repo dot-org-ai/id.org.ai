@@ -196,11 +196,18 @@ describe('2c · Handing off', () => {
     expect(doc.querySelector('form')).toBeNull()
   })
 
-  it('adds the meta refresh fallback when redirecting', async () => {
-    const doc = await dom(<Handoff {...base} redirect />)
-    const meta = doc.querySelector('meta[http-equiv="refresh"]')
+  it('when redirecting: the handoff.js hook in the page and the meta refresh fallback in the head', async () => {
+    const html = await renderHtml(<Handoff {...base} redirect />, { title: 't', refreshTo: { url: base.target, seconds: 1 } })
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.querySelector('[data-js="handoff"]')?.getAttribute('data-target')).toBe(base.target)
+    const meta = doc.head.querySelector('meta[http-equiv="refresh"]')
     expect(meta?.getAttribute('content')).toBe(`1;url=${base.target}`)
-    expect(meta?.getAttribute('data-target')).toBe(base.target)
+    expect(doc.body.querySelector('meta')).toBeNull()
+  })
+
+  it('never refreshes in the frozen gallery', async () => {
+    const html = await renderHtml(<Handoff {...base} redirect />, { title: 't', refreshTo: { url: base.target, seconds: 1 }, frozen: true })
+    expect(html).not.toContain('http-equiv="refresh"')
   })
 
   it('escapes names', async () => {

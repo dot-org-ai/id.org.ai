@@ -9,6 +9,18 @@ export function isFrozen(): boolean {
 }
 
 /**
+ * Enter on a radio or checkbox would submit the form with its first submit
+ * button, which in an action band is the secondary (Cancel, Deny, Decline,
+ * Reject). Choosing an option never submits.
+ */
+export function guardEnter(form: HTMLFormElement): void {
+  form.addEventListener('keydown', (e) => {
+    const type = (e.target as HTMLInputElement).type
+    if (e.key === 'Enter' && (type === 'radio' || type === 'checkbox')) e.preventDefault()
+  })
+}
+
+/**
  * Run `init` on every `[data-js="<name>"]` element, once each. The scripts are
  * `type="module"`, which always run after the document is parsed, so there's
  * no DOMContentLoaded to wait for.
