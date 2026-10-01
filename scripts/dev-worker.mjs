@@ -9,7 +9,7 @@
 import { spawnSync } from 'node:child_process'
 
 const port = process.env.PORT || '8787'
-const r = spawnSync('npx', ['wrangler', 'dev', '--port', port, '--ip', '127.0.0.1', '--local-upstream', `localhost:${port}`, ...process.argv.slice(2)], {
+const r = spawnSync('npx', ['wrangler', 'dev', '--port', port, '--ip', '127.0.0.1', '--local-upstream', `localhost:${port}`, ...process.argv.slice(2).filter((a) => a !== '--')], {
   cwd: new URL('../worker/', import.meta.url).pathname,
   stdio: 'inherit',
 })
