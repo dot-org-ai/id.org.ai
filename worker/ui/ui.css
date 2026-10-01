@@ -1205,6 +1205,11 @@ details[data-x][open] > summary [data-chev-d] {
   font-weight: 500;
   color: var(--id-fg);
 }
+.id-warning__body {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-2);
+}
 .id-note {
   display: flex;
   gap: 8px;

@@ -11,7 +11,7 @@ export function WarningCallout({ title, children }: { title: string; children: C
       </span>
       <div class="id-stack id-stack--4">
         <span class="id-warning__title">{title}</span>
-        <span class="id-radio__desc">{children}</span>
+        <span class="id-warning__body">{children}</span>
       </div>
     </div>
   )
