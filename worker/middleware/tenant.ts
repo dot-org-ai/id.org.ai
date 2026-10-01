@@ -12,6 +12,7 @@ import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import { parseCookieValue } from '../utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
+import { workosUrl } from '../../src/sdk/workos/base'
 
 /**
  * Get a DO stub for a specific identity shard.
@@ -160,7 +161,7 @@ const JWKS_TTL_MS = 10 * 60 * 1000 // 10 minutes
 export async function getLocalJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
   if (_localJwks && Date.now() - _jwksFetchedAt < JWKS_TTL_MS) return _localJwks
 
-  const keys = await fetch(`https://api.workos.com/sso/jwks/${clientId}`)
+  const keys = await fetch(workosUrl(`/sso/jwks/${clientId}`))
     .then((r) => r.json() as Promise<{ keys: jose.JWK[] }>)
     .then((j) => j.keys)
   _localJwks = jose.createLocalJWKSet({ keys })

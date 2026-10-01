@@ -9,6 +9,7 @@
  * Warrants are the actual permission grants.
  * Checks ask "can user X do action Y on resource Z?"
  */
+import { workosUrl } from './base'
 
 // ── Resource Type Definitions ───────────────────────────────────────────────
 
@@ -93,14 +94,14 @@ export interface FGACheckRequest {
 
 // ── WorkOS FGA API Helpers ──────────────────────────────────────────────────
 
-const FGA_BASE = 'https://api.workos.com/fga/v1'
+const fgaBase = () => workosUrl('/fga/v1')
 
 /**
  * Create a warrant (permission grant).
  * Called when entities are created to establish ownership.
  */
 export async function createWarrant(apiKey: string, warrant: FGAWarrant): Promise<{ warrantToken: string }> {
-  const resp = await fetch(`${FGA_BASE}/warrants`, {
+  const resp = await fetch(`${fgaBase()}/warrants`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -127,7 +128,7 @@ export async function createWarrant(apiKey: string, warrant: FGAWarrant): Promis
  * Delete a warrant (revoke permission).
  */
 export async function deleteWarrant(apiKey: string, warrant: FGAWarrant): Promise<void> {
-  const resp = await fetch(`${FGA_BASE}/warrants`, {
+  const resp = await fetch(`${fgaBase()}/warrants`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -154,7 +155,7 @@ export async function deleteWarrant(apiKey: string, warrant: FGAWarrant): Promis
  * This is the core authorization check — called on every API request.
  */
 export async function checkPermission(apiKey: string, check: FGACheckRequest): Promise<boolean> {
-  const resp = await fetch(`${FGA_BASE}/check`, {
+  const resp = await fetch(`${fgaBase()}/check`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -186,7 +187,7 @@ export async function checkPermission(apiKey: string, check: FGACheckRequest): P
  * Batch check multiple permissions at once.
  */
 export async function batchCheck(apiKey: string, checks: FGACheckRequest[]): Promise<boolean[]> {
-  const resp = await fetch(`${FGA_BASE}/check`, {
+  const resp = await fetch(`${fgaBase()}/check`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -289,7 +290,7 @@ export async function listAccessible(
   relation: FGARelation = 'viewer',
 ): Promise<Array<{ resourceType: string; resourceId: string }>> {
   const resp = await fetch(
-    `${FGA_BASE}/warrants?resource_type=${resourceType}&relation=${relation}&subject_type=user&subject_id=${userId}&limit=100`,
+    `${fgaBase()}/warrants?resource_type=${resourceType}&relation=${relation}&subject_type=user&subject_id=${userId}&limit=100`,
     {
       headers: { Authorization: `Bearer ${apiKey}` },
     },
@@ -308,7 +309,7 @@ export async function listAccessible(
  */
 export async function defineResourceTypes(apiKey: string): Promise<void> {
   for (const resourceType of FGA_RESOURCE_TYPES) {
-    await fetch(`${FGA_BASE}/resource-types`, {
+    await fetch(`${fgaBase()}/resource-types`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,

@@ -30,6 +30,7 @@ import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/u
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
 import { resolveBrowserRedirect, requestOriginOf, canonicalOrigin } from '../utils/relying-parties'
+import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 
 /** Where a sign-in lands when no acceptable `continue` was given. */
 const DEFAULT_CONTINUE = '/dash/profile'
@@ -155,7 +156,8 @@ app.get('/login', async (c) => {
   // we can't use that domain's callback URL because it's not registered in WorkOS.
   // The requesting origin is stored in state.origin for the cross-origin bounce after auth.
   const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev']
-  const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
+  // Local dev against the WorkOS stub (src/sdk/workos/base.ts) keeps its own loopback callback.
+  const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) || isLocalStubOrigin(c.env, requestOrigin) ? requestOrigin : 'https://id.org.ai'
   const redirectUri = `${callbackOrigin}/api/callback`
   const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider, loginHint)
   // Store state in cookie so we can recover it if WorkOS drops the state param
