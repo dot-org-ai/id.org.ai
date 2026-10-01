@@ -77,6 +77,14 @@ const consent: ConsentProps = {
  */
 const PLACEHOLDER_LOGO = '/orgLogo.svg'
 
+/**
+ * Codex's own logo_uri, exactly as its client metadata document publishes it
+ * (https://chatgpt.com/oauth/codex/client.json, read 2026-10-01): what 3a
+ * shows a real Codex sign-in once consent renders the client's logo. Derived
+ * state only; the visual diff keeps the mocks' monogram.
+ */
+const CODEX_LOGO_URI = 'https://persistent.oaistatic.com/sonic/misc/openai-logo.png'
+
 // ── 3b · Sign in with id.org.ai ────────────────────────────────────────────
 
 const basic: ConsentProps = {
@@ -176,6 +184,7 @@ export const authorizeFixtures: FixtureGroup = {
     states: { copied: { ...consent, copied: true } },
     derived: {
       logo: { ...consent, client: { ...consent.client, tile: { kind: 'logo', src: PLACEHOLDER_LOGO, monogram: 'Cx' } } },
+      'codex-logo': { ...consent, client: { ...consent.client, tile: { kind: 'logo', src: CODEX_LOGO_URI, monogram: 'Cx' } } },
       busy: { ...consent, busy: true },
     },
   }),
