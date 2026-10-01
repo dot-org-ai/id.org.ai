@@ -191,22 +191,33 @@ function Body({ p }: { p: ErrorPageProps }): JSX.Element {
   )
 }
 
-export function ErrorPage(p: ErrorPageProps): JSX.Element {
+/**
+ * The error card on its own (and its form, when the primary posts), for
+ * places that show an error inside another page: 5b's expired template, 4b's
+ * error templates. ErrorPage is this card in the page shell.
+ */
+export function ErrorCard(p: ErrorPageProps): JSX.Element {
   const card = (
     <Card foot={<Foot p={p} />}>
       <Body p={p} />
     </Card>
   )
-  if (!p.actions.primary.post) return <Page>{card}</Page>
+  if (!p.actions.primary.post) return card
+  return (
+    <form class="id-form" method="post" action={p.actions.primary.href} data-js="submit">
+      <input type="hidden" name="csrf" value={p.csrf ?? ''} />
+      {Object.entries(p.fields ?? {}).map(([name, value]) => (
+        <input type="hidden" name={name} value={value} />
+      ))}
+      {card}
+    </form>
+  )
+}
+
+export function ErrorPage(p: ErrorPageProps): JSX.Element {
   return (
     <Page>
-      <form class="id-form" method="post" action={p.actions.primary.href}>
-        <input type="hidden" name="csrf" value={p.csrf ?? ''} />
-        {Object.entries(p.fields ?? {}).map(([name, value]) => (
-          <input type="hidden" name={name} value={value} />
-        ))}
-        {card}
-      </form>
+      <ErrorCard {...p} />
     </Page>
   )
 }
