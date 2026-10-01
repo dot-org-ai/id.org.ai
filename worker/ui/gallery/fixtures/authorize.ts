@@ -70,12 +70,12 @@ const consent: ConsentProps = {
   csrf: 'gallery',
 }
 
-/** A neutral placeholder logo (never a real third-party mark, logos.md#rules). */
-const PLACEHOLDER_LOGO =
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="3" y="3" width="26" height="26" rx="8" fill="silver"/><circle cx="16" cy="16" r="6" fill="gray"/></svg>',
-  )
+/**
+ * A stand-in logo for the derived `logo` state: our own mark, served from this
+ * origin (never a real third-party mark, logos.md#rules). Real clients bring an
+ * https logo_uri; data: URIs aren't rendered (components/url.ts).
+ */
+const PLACEHOLDER_LOGO = '/orgLogo.svg'
 
 // ── 3b · Sign in with id.org.ai ────────────────────────────────────────────
 

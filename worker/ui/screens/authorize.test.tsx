@@ -99,7 +99,7 @@ describe('3a · Authorize app', () => {
   it('copied state announces through the copy status', async () => {
     const d = await render(f3a.states.copied)
     expect(d.querySelector('[data-js="copy"]')?.hasAttribute('data-copied')).toBe(true)
-    expect(text(d.querySelector('[data-js="copy"] [role="status"]'))).toBe('Copied')
+    expect(text(d.querySelector('[data-js="copy"] + [role="status"]'))).toBe('Copied')
   })
 
   it('busy: connecting, Allow busy and announced, Cancel disabled', async () => {

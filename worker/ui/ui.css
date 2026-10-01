@@ -477,6 +477,11 @@ details[data-x][open] > summary [data-chev-d] {
   -webkit-appearance: none;
   padding-right: 36px;
   cursor: pointer;
+  /* The mocks lay a select's text out once, with the fallback font's 17px line
+     box (Chrome doesn't re-lay it when Geist swaps in). A fixed 17px line box
+     reproduces that at every offset; at whole-pixel offsets it renders the same
+     as Geist's own 18px. Found by the 3a and 5c groups independently. */
+  line-height: 17px;
 }
 .id-select__chev {
   position: absolute;

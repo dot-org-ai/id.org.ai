@@ -56,11 +56,9 @@ export function Claim(p: ClaimProps): JSX.Element {
           />
           <Stats items={p.stats} footer={`Sandbox ends in ${p.sandboxEndsIn}`} />
           <Who name={p.account.name} sub={p.account.email} avatar={p.account.avatar} right={<Link href={p.switchHref}>Switch</Link>} />
-          <div class="id-claim-into">
-            <Field id="claim-workspace" label="Claim into">
-              <Select id="claim-workspace" name="org_id" options={p.workspaces} selected={p.selectedWorkspace} />
-            </Field>
-          </div>
+          <Field id="claim-workspace" label="Claim into">
+            <Select id="claim-workspace" name="org_id" options={p.workspaces} selected={p.selectedWorkspace} />
+          </Field>
           <span class="id-sr" role="status" data-status></span>
         </Card>
       </form>
