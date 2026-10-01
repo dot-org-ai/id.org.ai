@@ -60,6 +60,7 @@ import { credentialRoutes } from './routes/credentials'
 import { resolveRoutes } from './routes/resolve'
 import { dlvpRoutes } from './routes/dlvp'
 import { requestIdMiddleware } from './middleware/request-id'
+import { htmlErrorsMiddleware } from './middleware/html-errors'
 import { staticUiRoutes } from './routes/static-ui'
 import { galleryRoutes } from './ui/gallery/routes'
 
@@ -515,6 +516,13 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 // First, so every response (HTML and JSON) carries X-Request-Id.
 
 app.use('*', requestIdMiddleware)
+
+// ── Error pages for browsers ─────────────────────────────────────────────────
+// A JSON error answered to a browser navigation on a browser-facing route (or
+// the catch-all 404) becomes the error template; API callers keep the JSON
+// (worker/middleware/html-errors.ts).
+
+app.use('*', htmlErrorsMiddleware)
 
 // ── WorkOS base (test seam) ─────────────────────────────────────────────────
 // Production leaves WORKOS_API_BASE unset (https://api.workos.com). wrangler dev
