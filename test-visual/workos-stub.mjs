@@ -136,6 +136,10 @@ const routes = [
     const state = url.searchParams.get('state') || ''
     if (!redirect) return send(res, 400, { error: 'invalid_request', error_description: 'redirect_uri is required' })
     const back = new URL(redirect)
+    // A stub must never walk a browser into production: loopback redirect_uris only.
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(back.hostname)) {
+      return send(res, 400, { error: 'invalid_request', error_description: `workos-stub only redirects to loopback hosts, not ${back.hostname}. Run wrangler dev with --local-upstream (pnpm dev:worker).` })
+    }
     if (url.searchParams.get('provider') === 'StubDeny') {
       back.searchParams.set('error', 'access_denied')
       back.searchParams.set('error_description', 'The user denied the request at the identity provider.')

@@ -83,11 +83,13 @@ describe('renderPage', () => {
   })
 
   it('extends form-action with validated origins only', () => {
-    expect(contentSecurityPolicy(['https://app.example.com', 'http://127.0.0.1:3000'])).toContain(
-      "form-action 'self' https://app.example.com http://127.0.0.1:3000;",
+    expect(contentSecurityPolicy(['https://app.example.com', 'http://127.0.0.1:3000', 'http://[::1]:57585'])).toContain(
+      "form-action 'self' https://app.example.com http://127.0.0.1:3000 http://[::1]:57585;",
     )
     // anything that isn't a bare origin is dropped, so CSP can't be injected
-    expect(contentSecurityPolicy(["https://a.com; script-src 'unsafe-inline'", 'javascript:alert(1)', 'https://b.com/path'])).toContain(
+    expect(
+      contentSecurityPolicy(["https://a.com; script-src 'unsafe-inline'", 'javascript:alert(1)', 'https://b.com/path', 'https://u:p@c.com', 'https://d.com/', ' https://e.com']),
+    ).toContain(
       "form-action 'self';",
     )
   })
@@ -102,6 +104,16 @@ describe('request IDs', () => {
     const missing = await SELF.fetch(`${BASE}/definitely-not-a-route`)
     expect(missing.status).toBe(404)
     expect(missing.headers.get('x-request-id')).toMatch(/^req_[0-9A-Za-z]{8}$/)
+  })
+
+  it('adds the header to responses with immutable headers (ASSETS, redirects)', async () => {
+    const asset = await SELF.fetch(`${BASE}/robots.txt`)
+    expect(asset.status).toBe(200)
+    expect(asset.headers.get('x-request-id')).toMatch(/^req_[0-9A-Za-z]{8}$/)
+    await asset.arrayBuffer()
+    const redirect = await SELF.fetch(`${BASE}/dash`, { redirect: 'manual' })
+    expect(redirect.status).toBe(302)
+    expect(redirect.headers.get('x-request-id')).toMatch(/^req_[0-9A-Za-z]{8}$/)
   })
 
   it('uses cf-ray when present, and never reflects anything else', async () => {
@@ -132,6 +144,23 @@ describe('hashed assets', () => {
     expect(res.status).toBe(404)
     expect(res.headers.get('cache-control')).not.toBe('public, max-age=31536000, immutable')
   })
+
+  it('only treats content-hashed names as immutable', async () => {
+    for (const path of ['/auth/ui.css', '/auth/../orgLogo.svg', '/fonts/orgLogo.svg']) {
+      const res = await SELF.fetch(`${BASE}${path}`)
+      expect(res.headers.get('cache-control'), path).not.toBe('public, max-age=31536000, immutable')
+      await res.arrayBuffer()
+    }
+  })
+
+  it('lets the fonts load cross-origin (email templates) but not the stylesheet', async () => {
+    const font = await SELF.fetch(`${BASE}/fonts/geist/Geist-Variable.woff2`)
+    expect(font.headers.get('access-control-allow-origin')).toBe('*')
+    await font.arrayBuffer()
+    const css = await SELF.fetch(`${BASE}${assets['ui.css']}`)
+    expect(css.headers.get('access-control-allow-origin')).toBeNull()
+    await css.arrayBuffer()
+  })
 })
 
 describe('WorkOS base seam', () => {
@@ -157,5 +186,9 @@ describe('WorkOS base seam', () => {
     expect(e.WORKOS_API_BASE || undefined).toBeUndefined()
     expect(e.DESIGN_GALLERY || undefined).toBeUndefined()
     expect(workosBase(e)).toBe(WORKOS_API_BASE_DEFAULT)
+    // no local feature flag leaks in either
+    for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
+      if (/^(FEATURE_|DIRECT_|LEGACY_)/.test(k)) expect(v, k).not.toBe('1')
+    }
   })
 })

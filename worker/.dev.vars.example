@@ -1,5 +1,7 @@
 # Local development only. Copy to worker/.dev.vars (gitignored); `wrangler dev` reads it.
-#   cp worker/.dev.vars.example worker/.dev.vars && cd worker && npx wrangler dev
+#   cp worker/.dev.vars.example worker/.dev.vars
+#   pnpm dev:stub      # the WorkOS stub on :8788 (STUB_PORT to change)
+#   pnpm dev:worker    # wrangler dev on :8787 (PORT to change), with --local-upstream
 # Nothing here is a real secret. Never copy these into wrangler.jsonc.
 
 # Design gallery at /__design (never set in wrangler.jsonc).

@@ -68,5 +68,9 @@ galleryRoutes.get('/__design/:slug', async (c, next) => {
   const state = c.req.query('state')
   const variant: Variant | undefined = state ? (f.states[state] ?? f.derived[state]) : f.default
   if (!variant) return c.notFound()
+  if (f.document === 'email') {
+    // Emails are inline-styled; they render through the email preview frame (phase 3), never the page CSP.
+    return c.text('email previews are not built yet', 501)
+  }
   return renderPage(c, variant.render(), { title: variant.title, scripts: f.scripts, frozen: true })
 })

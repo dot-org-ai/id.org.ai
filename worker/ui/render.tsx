@@ -23,11 +23,24 @@ export interface RenderOptions {
   headers?: Record<string, string>
 }
 
-const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/i
+/**
+ * A bare http(s) origin exactly as given (`https://app.example`, `http://[::1]:57585`),
+ * or null. Anything with a path, credentials, whitespace or other punctuation is
+ * refused, so a redirect origin can never smuggle extra CSP directives.
+ */
+export function bareOrigin(candidate: string): string | null {
+  try {
+    const u = new URL(candidate)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    return u.origin === candidate ? u.origin : null
+  } catch {
+    return null
+  }
+}
 
 /** The CSP from spec/security.md. `form-action` extends 'self' with validated origins only. */
 export function contentSecurityPolicy(formActionOrigins: readonly string[] = []): string {
-  const extra = formActionOrigins.filter((o) => ORIGIN_RE.test(o))
+  const extra = formActionOrigins.map(bareOrigin).filter((o): o is string => o !== null)
   return [
     "default-src 'none'",
     "style-src 'self'",

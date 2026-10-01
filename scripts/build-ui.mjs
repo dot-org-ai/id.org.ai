@@ -70,19 +70,28 @@ cpSync(require_('geist/dist/fonts/geist-sans/Geist-Variable.woff2'), join(OUT_FO
 cpSync(require_('geist/dist/fonts/geist-mono/GeistMono-Variable.woff2'), join(OUT_FONTS, 'GeistMono-Variable.woff2'))
 
 // ── Static files (brand marks …) ─────────────────────────────────────────────
+// worker/ui/static.json lists what the last run copied, so a renamed or
+// deleted file doesn't linger in worker/public.
 const STATIC = join(UI, 'static')
+const STATIC_LIST = join(UI, 'static.json')
+const previous = existsSync(STATIC_LIST) ? JSON.parse(readFileSync(STATIC_LIST, 'utf8')) : []
+for (const rel of previous) rmSync(join(PUBLIC, rel), { force: true })
+const copied = []
 function copyTree(dir) {
   for (const f of readdirSync(dir).sort()) {
     const p = join(dir, f)
     if (statSync(p).isDirectory()) copyTree(p)
     else if (f !== '.gitkeep') {
-      const dest = join(PUBLIC, relative(STATIC, p))
+      const rel = relative(STATIC, p)
+      const dest = join(PUBLIC, rel)
       mkdirSync(dirname(dest), { recursive: true })
       cpSync(p, dest)
+      copied.push(rel)
     }
   }
 }
 if (existsSync(STATIC)) copyTree(STATIC)
+writeFileSync(STATIC_LIST, JSON.stringify(copied, null, 2) + '\n')
 
 // ── Manifest (sorted, so the file only changes when an asset does) ───────────
 const sorted = Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a.localeCompare(b)))

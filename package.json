@@ -68,9 +68,9 @@
     "build:ui": "node scripts/build-ui.mjs",
     "build:dash": "cd ../../.studio/ui/packages/auth && npx vite build --config vite.app.config.ts --base /dash/ --outDir \"$(cd ../../../../.org.ai/id/worker/public && pwd)/dash\" --emptyOutDir",
     "dev": "tsup --watch",
-    "dev:worker": "cd worker && wrangler dev --local-upstream localhost:8787",
+    "dev:worker": "node scripts/dev-worker.mjs",
     "dev:stub": "node test-visual/workos-stub.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p worker && tsc --noEmit -p worker/ui/client && tsc --noEmit -p worker/ui/tsconfig.test.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker && tsc --noEmit -p worker/ui/client && tsc --noEmit -p worker/ui/tsconfig.test.json && tsc --noEmit -p test/tsconfig.ui.json",
     "test": "vitest run && vitest run --config vitest.node.config.ts && vitest run --config vitest.ui.config.ts",
     "test:workers": "vitest run",
     "test:node": "vitest run --config vitest.node.config.ts",
@@ -81,10 +81,11 @@
     "deploy:auth": "cd workers/auth && wrangler deploy",
     "deploy:all": "cd worker && wrangler deploy && cd ../workers/auth && wrangler deploy",
     "types": "cd worker && wrangler types",
-    "typecheck:worker": "tsc --noEmit -p worker && tsc --noEmit -p worker/ui/client && tsc --noEmit -p worker/ui/tsconfig.test.json",
+    "typecheck:worker": "tsc --noEmit -p worker && tsc --noEmit -p worker/ui/client && tsc --noEmit -p worker/ui/tsconfig.test.json && tsc --noEmit -p test/tsconfig.ui.json",
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:visual": "node scripts/test-visual.mjs",
-    "gate": "node scripts/gate.mjs"
+    "gate": "node scripts/gate.mjs",
+    "test:stub-smoke": "node test-visual/stub-smoke.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",

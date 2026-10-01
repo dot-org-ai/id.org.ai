@@ -1,20 +1,23 @@
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config'
-import { existsSync, readFileSync } from 'node:fs'
-import { unstable_readConfig } from 'wrangler'
+import { fileURLToPath } from 'node:url'
+import { unstable_getMiniflareWorkerOptions, unstable_readConfig } from 'wrangler'
 
-// The pool reuses worker/wrangler.jsonc, so wrangler also loads a developer's
-// local worker/.dev.vars (gallery on, WORKOS_API_BASE at the local stub,
-// feature flags on). Tests must not depend on it: every key it sets is put
-// back to its wrangler.jsonc value, or blanked when production has none. The
-// explicit bindings below then apply as before.
-function neutralizeDevVars(): Record<string, string> {
-  const path = './worker/.dev.vars'
-  if (!existsSync(path)) return {}
-  const prodVars = unstable_readConfig({ config: './worker/wrangler.jsonc' }).vars as Record<string, unknown>
+// The pool reuses worker/wrangler.jsonc, so wrangler also loads whatever a
+// developer has locally (worker/.dev.vars, or .env / .env.local, and
+// process.env when CLOUDFLARE_INCLUDE_PROCESS_ENV is set): the gallery on,
+// WORKOS_API_BASE at the local stub, feature flags on. Tests must not depend
+// on any of it. Every binding wrangler would add or change beyond
+// wrangler.jsonc's own vars is put back to the production value, or blanked
+// when production has none. The explicit bindings below then apply as before.
+function neutralizeLocalEnv(): Record<string, string> {
+  const config = fileURLToPath(new URL('./worker/wrangler.jsonc', import.meta.url))
+  const prod = unstable_readConfig({ config }).vars as Record<string, unknown>
+  const effective = (unstable_getMiniflareWorkerOptions(config).workerOptions.bindings ?? {}) as Record<string, unknown>
   const out: Record<string, string> = {}
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)
-    if (m) out[m[1]!] = typeof prodVars[m[1]!] === 'string' ? (prodVars[m[1]!] as string) : ''
+  for (const [key, value] of Object.entries(effective)) {
+    const prodValue = prod[key]
+    if (prodValue === undefined) out[key] = ''
+    else if (typeof prodValue === 'string' && value !== prodValue) out[key] = prodValue
   }
   return out
 }
@@ -41,7 +44,7 @@ export default defineWorkersConfig({
           // MAGIC_LINK_CLIENTS: the ids tests seed as allowlisted magic-link
           // callers (test/relying-party.test.ts, test/magic-link-callers.test.ts).
           bindings: {
-            ...neutralizeDevVars(),
+            ...neutralizeLocalEnv(),
             WORKOS_API_KEY: 'sk_test_vitest_placeholder',
             LOGIN_CONTINUE_POLICY: 'enforce',
             // DLVP is off in production (unset); the suite exercises it.

@@ -1,4 +1,3 @@
-export { WORKOS_API_BASE_DEFAULT, workosBase, configureWorkOSBase, workosUrl } from './base'
 export { buildWorkOSAuthUrl, exchangeWorkOSCode, exchangeWorkOSOrgSelection, refreshWorkOSAccessToken, encodeLoginState, decodeLoginState } from './upstream'
 export type { WorkOSUser, WorkOSAuthResult, OrgSelectionError } from './upstream'
 export { validateWorkOSApiKey } from './apikey'
