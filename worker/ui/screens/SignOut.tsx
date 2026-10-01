@@ -9,7 +9,7 @@
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Actions, Button, Card, CardFoot, CardHead, Connector, Dotted, Page, RadioCard, SingleTile, Who, type TileContent } from '../components'
-import { RadioStack } from '../components/RadioStack'
+import { RadioGroup } from '../components/RadioCard'
 
 export type SignOutScope = 'app' | 'browser' | 'everywhere'
 
@@ -59,7 +59,7 @@ export function SignOut(p: SignOutProps): JSX.Element {
           <CardHead connector={connector} title="Sign out" description="Choose how far to sign out." />
           <Dotted />
           <Who name={p.account.name} sub={p.account.email} avatar={p.account.avatar} />
-          <RadioStack legend="How far to sign out">
+          <RadioGroup legend="How far to sign out" layout="stack" hideLabel>
             {p.app ? (
               <RadioCard
                 id="signout-app"
@@ -87,7 +87,7 @@ export function SignOut(p: SignOutProps): JSX.Element {
               title="Sign out everywhere"
               description="Also signs out other browsers, CLIs and devices."
             />
-          </RadioStack>
+          </RadioGroup>
           <span class="id-sr" role="status" data-status></span>
         </Card>
       </form>

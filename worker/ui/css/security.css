@@ -11,13 +11,3 @@
   gap: 20px;
   font-size: 13px;
 }
-
-/* InlineError: the error line under the code boxes (6d wrong code). */
-.id-inline-error {
-  margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--id-accent);
-  text-align: center;
-  text-wrap: balance;
-}

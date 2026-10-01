@@ -36,13 +36,16 @@ export function RadioCard({ id, name, value, checked, title, description, accent
  * legend (accessibility.md#structure). `row` puts them side by side (consent's
  * access levels); `stack` is the vertical list.
  */
-export function RadioGroup({ legend, layout, children }: { legend: string; layout: 'row' | 'stack'; children: Child }): JSX.Element {
+export function RadioGroup({ legend, layout, hideLabel, children }: { legend: string; layout: 'row' | 'stack'; hideLabel?: boolean; children: Child }): JSX.Element {
   return (
     <fieldset class="id-fieldset">
       <legend class="id-sr">{legend}</legend>
-      <div class="id-group-label" aria-hidden="true">
-        {legend}
-      </div>
+      {/* Some screens (2b, 6b) show no group label: the legend alone names the group. */}
+      {hideLabel ? null : (
+        <div class="id-group-label" aria-hidden="true">
+          {legend}
+        </div>
+      )}
       {layout === 'row' ? <div class="id-radios--row">{children}</div> : children}
     </fieldset>
   )

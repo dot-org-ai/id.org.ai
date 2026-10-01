@@ -2,23 +2,3 @@
  * Accounts and devices group (2a, 2b, 2c, 2e, 4c, 4d): the components only
  * these screens use. Tokens only.
  */
-
-/* ── Code hint (CodeHint.tsx): the line under 4c's code boxes ───────────── */
-
-.id-codehint {
-  font-size: 13px;
-  color: var(--id-fg-3);
-  text-align: center;
-}
-.id-codehint--error {
-  color: var(--id-accent);
-}
-
-/* ── Checkbox tick (2b "Remember for …") ──────────────────────────────────
-   Workaround for ui.css: as `display: block` the tick's span is a line box and
-   the 12px check sits on its baseline, 1px above the mock. As a flex box the
-   span is exactly the icon, centred in the 16px box like the mock's bare svg.
-   Belongs in ui.css (.id-check:has(.id-hidden-input:checked) .id-check__tick). */
-.id-check:has(.id-hidden-input:checked) .id-check__tick {
-  display: flex;
-}

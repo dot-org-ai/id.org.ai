@@ -8,7 +8,7 @@ import type { JSX } from 'hono/jsx/jsx-runtime'
  */
 export function CodeHint({ id, error, children }: { id?: string; error?: boolean; children: Child }): JSX.Element {
   return (
-    <div class={error ? 'id-codehint id-codehint--error' : 'id-codehint'} id={id}>
+    <div class={error ? 'id-codehint id-codehint--error' : 'id-codehint'} id={id} role={error ? 'alert' : undefined}>
       {children}
     </div>
   )

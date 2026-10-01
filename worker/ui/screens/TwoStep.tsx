@@ -11,7 +11,7 @@
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Button, Card, CardFoot, CardHead, CodeInput, Connector, Em, Link, Page, Stack, type TileContent } from '../components'
 import { FootLinks } from '../components/FootLinks'
-import { InlineError } from '../components/InlineError'
+import { CodeHint } from '../components/CodeHint'
 
 export interface TwoStepProps {
   /** The workspace that requires two-step ("Drivly"). */
@@ -71,7 +71,9 @@ export function TwoStep(p: TwoStepProps): JSX.Element {
           {p.error ? (
             <Stack gap={10}>
               {code}
-              <InlineError id={ERROR_ID}>{p.error}</InlineError>
+              <CodeHint id={ERROR_ID} error>
+                {p.error}
+              </CodeHint>
             </Stack>
           ) : (
             code

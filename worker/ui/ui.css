@@ -527,6 +527,15 @@ details[data-x][open] > summary [data-chev-d] {
   border-color: var(--id-select);
   box-shadow: var(--id-sh-input), var(--id-ring);
 }
+/* The line under code boxes: 4c's hint, and every code screen's error (accent, role=alert). */
+.id-codehint {
+  font-size: 13px;
+  color: var(--id-fg-3);
+  text-align: center;
+}
+.id-codehint--error {
+  color: var(--id-accent);
+}
 .id-code__sep {
   color: var(--id-fg-3);
   font-size: 18px;
@@ -667,7 +676,7 @@ details[data-x][open] > summary [data-chev-d] {
   background: var(--id-fg);
 }
 .id-check:has(.id-hidden-input:checked) .id-check__tick {
-  display: block;
+  display: flex;
 }
 .id-check:has(.id-hidden-input:focus-visible) .id-check__box {
   outline: 2px solid var(--id-select);

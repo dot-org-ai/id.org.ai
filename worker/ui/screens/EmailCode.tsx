@@ -11,7 +11,7 @@
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Actions, Button, Card, CardFoot, CardHead, CodeInput, Connector, Em, FootNote, Page, Stack, type TileContent } from '../components'
-import { ErrorText } from '../components/ErrorText'
+import { CodeHint } from '../components/CodeHint'
 import { Resend, ResendForm } from '../components/Resend'
 
 export type EmailCodeError = 'wrong-code' | 'too-many-tries'
@@ -83,9 +83,9 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
           {p.error ? (
             <Stack gap={8}>
               <CodeInput length={6} label="Enter the 6-digit code" value={code} focusIndex={p.focusIndex} errorId={ERROR_ID} />
-              <ErrorText id={ERROR_ID} center>
+              <CodeHint id={ERROR_ID} error>
                 {ERRORS[p.error]}
-              </ErrorText>
+              </CodeHint>
             </Stack>
           ) : (
             <CodeInput length={6} label="Enter the 6-digit code" value={code} focusIndex={p.focusIndex} />

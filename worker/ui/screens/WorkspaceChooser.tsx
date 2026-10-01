@@ -24,7 +24,7 @@ import {
   Who,
   type TileContent,
 } from '../components'
-import { RadioList } from '../components/RadioList'
+import { RadioGroup } from '../components/RadioCard'
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'personal'
 
@@ -107,11 +107,11 @@ export function WorkspaceChooser(p: WorkspaceChooserProps): JSX.Element {
           />
           <Dotted />
           <Who name={p.account.name} sub={p.account.email} avatar={p.account.avatar} right={p.switchHref !== undefined ? <Link href={p.switchHref}>Switch</Link> : undefined} />
-          <RadioList legend="Workspace">
+          <RadioGroup legend="Workspace" layout="stack" hideLabel>
             {p.workspaces.map((w) => (
               <RadioCard id={`ws-${w.id}`} name={field} value={w.id} checked={w.id === p.selectedId} title={w.name} description={ROLE_LABEL[w.role]} />
             ))}
-          </RadioList>
+          </RadioGroup>
           {p.remember !== undefined ? (
             <Checkbox id="ws-remember" name="remember" checked={p.remember}>
               {`Remember for ${p.app.name}`}
