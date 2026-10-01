@@ -770,14 +770,21 @@ app.post('/api/session/organization', async (c) => {
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
 
-    // Validate the user is a member of the target org
+    // Validate the user is a member of the target org, and take their role there:
+    // roles and permissions belong to an organization, so the previous org's
+    // never carry over (B13.4). WorkOS permissions come back on the next sign-in
+    // or refresh scoped to this org; until then the session has none.
     const apiKey = c.env.WORKOS_API_KEY
+    let switchedRoles = payload.roles as string[] | undefined
+    let switchedPermissions = payload.permissions as string[] | undefined
     if (apiKey && payload.sub) {
       const memberships = await listUserOrgMemberships(apiKey, payload.sub)
-      const isMember = memberships.some((m) => m.organization_id === body.organizationId)
-      if (!isMember) {
+      const membership = memberships.find((m) => m.organization_id === body.organizationId)
+      if (!membership) {
         return c.json({ error: 'User is not a member of this organization' }, 403)
       }
+      switchedRoles = membership.role?.slug ? [membership.role.slug] : []
+      switchedPermissions = []
     }
 
     // Fetch org info for the new org
@@ -795,8 +802,8 @@ app.post('/api/session/organization', async (c) => {
         githubId: payload.githubId as string | undefined,
         githubUsername: payload.githubUsername as string | undefined,
         org: { id: body.organizationId, name: orgInfo?.name, domains: orgInfo?.domains?.length ? orgInfo.domains : undefined },
-        roles: payload.roles as string[] | undefined,
-        permissions: payload.permissions as string[] | undefined,
+        roles: switchedRoles,
+        permissions: switchedPermissions,
         ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
         // Switching org is not a new sign-in: keep how and when they signed in
         ...(Array.isArray(payload.amr) ? { amr: payload.amr as string[] } : {}),
@@ -822,8 +829,8 @@ app.post('/api/session/organization', async (c) => {
     const nameParts = fullName.trim().split(/\s+/)
     const firstName = nameParts[0] || null
     const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : null
-    const roles = (payload.roles as string[]) || []
-    const permissions = (payload.permissions as string[]) || []
+    const roles = switchedRoles ?? []
+    const permissions = switchedPermissions ?? []
 
     const user = {
       id: payload.sub || '',
