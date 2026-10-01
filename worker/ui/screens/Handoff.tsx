@@ -26,7 +26,7 @@ const ORG: TileContent = { kind: 'org' }
 export function Handoff(p: HandoffProps): JSX.Element {
   const title = `Signing you in to ${p.app.name}`
   return (
-    <Page>
+    <Page narrow>
       {p.redirect ? <span hidden data-js="handoff" data-target={p.target}></span> : null}
       <Card
         foot={

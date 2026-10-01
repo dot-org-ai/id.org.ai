@@ -37,7 +37,7 @@ export function SignOut(p: SignOutProps): JSX.Element {
   const scope: SignOutScope = p.scope ?? (p.app ? 'app' : 'browser')
   const connector = p.app ? <Connector left={ORG} right={p.app.tile} /> : <SingleTile content={ORG} />
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         {p.clientId ? <input type="hidden" name="client_id" value={p.clientId} /> : null}

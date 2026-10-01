@@ -45,7 +45,7 @@ const ORG: TileContent = { kind: 'org' }
 
 export function AccountChooser(p: AccountChooserProps): JSX.Element {
   return (
-    <Page>
+    <Page narrow>
       <Card
         foot={
           <CardFoot>

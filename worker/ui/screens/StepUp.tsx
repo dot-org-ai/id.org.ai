@@ -62,7 +62,7 @@ function Foot({ factors }: { factors: StepUpProps['factors'] }): JSX.Element {
 
 export function StepUp(p: StepUpProps): JSX.Element {
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         <Card

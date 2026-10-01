@@ -52,7 +52,7 @@ const ORG: TileContent = { kind: 'org' }
 export function ProviderFallback(p: ProviderFallbackProps): JSX.Element {
   const name = PROVIDER_NAMES[p.provider]
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         {p.continueUrl ? <input type="hidden" name="continue" value={p.continueUrl} /> : null}

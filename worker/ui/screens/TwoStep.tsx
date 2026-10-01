@@ -41,7 +41,7 @@ export function TwoStep(p: TwoStepProps): JSX.Element {
   const links = p.passkeyHref || p.recoveryHref
   const code = <CodeInput length={6} value={p.value} focusIndex={p.focusIndex} label="Enter the 6-digit code from your authenticator app" errorId={p.error ? ERROR_ID : undefined} />
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         <Card

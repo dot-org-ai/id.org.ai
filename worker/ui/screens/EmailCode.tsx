@@ -51,7 +51,7 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
   // A wrong code clears the boxes; the script focuses the first one.
   const code = p.error ? undefined : p.code
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         <Card

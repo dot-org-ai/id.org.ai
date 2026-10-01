@@ -123,7 +123,7 @@ function NewWorkspace(p: NewWorkspaceProps): JSX.Element {
 
 export function FirstRun(p: FirstRunProps): JSX.Element {
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         {p.variant === 'new-workspace' ? <NewWorkspace {...p} /> : <Identity {...p} />}

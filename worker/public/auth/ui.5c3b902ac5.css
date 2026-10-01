@@ -229,7 +229,7 @@ details[data-x][open] > summary [data-chev-d] {
   flex-direction: column;
   gap: 0;
 }
-/* Sign-in (1a, 1g): narrower than the mocks' 560px, by owner direction (2026-10-01). The card reads the same variable. */
+/* Sign-in (1a–1g), accounts (2a–2c, 2e) and security (6a–6d): narrower than the mocks’ 560px, by owner direction (2026-10-01). The card reads the same variable. */
 .id-column--narrow {
   --id-column: 440px;
 }

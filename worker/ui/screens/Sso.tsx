@@ -28,7 +28,7 @@ const ORG: TileContent = { kind: 'org' }
 
 export function Sso(p: SsoProps): JSX.Element {
   return (
-    <Page>
+    <Page narrow>
       <Card
         foot={
           <CardFoot>

@@ -23,7 +23,7 @@ const KEY: TileContent = { kind: 'icon', icon: 'key' }
 
 export function AddPasskey(p: AddPasskeyProps): JSX.Element {
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         <Card

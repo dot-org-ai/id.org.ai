@@ -45,7 +45,7 @@ export function LinkAccount(p: LinkAccountProps): JSX.Element {
   const existing = PROVIDER_NAMES[p.existingProvider]
   const added = PROVIDER_NAMES[p.newProvider]
   return (
-    <Page>
+    <Page narrow>
       <Card
         foot={
           <CardFoot>

@@ -71,7 +71,7 @@ export function WorkspaceChooser(p: WorkspaceChooserProps): JSX.Element {
     </Button>
   )
   return (
-    <Page>
+    <Page narrow>
       <form class="id-form" method="post" action={p.mode.action} data-js="submit">
         <input type="hidden" name="csrf" value={p.csrf} />
         {p.mode.kind === 'sign-in' ? (
