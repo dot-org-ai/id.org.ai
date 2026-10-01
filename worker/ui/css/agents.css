@@ -1,0 +1,31 @@
+/* ── Agents (5a–5d) ─────────────────────────────────────────────────────── */
+
+/* 5a: spend limit and expiry side by side, one column on phones. */
+.id-agent-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+}
+
+/*
+ * 5c: each stat is a column with a 2px gap between the number and its label
+ * (components.md#stats-5c, the mock). Stats renders the cell as a bare <div>
+ * that ui.css doesn't style yet; this belongs next to .id-stats in ui.css.
+ */
+.id-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/*
+ * 5c's "Claim into" select sits at a half-pixel y (the card is centred). The
+ * mock lays its select text out once, with the fallback font's 17px line box,
+ * and Chrome doesn't re-lay a <select>'s text when Geist swaps in (forcing a
+ * relayout moves the mock's text 1px and matches ours). An explicit 17px line
+ * box reproduces the mock; at whole-pixel positions it renders the same as
+ * Geist's own 18px. See the agents report for the global form of this fix.
+ */
+.id-claim-into .id-select {
+  line-height: 17px;
+}
