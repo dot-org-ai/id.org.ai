@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4a · CLI login (terminal)</title>
+<style>
+@font-face{font-family:'Geist';src:url(../fonts/Geist-Variable.woff2) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:'Geist Mono';src:url(../fonts/GeistMono-Variable.woff2) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
+body{margin:0;background:oklch(0.155 0.004 286);text-rendering:optimizeLegibility;-moz-osx-font-smoothing:grayscale}
+a{color:oklch(0.78 0.006 286);transition:color .15s}a:hover{color:oklch(0.965 0.002 286)}
+[data-h]{transition:filter .15s,background-color .15s,border-color .15s,transform .1s}
+[data-h="1"]:hover{filter:brightness(1.14)}[data-h="p"]:hover{filter:brightness(0.93)}[data-h="g"]:hover{background-color:oklch(1 0 0 / 0.05)}
+[data-h]:active{transform:scale(0.985)}
+:focus-visible{outline:2px solid oklch(1 0 0 / 0.55);outline-offset:2px}
+input::placeholder,textarea::placeholder{color:oklch(0.64 0.008 286)}
+input:focus,select:focus,textarea:focus{border-color:oklch(1 0 0 / 0.55)!important}
+summary::marker{color:oklch(0.64 0.008 286)}
+details[data-x]>summary{list-style:none}details[data-x]>summary::-webkit-details-marker{display:none}
+[data-chev],[data-chev-d]{transition:transform .2s}details[data-x][open]>summary [data-chev]{transform:rotate(90deg)}details[data-x][open]>summary [data-chev-d]{transform:rotate(180deg)}
+@keyframes idwave{0%{opacity:.3;transform:scale(1);animation-timing-function:cubic-bezier(.33,0,.15,1)}14%{opacity:.85;transform:scale(1.2);animation-timing-function:cubic-bezier(.45,0,.25,1)}45%,100%{opacity:.3;transform:scale(1)}}
+@keyframes idring{0%{transform:scale(1);opacity:.45}50%,100%{transform:scale(1.25);opacity:0}}
+@keyframes idmorph{from{transform:scale(1);opacity:1}to{transform:scale(0);opacity:0}}
+@keyframes idbreak{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes idcheck{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes idfadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes idseqgate{0%,60.00%{opacity:1}60.25%,98.75%{opacity:0}100%{opacity:1}}
+@keyframes idseqSwave{0%,61.88%{opacity:1}62.50%,95.00%{opacity:0}95.25%,100%{opacity:1}}
+@keyframes idseqSstill{0%,61.88%{opacity:0}62.50%,95.00%{opacity:0.3}95.25%,100%{opacity:0}}
+@keyframes idseqFwaveR{0%,49.75%{opacity:1}50.00%,95.00%{opacity:0}95.25%,100%{opacity:1}}
+@keyframes idseqFstillR{0%,49.75%{opacity:0}50.00%{opacity:0.3}57.50%{opacity:0.12}91.25%{opacity:0.12}95.00%{opacity:0.3}95.25%,100%{opacity:0}}
+@keyframes idseqSmid{0%,61.88%{opacity:1;transform:scale(1);animation-timing-function:cubic-bezier(0.5, 0, 0.75, 0)}64.38%,91.50%{opacity:0;transform:scale(0);animation-timing-function:cubic-bezier(0.22, 1, 0.36, 1)}95.25%,100%{opacity:1;transform:scale(1)}}
+@keyframes idseqFmid{0%,57.75%{opacity:1;transform:scale(1);animation-timing-function:cubic-bezier(0.5, 0, 0.75, 0)}60.25%,91.50%{opacity:0;transform:scale(0);animation-timing-function:cubic-bezier(0.22, 1, 0.36, 1)}95.25%,100%{opacity:1;transform:scale(1)}}
+@keyframes idseqSglyph{0%,63.12%{opacity:0;transform:scale(0.4);animation-timing-function:cubic-bezier(0.22, 1, 0.36, 1)}66.88%{opacity:1;transform:scale(1)}90.00%{opacity:1;transform:scale(1);animation-timing-function:cubic-bezier(0.5, 0, 0.75, 0)}92.50%,100%{opacity:0;transform:scale(0.4)}}
+@keyframes idseqFglyph{0%,59.00%{opacity:0;transform:scale(0.4);animation-timing-function:cubic-bezier(0.22, 1, 0.36, 1)}62.75%{opacity:1;transform:scale(1)}90.00%{opacity:1;transform:scale(1);animation-timing-function:cubic-bezier(0.5, 0, 0.75, 0)}92.50%,100%{opacity:0;transform:scale(0.4)}}
+@keyframes idseqScheck{0%,63.38%{stroke-dashoffset:1;animation-timing-function:cubic-bezier(0.65, 0, 0.35, 1)}67.12%,100%{stroke-dashoffset:0}}
+@keyframes idplayhead{from{transform:translateX(0)}to{transform:translateX(560px)}}
+@media (prefers-reduced-motion: reduce){[data-m]{animation:none!important}}
+@media (max-width: 480px){[data-card]{align-self:stretch!important;width:auto!important;max-width:none!important;margin:0 -20px!important;border-radius:0!important;border-left:0!important;border-right:0!important;box-shadow:none!important}[data-card-body]{padding:28px 20px 24px!important}[data-actions]{grid-template-columns:1fr!important}[data-actions]>:last-child{order:-1}[data-actions]>*{height:48px!important;min-height:48px!important}}
+[data-copy]{transition:color .15s,background-color .15s}[data-copy]:hover{color:oklch(0.965 0.002 286)!important;background-color:oklch(1 0 0 / 0.06)!important}
+</style>
+<style>x-if{display:contents}x-if[hidden]{display:none!important}</style>
+</head>
+<body>
+<div style="width: 800px; height: 600px; box-sizing: border-box; padding: 40px; background: oklch(0.155 0.004 286); font-family: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"><div style="height: 100%; box-sizing: border-box; border-radius: 12px; border: 1px solid oklch(1 0 0 / 0.14); background: oklch(0.13 0.004 286); box-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.05), 0 2px 4px 0 oklch(0 0 0 / 0.4), 0 32px 80px -24px oklch(0 0 0 / 0.8); display: flex; flex-direction: column; overflow: hidden"><div style="height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid oklch(1 0 0 / 0.08)"><span style="width: 10px; height: 10px; border-radius: 99px; background: oklch(0.225 0.006 286)"></span><span style="width: 10px; height: 10px; border-radius: 99px; background: oklch(0.225 0.006 286)"></span><span style="width: 10px; height: 10px; border-radius: 99px; background: oklch(0.225 0.006 286)"></span><span style="flex-grow: 1; text-align: center; font-size: 12px; color: oklch(0.64 0.008 286); margin-right: 46px">bryant — zsh</span></div><div style="padding: 18px 20px; font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 21px; color: oklch(0.78 0.006 286)"><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">$ </span><span style="color: oklch(0.965 0.002 286); font-weight: 400">npx auto.dev login</span></div><div style="white-space: pre; min-height: 21px"></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.965 0.002 286); font-weight: 500">  auto.dev</span><span style="color: oklch(0.64 0.008 286); font-weight: 400">  ·  sign in with id.org.ai</span></div><div style="white-space: pre; min-height: 21px"></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">  Code     </span><span style="color: oklch(0.965 0.002 286); font-weight: 500">WDJB-MJHT</span></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">  Confirm  </span><span style="color: oklch(0.78 0.006 286); font-weight: 400">https://id.org.ai/device?code=WDJB-MJHT</span></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">           Opened in your browser.  </span><span style="color: oklch(0.965 0.002 286); font-weight: 400">c</span><span style="color: oklch(0.64 0.008 286); font-weight: 400"> copy link   </span><span style="color: oklch(0.965 0.002 286); font-weight: 400">o</span><span style="color: oklch(0.64 0.008 286); font-weight: 400"> open again</span></div><div style="white-space: pre; min-height: 21px"></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.78 0.006 286); font-weight: 400">  ⠋ </span><span style="color: oklch(0.78 0.006 286); font-weight: 400">Waiting for you to confirm in the browser</span><span style="color: oklch(0.64 0.008 286); font-weight: 400">  ·  expires in 29:52</span></div><div style="white-space: pre; min-height: 21px"></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.965 0.002 286); font-weight: 400">  ✓ </span><span style="color: oklch(0.965 0.002 286); font-weight: 400">Signed in as Bryant Skarda </span><span style="color: oklch(0.64 0.008 286); font-weight: 400">&lt;bryant@driv.ly&gt;</span></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">    Workspace  </span><span style="color: oklch(0.78 0.006 286); font-weight: 400">Drivly</span></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">    Stored in  </span><span style="color: oklch(0.78 0.006 286); font-weight: 400">macOS Keychain · auto.dev</span></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">    Switch     </span><span style="color: oklch(0.78 0.006 286); font-weight: 400">auto.dev login --account</span></div><div style="white-space: pre; min-height: 21px"></div><div style="white-space: pre; min-height: 21px"><span style="color: oklch(0.64 0.008 286); font-weight: 400">$ </span><span style="display: inline-block; width: 8px; height: 16px; background: oklch(0.78 0.006 286); vertical-align: -3px"></span></div></div></div></div>
+
+</body>
+</html>
