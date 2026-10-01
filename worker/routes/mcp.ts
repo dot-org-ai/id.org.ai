@@ -42,6 +42,7 @@ function unauthorizedChallenge(c: any, id?: string | number) {
 // ── Null Stub ───────────────────────────────────────────────────────────────
 // A safe no-op stub for L0 (anonymous) requests that don't resolve a DO.
 
+// @ts-expect-error nullStub predates 17 IdentityStub methods (takeOnce, consumeBudget, registerAgent, …); L0 never calls them. Follow-up in docs/product-update/PROGRESS.md.
 export const nullStub: IdentityStub = {
   async getIdentity() {
     return null

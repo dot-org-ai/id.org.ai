@@ -763,7 +763,8 @@ app.post('/vault/resolve', async (c) => {
   if (gate instanceof Response) return gate
   const { apiKey, tenant } = gate
 
-  const body = await c.req.json<{ name?: string; names?: string[]; template?: string }>().catch(() => ({}))
+  type ResolveBody = { name?: string; names?: string[]; template?: string }
+  const body = await c.req.json<ResolveBody>().catch((): ResolveBody => ({}))
 
   // Single secret resolution — scoped to the caller's tenant.
   if (body.name) {

@@ -1,0 +1,25 @@
+{
+  // Typechecks the Cloudflare Worker (and the src/** it imports).
+  // Runtime types come only from the wrangler-generated worker-configuration.d.ts;
+  // @cloudflare/workers-types is deliberately not listed, or the declarations duplicate.
+  // Client scripts (ui/client/**) and the UI tests (ui/**/*.test.ts[x]) have their own
+  // tsconfigs with the DOM lib.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["ui/client/**", "ui/**/*.test.ts", "ui/**/*.test.tsx", "public/**", "node_modules"]
+}

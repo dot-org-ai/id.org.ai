@@ -47,7 +47,7 @@
  * capabilities structured grants instead of flat strings.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import type { AgentMode } from '../../src/sdk/types'
@@ -126,7 +126,7 @@ app.get('/.well-known/agent-configuration', (c) => {
 
 // ── Auth helper ───────────────────────────────────────────────────────────
 
-function requireTenant(c: Parameters<Parameters<typeof app.post>[1]>[0]) {
+function requireTenant(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
     return null
