@@ -4,10 +4,16 @@
  * A workspace admin opens an access request (sent from 7c) and approves it for
  * everyone in the workspace or the requester only, or declines it. The form
  * posts to POST /admin/requests/:id (scope=everyone|requester,
- * decision=approve|decline); both notify the requester (B11). The person stays
- * on id.org.ai, so the server answers with the result in place: `approved`
- * (connector ok) or `declined` (connector fail). The connector runs app →
- * workspace (components.md#connector).
+ * decision=approve|decline); both notify the requester (B11). The connector
+ * runs app → workspace (components.md#connector).
+ *
+ * The admin stays on id.org.ai (motion.md#where-the-person-goes-next), so the
+ * form is a fetch-form: the live `pending` page carries the approved and
+ * declined bodies and feet in <template data-state> elements, and
+ * lib/fetch-form.ts swaps them in. Approve goes `done`, then `approved` 2150ms
+ * after the server's OK; Decline is a deny: `broken` at once, then `declined`
+ * once 1820ms have passed and the server agreed. Without JS the form posts and
+ * the server renders the result directly through `state`.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
@@ -31,16 +37,18 @@ import {
   Who,
   Page,
   type ConnectorState,
+  type KV,
   type PermissionItem,
   type SourceRowProps,
   type TileContent,
 } from '../components'
+import { firstName } from './Consent'
 
 export type AdminApproveState = 'pending' | 'approved' | 'declined'
 export type ApprovalScope = 'everyone' | 'requester'
 
 export interface AdminApproveProps {
-  /** `pending` is the request; `approved` and `declined` are the results rendered in place. */
+  /** `pending` is the request; `approved` and `declined` are the results the server renders after a no-JS post. */
   state?: AdminApproveState
   requester: { name: string; firstName?: string }
   client: { name: string; tile: TileContent }
@@ -48,7 +56,7 @@ export interface AdminApproveProps {
   /** The requester's note, shown quoted. */
   note?: string
   permissions: PermissionItem[]
-  /** Approve for everyone in the workspace, or the requester only (the default). */
+  /** Approve for everyone in the workspace, or the requester only (the default). On `approved`, the scope that was approved. */
   scope: ApprovalScope
   /** The signed-in admin (who row, no Switch). */
   admin: { name: string; email: string; avatar?: string }
@@ -63,12 +71,8 @@ export interface AdminApproveProps {
   csrf: string
 }
 
-function firstName(r: AdminApproveProps['requester']): string {
-  return r.firstName ?? r.name.trim().split(/\s+/)[0] ?? r.name
-}
-
-function scopeLabel(p: AdminApproveProps): string {
-  return p.scope === 'everyone' ? `Everyone in ${p.workspace.name}` : `${firstName(p.requester)} only`
+function scopeLabel(p: AdminApproveProps, scope: ApprovalScope): string {
+  return scope === 'everyone' ? `Everyone in ${p.workspace.name}` : `${firstName(p.requester)} only`
 }
 
 function Head({ p, state, title, description }: { p: AdminApproveProps; state: ConnectorState; title: string; description: JSX.Element }): JSX.Element {
@@ -111,8 +115,18 @@ function RequestBody({ p }: { p: AdminApproveProps }): JSX.Element {
   )
 }
 
-function ApprovedBody({ p }: { p: AdminApproveProps }): JSX.Element {
+/**
+ * The approved result. The template is rendered before the admin picks a
+ * scope, so without `scope` it says only what is true either way; the no-JS
+ * result page knows the scope that was posted and says who it is for.
+ */
+function ApprovedBody({ p, scope }: { p: AdminApproveProps; scope?: ApprovalScope }): JSX.Element {
   const ws = p.workspace.name
+  const rows: KV[] = [
+    { k: 'App', v: p.client.name },
+    { k: 'Workspace', v: ws },
+  ]
+  if (scope) rows.push({ k: 'Approved for', v: scopeLabel(p, scope) })
   return (
     <Stack gap={22}>
       <Head
@@ -123,19 +137,15 @@ function ApprovedBody({ p }: { p: AdminApproveProps }): JSX.Element {
           <>
             {'We let '}
             <Em>{p.requester.name}</Em>
-            {p.scope === 'everyone' ? ` know. Anyone in ${ws} can connect it now.` : ' know they can connect it now.'}
+            {scope === 'everyone' ? ` know. Anyone in ${ws} can connect it now.` : ' know they can connect it now.'}
           </>
         }
       />
-      <Well>
-        <KeyValues
-          items={[
-            { k: 'App', v: p.client.name },
-            { k: 'Workspace', v: ws },
-            { k: 'Approved for', v: scopeLabel(p) },
-          ]}
-        />
-      </Well>
+      <Stack gap={22} class="id-fade">
+        <Well>
+          <KeyValues items={rows} />
+        </Well>
+      </Stack>
     </Stack>
   )
 }
@@ -162,24 +172,22 @@ function DeclinedBody({ p }: { p: AdminApproveProps }): JSX.Element {
 function RequestFoot({ p }: { p: AdminApproveProps }): JSX.Element {
   const busy = !!p.busy
   return (
-    <CardFoot>
-      <Actions>
-        <Button variant="secondary" block name="decision" value="decline" disabled={busy} on="decline">
-          Decline
-        </Button>
-        <Button variant="primary" block name="decision" value="approve" busy={busy} busyLabel="Approving…" on="approve">
-          Approve
-        </Button>
-      </Actions>
-    </CardFoot>
+    <Actions>
+      <Button variant="secondary" block name="decision" value="decline" disabled={busy} on="decline" deny done="declined">
+        Decline
+      </Button>
+      <Button variant="primary" block name="decision" value="approve" busy={busy} busyLabel="Approving…" on="approve" done="approved">
+        Approve
+      </Button>
+    </Actions>
   )
 }
 
 function ResultFoot(): JSX.Element {
   return (
-    <CardFoot>
+    <div class="id-fade">
       <FootText>You can close this tab.</FootText>
-    </CardFoot>
+    </div>
   )
 }
 
@@ -188,8 +196,14 @@ export function AdminApprove(p: AdminApproveProps): JSX.Element {
   if (state !== 'pending') {
     return (
       <Page>
-        <Card foot={<ResultFoot />}>
-          {state === 'approved' ? <ApprovedBody p={p} /> : <DeclinedBody p={p} />}
+        <Card
+          foot={
+            <CardFoot>
+              <ResultFoot />
+            </CardFoot>
+          }
+        >
+          {state === 'approved' ? <ApprovedBody p={p} scope={p.scope} /> : <DeclinedBody p={p} />}
           <span class="id-sr" role="status" data-status>
             {state === 'approved' ? 'Approved' : 'Declined'}
           </span>
@@ -199,10 +213,32 @@ export function AdminApprove(p: AdminApproveProps): JSX.Element {
   }
   return (
     <Page>
-      <form class="id-form" method="post" action={p.action} data-js="submit">
+      <form class="id-form" method="post" action={p.action} data-js="fetch-form">
         <input type="hidden" name="csrf" value={p.csrf} />
-        <Card foot={<RequestFoot p={p} />}>
-          <RequestBody p={p} />
+        <Card
+          foot={
+            <CardFoot>
+              <div data-region="foot">
+                <RequestFoot p={p} />
+              </div>
+              <template data-state="approved">
+                <ResultFoot />
+              </template>
+              <template data-state="declined">
+                <ResultFoot />
+              </template>
+            </CardFoot>
+          }
+        >
+          <div data-region="body">
+            <RequestBody p={p} />
+          </div>
+          <template data-state="approved">
+            <ApprovedBody p={p} />
+          </template>
+          <template data-state="declined">
+            <DeclinedBody p={p} />
+          </template>
           <span class="id-sr" role="status" data-status>
             {p.busy ? 'Approving…' : ''}
           </span>
