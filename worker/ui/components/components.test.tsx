@@ -50,9 +50,18 @@ describe('every component', () => {
 
   it('component files contain no colour literals (everything comes from tokens)', () => {
     for (const f of readdirSync('worker/ui/components')) {
+      if (f === 'ProviderMark.tsx') continue // third-party brand artwork, checked below
       const src = readFileSync(`worker/ui/components/${f}`, 'utf8')
       expect(src, f).not.toMatch(/oklch\(|rgba?\(|#[0-9a-f]{6}\b/i)
     }
+  })
+
+  it('ProviderMark’s only colour literals are Google’s and Microsoft’s brand colours', () => {
+    const src = readFileSync('worker/ui/components/ProviderMark.tsx', 'utf8')
+    expect(src).not.toMatch(/oklch\(|rgba?\(/i)
+    // Written without '#' so this file passes the guard above.
+    const hexes = [...new Set((src.match(/#[0-9a-f]{6}\b/gi) ?? []).map((h) => h.slice(1).toUpperCase()))].sort()
+    expect(hexes).toEqual(['00A4EF', '34A853', '4285F4', '7FBA00', 'EA4335', 'F25022', 'FBBC05', 'FFB900'])
   })
 })
 

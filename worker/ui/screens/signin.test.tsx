@@ -120,6 +120,26 @@ describe('1a sign in', () => {
     expect([...webauthn.querySelectorAll('a')].find((a) => text(a) === 'Sign in with a passkey')?.getAttribute('data-on')).toBe('passkey')
   })
 
+  it('each provider shows its official mark, hidden from assistive tech (the name is the label)', async () => {
+    const doc = await dom(<SignIn {...signIn} />)
+    const providers = [...doc.querySelectorAll('.id-providers a')]
+    expect(providers.map((a) => a.querySelector('svg.id-provider__mark')?.getAttribute('data-provider'))).toEqual(['github', 'google', 'microsoft', 'apple'])
+    for (const a of providers) {
+      const mark = a.querySelector('svg.id-provider__mark')!
+      expect(mark.getAttribute('aria-hidden')).toBe('true')
+      expect(mark.getAttribute('width')).toBe('18')
+      expect(mark.getAttribute('height')).toBe('18')
+    }
+    expect(doc.querySelector('.id-provider__slot')).toBeNull()
+  })
+
+  it('sign-in uses the narrow column (owner direction, 2026-10-01)', async () => {
+    const doc = await dom(<SignIn {...signIn} />)
+    expect(doc.querySelector('.id-column')?.classList.contains('id-column--narrow')).toBe(true)
+    const branded = await dom(<SignIn {...signIn} brand={{ name: 'headless.ly', monogram: 'h' }} />)
+    expect(branded.querySelector('.id-column')?.classList.contains('id-column--narrow')).toBe(true)
+  })
+
   it('an email error is linked to the field and marks it invalid', async () => {
     const doc = await dom(<SignIn {...signIn} email="bryant@driv" emailError="Enter a full email address." />)
     const input = doc.querySelector('input[name="email"]')!
@@ -342,7 +362,9 @@ describe('1e link account', () => {
       ['Use a different email', '/login'],
       ['Continue with GitHub', '/login?provider=GitHubOAuth&link=flw_1'],
     ])
-    expect(actions[1]!.querySelector('.id-provider__slot')?.getAttribute('aria-hidden')).toBe('true')
+    const mark = actions[1]!.querySelector('svg.id-provider__mark')
+    expect(mark?.getAttribute('data-provider')).toBe('github')
+    expect(mark?.getAttribute('aria-hidden')).toBe('true')
     expect(text(doc.querySelector('.id-note'))).toBe('We only link accounts after you prove you own both. Nothing is merged until then.')
   })
 

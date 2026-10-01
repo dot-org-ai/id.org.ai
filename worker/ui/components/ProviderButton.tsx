@@ -1,5 +1,6 @@
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Pill } from './Pill'
+import { ProviderMark } from './ProviderMark'
 
 export type Provider = 'github' | 'google' | 'microsoft' | 'apple'
 
@@ -11,14 +12,14 @@ export const PROVIDER_NAMES: Record<Provider, string> = {
 }
 
 /**
- * A sign-in provider (components.md#provider-button). The official marks are an
- * owner step (logos.md): until they're supplied, the dashed 18px slot the mocks
- * show marks where each goes.
+ * A sign-in provider (components.md#provider-button): the provider's 18px mark
+ * (ProviderMark, where the mocks show a dashed slot), its name, and the "Last
+ * used" pill.
  */
 export function ProviderButton({ provider, href, lastUsed }: { provider: Provider; href: string; lastUsed?: boolean }): JSX.Element {
   return (
     <a class="id-btn id-btn--secondary id-btn--provider" href={href}>
-      <span class="id-provider__slot" aria-hidden="true" title={`${PROVIDER_NAMES[provider]} mark`}></span>
+      <ProviderMark provider={provider} />
       <span class="id-provider__name">{PROVIDER_NAMES[provider]}</span>
       {lastUsed ? <Pill>Last used</Pill> : null}
     </a>

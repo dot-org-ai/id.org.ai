@@ -102,7 +102,7 @@ function Head({ p }: { p: SignInProps }): JSX.Element {
 export function SignIn(p: SignInProps): JSX.Element {
   const emailId = 'email'
   return (
-    <Page branded={p.brand}>
+    <Page branded={p.brand} narrow>
       <Card
         foot={
           <CardFoot>

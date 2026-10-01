@@ -15,15 +15,17 @@ export interface PageProps {
   headerRight?: Child
   /** Pin the card to the top so its top edge stays still while the body changes height (4b). */
   pinTop?: boolean
+  /** The 440px column instead of 560px (sign-in, 1a and 1g: owner direction, 2026-10-01). */
+  narrow?: boolean
 }
 
 /** The page shell every auth screen uses: header, centred 560px column, footer. */
-export function Page({ children, branded, headerRight, pinTop }: PageProps): JSX.Element {
+export function Page({ children, branded, headerRight, pinTop, narrow }: PageProps): JSX.Element {
   return (
     <div class="id-page">
       <Header brand={branded ? <AppBrand {...branded} /> : undefined} right={headerRight} />
       <main class={pinTop ? 'id-main id-main--top' : 'id-main'}>
-        <div class="id-column">{children}</div>
+        <div class={narrow ? 'id-column id-column--narrow' : 'id-column'}>{children}</div>
       </main>
       <Footer variant={branded ? 'secured' : 'links'} />
     </div>

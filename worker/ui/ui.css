@@ -9,7 +9,6 @@
    Radii the mocks use that tokens.css (kept identical to the spec) doesn't name. */
 
 :root {
-  --id-r-slot: 4px; /* provider mark slot */
   --id-r-check: 5px; /* checkbox */
   --id-r-step: 6px; /* step number box */
   --id-r-tile-sm: 7px; /* 28px branded header tile */
@@ -134,6 +133,10 @@ details[data-x][open] > summary [data-chev-d] {
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+/* Sign-in (1a, 1g): narrower than the mocks' 560px, by owner direction (2026-10-01). The card reads the same variable. */
+.id-column--narrow {
+  --id-column: 440px;
 }
 
 .id-footer {
@@ -371,9 +374,10 @@ details[data-x][open] > summary [data-chev-d] {
 
 /* ── Provider button (components.md#provider-button) ────────────────────── */
 
+/* One provider per row (owner direction, 2026-10-01; the mocks show a 2×2 grid). */
 .id-providers {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 .id-btn--provider {
@@ -383,15 +387,6 @@ details[data-x][open] > summary [data-chev-d] {
 .id-provider__name {
   flex-grow: 1;
   text-align: left;
-}
-/* Where each provider's official mark goes (logos.md); 18px. */
-.id-provider__slot {
-  width: 18px;
-  height: 18px;
-  box-sizing: border-box;
-  border-radius: var(--id-r-slot);
-  border: 1px dashed var(--id-fg-3);
-  flex-shrink: 0;
 }
 .id-provider__mark {
   width: 18px;

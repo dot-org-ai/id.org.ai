@@ -66,7 +66,7 @@ Compared by subject (`git log HEAD..origin/<b>`), since most were cherry-picked 
 
 ## Owner steps (things only a person can do)
 - WorkOS dashboard: switch off WorkOS email sending for Magic Auth and invitations, when D4 is decided (phase 12).
-- Provide the official provider marks and the first-party brand marks (`spec/logos.md`).
+- Provider marks: the GitHub, Google, Microsoft and Apple marks from `worker/views/provider-picker.ts` now render in the provider buttons (`ProviderMark`). Check each against the provider's current brand guidelines, and provide the first-party brand marks (`spec/logos.md`).
 - Decide D3, D4, D5, D8 and D10 (`DECISIONS.md`).
 - WorkOS dashboard: enable Microsoft and Apple as direct OAuth providers, then set `DIRECT_MICROSOFT_APPLE=1` (phase 7).
 - Confirm which estate workers call `/admin-portal`, `/fga/*` and `/pipes/*` before relying on `LEGACY_OPEN_WORKOS_ROUTES=0` in prod (phase 4).
@@ -74,7 +74,7 @@ Compared by subject (`git log HEAD..origin/<b>`), since most were cherry-picked 
 - Replace the placeholder Privacy, Terms and Status URLs in `worker/ui/links.ts` with the real pages (phase 1).
 
 ## Design questions (spec or mock gaps found while building)
-—
+- **Owner design change, 2026-10-01 (1a/1g sign-in):** Bryant asked for a narrower card, providers stacked one per row, and real provider marks. Built: sign-in uses a 440px column (`Page narrow`), `.id-providers` is one column, and `ProviderMark` replaces the dashed slot on 1a, 1g and 1e. The mocks were not edited, so 6 cases now differ from them by design: 1a, 1e and 1g at desktop and phone. The other 66 are at 0 px. **Open:** whether to update those mocks to the new design, or record the 6 cases as approved deviations. The gate stays at 66/72 until that's decided.
 
 ## Blocked
 —
