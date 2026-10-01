@@ -32,7 +32,7 @@ export const deviceFixtures: FixtureGroup = {
   '4b-device-confirm': defineFixture({
     screen: DeviceConfirm,
     title,
-    scripts: ['device-confirm.js'],
+    scripts: ['fetch-form.js'],
     default: confirm,
     states: {
       connecting: { ...confirm, state: 'connecting' },

@@ -10,6 +10,9 @@ export interface StatusItem {
 export function StatusList({ items }: { items: StatusItem[] }): JSX.Element {
   return (
     <div aria-live="polite" data-js="status-list">
+      <span class="id-sr" data-status-text>
+        {items.find((i) => i.current)?.title ?? ''}
+      </span>
       {items.map((it) => (
         <div class={it.current ? 'id-status id-status--current' : 'id-status'}>
           <span class="id-status__dot"></span>

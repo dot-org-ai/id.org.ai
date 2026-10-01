@@ -13,7 +13,8 @@ import { findChromium } from '../scripts/chromium.mjs'
 const argv = process.argv.slice(2)
 const base = (argv.includes('--base') ? argv[argv.indexOf('--base') + 1] : process.env.VISUAL_BASE || 'http://localhost:8787').replace(/\/$/, '')
 const PAGES = ['/__design/4b-device-confirm?state=connecting', '/__design/4b-device-confirm?state=verdict', '/__design/4b-device-confirm?state=cancelling', '/__design/4b-device-confirm?state=signed', '/__design/components']
-const SELECTOR = '.id-conn, .id-conn *, .id-fade, .id-status__dot'
+// Every element: anything animated under reduced motion fails, not just the nodes the CSS block names.
+const SELECTOR = '*'
 
 const executablePath = findChromium()
 const browser = await chromium.launch(executablePath ? { executablePath } : {})

@@ -2,7 +2,7 @@
  * 4b · Confirm device code (docs/product-update/spec/screens.md#4b).
  *
  * The live page renders the `idle` form; the signed and cancelled bodies and
- * feet ride along in <template data-state> elements, and device-confirm.ts
+ * feet ride along in <template data-state> elements, and fetch-form.ts
  * swaps them in on the state machine in spec/motion.md. The gallery renders
  * each state directly through `state`.
  */
@@ -115,10 +115,10 @@ function FormFoot({ mode }: { mode: FootMode }): JSX.Element {
   return (
     <Stack gap={14}>
       <Actions>
-        <Button variant="secondary" block name="decision" value="deny" disabled={mode !== 'ready'} on="cancel">
+        <Button variant="secondary" block name="decision" value="deny" disabled={mode !== 'ready'} deny done="cancelled">
           Cancel
         </Button>
-        <Button variant="primary" block name="decision" value="approve" busy={mode === 'busy'} disabled={mode === 'stopped'} busyLabel="Confirming…" on="confirm">
+        <Button variant="primary" block name="decision" value="approve" busy={mode === 'busy'} disabled={mode === 'stopped'} busyLabel="Confirming…" done="signed">
           Confirm
         </Button>
       </Actions>
@@ -168,7 +168,7 @@ export function DeviceConfirm(p: DeviceConfirmProps): JSX.Element {
   const live = state === 'idle'
   return (
     <Page pinTop>
-      <form class="id-form" method="post" action={p.action} data-js="device-confirm">
+      <form class="id-form" method="post" action={p.action} data-js="fetch-form">
         <input type="hidden" name="csrf" value={p.csrf} />
         <input type="hidden" name="code" value={p.code} />
         <Card

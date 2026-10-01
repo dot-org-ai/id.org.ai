@@ -65,7 +65,7 @@ galleryRoutes.get('/__design', async (c, next) => {
 
 galleryRoutes.get('/__design/components', async (c, next) => {
   if (!enabled(c.env)) return next()
-  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js'], frozen: true })
+  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js', 'logo.js', 'countdown.js'], frozen: true })
 })
 
 galleryRoutes.get('/__design/:slug', async (c, next) => {

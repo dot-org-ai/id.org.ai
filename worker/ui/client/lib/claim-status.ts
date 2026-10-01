@@ -15,6 +15,9 @@ export function applyStatus(root: Element, status: ClaimStatus): void {
   const rows = Array.from(root.querySelectorAll('.id-status'))
   const at = ORDER.indexOf(status)
   rows.forEach((row, i) => row.classList.toggle('id-status--current', i === at))
+  // The rows only change class; say the new step so screen readers hear it.
+  const text = root.querySelector('[data-status-text]')
+  if (text) text.textContent = rows[at]?.querySelector('.id-status__title')?.textContent ?? ''
 }
 
 export function initClaimStatus(root: HTMLElement, fetchImpl: typeof fetch = fetch, every: (fn: () => void, ms: number) => () => void = (fn, ms) => {

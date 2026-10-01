@@ -28,7 +28,7 @@ export function CodeInput({ length, value = '', focusIndex, label, errorId }: Co
         class={i === focusIndex ? 'id-code__box is-focused' : 'id-code__box'}
         name="code"
         value={chars[i] ?? undefined}
-        maxlength={1}
+        maxlength={i === 0 ? undefined : 1}
         inputmode={device ? 'text' : 'numeric'}
         autocapitalize={device ? 'characters' : undefined}
         autocomplete={i === 0 ? 'one-time-code' : 'off'}

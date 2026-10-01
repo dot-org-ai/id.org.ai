@@ -100,6 +100,18 @@
  * No !important except in the reduced-motion and phone (<=480px) blocks, as in the mocks.
  */
 
+/* ── Derived radii ─────────────────────────────────────────────────────────
+   Radii the mocks use that tokens.css (kept identical to the spec) doesn't name. */
+
+:root {
+  --id-r-slot: 4px; /* provider mark slot */
+  --id-r-check: 5px; /* checkbox */
+  --id-r-step: 6px; /* step number box */
+  --id-r-tile-sm: 7px; /* 28px branded header tile */
+  --id-r-icontile: 9px; /* 36px icon tile */
+  --id-r-ring: 17px; /* connector ring: the 16px bezel plus its 1px outset */
+}
+
 /* ── Base ────────────────────────────────────────────────────────────────── */
 
 body {
@@ -442,9 +454,11 @@ details[data-x][open] > summary [data-chev-d] {
 .id-btn:not(:disabled):active {
   transform: scale(0.985);
 }
-.id-btn:disabled {
+.id-btn:disabled,
+.id-btn[aria-disabled='true'] {
   opacity: 0.45;
   cursor: default;
+  pointer-events: none;
 }
 .id-btn[aria-busy='true'] {
   opacity: 0.7;
@@ -470,7 +484,7 @@ details[data-x][open] > summary [data-chev-d] {
   width: 18px;
   height: 18px;
   box-sizing: border-box;
-  border-radius: 4px;
+  border-radius: var(--id-r-slot);
   border: 1px dashed var(--id-fg-3);
   flex-shrink: 0;
 }
@@ -731,7 +745,7 @@ details[data-x][open] > summary [data-chev-d] {
   width: 16px;
   height: 16px;
   box-sizing: border-box;
-  border-radius: 5px;
+  border-radius: var(--id-r-check);
   border: 1.5px solid var(--id-fg-3);
   background: transparent;
   color: var(--id-bg);
@@ -766,6 +780,14 @@ details[data-x][open] > summary [data-chev-d] {
 }
 .id-link:hover {
   color: var(--id-fg);
+}
+/* A link-styled button (1b "Resend code" posts): the link's look, no button chrome. */
+button.id-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
 }
 
 /* ── Copy button (components.md#copy-button) ───────────────────────────── */
@@ -871,6 +893,7 @@ details[data-x][open] > summary [data-chev-d] {
 .id-namesub__sub {
   font-size: 13px;
   color: var(--id-fg-3);
+  overflow-wrap: anywhere;
 }
 .id-who__meta {
   font-size: 13px;
@@ -926,6 +949,7 @@ details[data-x][open] > summary [data-chev-d] {
 .id-account__email {
   font-size: 13px;
   color: var(--id-fg-3);
+  overflow-wrap: anywhere;
 }
 .id-account__chev {
   color: var(--id-fg-3);
@@ -989,7 +1013,7 @@ details[data-x][open] > summary [data-chev-d] {
   width: 36px;
   height: 36px;
   box-sizing: border-box;
-  border-radius: 9px;
+  border-radius: var(--id-r-icontile);
   background: var(--id-panel);
   border: 1px solid var(--id-line-2);
   box-shadow: var(--id-sh-ctrl);
@@ -1012,7 +1036,7 @@ details[data-x][open] > summary [data-chev-d] {
   width: 28px;
   height: 28px;
   box-sizing: border-box;
-  border-radius: 7px;
+  border-radius: var(--id-r-tile-sm);
   background: var(--id-panel);
   border: 1px solid var(--id-line-2);
   box-shadow: var(--id-sh-ctrl);
@@ -1329,7 +1353,7 @@ details[data-x][open] > summary [data-chev-d] {
   width: 22px;
   height: 22px;
   flex-shrink: 0;
-  border-radius: 6px;
+  border-radius: var(--id-r-step);
   border: 1px solid var(--id-line-2);
   display: flex;
   align-items: center;
@@ -1521,7 +1545,7 @@ details[data-x][open] > summary [data-chev-d] {
 .id-conn__ring {
   position: absolute;
   inset: -1px;
-  border-radius: 17px;
+  border-radius: var(--id-r-ring);
   pointer-events: none;
   opacity: 0;
   border: 1.5px solid var(--id-ring-line);

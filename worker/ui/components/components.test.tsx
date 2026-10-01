@@ -161,7 +161,7 @@ describe('CopyButton', () => {
     expect(b.hasAttribute('hidden')).toBe(true)
     expect(b.getAttribute('type')).toBe('button')
     expect(b.getAttribute('aria-label')).toBe('Copy')
-    expect(b.querySelector('[role="status"]')).not.toBeNull()
+    expect(b.nextElementSibling!.getAttribute('role')).toBe('status')
   })
 
   it('the labelled variant is named by its text', async () => {

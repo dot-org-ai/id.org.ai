@@ -23,6 +23,10 @@ export interface ButtonProps {
   grow?: boolean
   /** Hook for client scripts (data-on). */
   on?: string
+  /** data-fetch forms: a cancel/deny action (broken at once, waits for the server). */
+  deny?: boolean
+  /** data-fetch forms: the template that swaps in when this action succeeds. */
+  done?: string
   class?: string
   children: Child
 }
@@ -52,7 +56,7 @@ export function Button(p: ButtonProps): JSX.Element {
   )
   if (p.href !== undefined) {
     return (
-      <a class={cls} href={p.href} data-on={p.on} aria-disabled={p.disabled ? 'true' : undefined}>
+      <a class={cls} href={p.disabled ? undefined : p.href} data-on={p.on} aria-disabled={p.disabled ? 'true' : undefined} tabindex={p.disabled ? -1 : undefined}>
         {inner}
       </a>
     )
@@ -67,6 +71,8 @@ export function Button(p: ButtonProps): JSX.Element {
       aria-busy={p.busy ? 'true' : undefined}
       data-busy-label={p.busyLabel}
       data-on={p.on}
+      data-deny={p.deny ? '' : undefined}
+      data-done={p.done}
     >
       {inner}
     </button>

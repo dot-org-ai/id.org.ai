@@ -54,6 +54,8 @@ for (const file of entries) {
     tsconfig: join(CLIENT, 'tsconfig.json'),
   })
   const code = result.outputFiles[0].contents
+  // Each client script stays under 2 KB minified (prompts/02-design-system.md).
+  if (code.byteLength >= 2048) throw new Error(`${file} is ${code.byteLength} bytes minified; the budget is under 2048`)
   const out = `${name}.${hash(code)}.js`
   writeFileSync(join(OUT_AUTH, out), code)
   assets[`${name}.js`] = `/auth/${out}`

@@ -1,6 +1,7 @@
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Icon, type IconName } from '../icons'
 import { OrgMark } from './OrgMark'
+import { safeImageUrl } from './url'
 
 /** What a 56px tile shows (components.md#app-tile-bezel, logos.md). */
 export type TileContent =
@@ -32,13 +33,16 @@ export function AppTile({ content }: { content: TileContent }): JSX.Element {
           <Icon name={content.icon} size={content.icon === 'bot' ? 26 : 24} />
         </div>
       )
-    case 'logo':
-      // The client's own logo_uri; the monogram stands in if it fails to load (logo.ts).
+    case 'logo': {
+      // The client's logo_uri (https) or a first-party brand file; the monogram stands in if it fails to load (logo.ts).
+      const src = safeImageUrl(content.src)
+      if (!src) return <div class={monogramClass(content.monogram)}>{content.monogram}</div>
       return (
         <div class={monogramClass(content.monogram)} data-js="logo" data-monogram={content.monogram}>
-          <img class="id-tile__logo" src={content.src} alt="" width={32} height={32} referrerpolicy="no-referrer" decoding="async" />
+          <img class="id-tile__logo" src={src} alt="" width={32} height={32} referrerpolicy="no-referrer" decoding="async" />
         </div>
       )
+    }
   }
 }
 

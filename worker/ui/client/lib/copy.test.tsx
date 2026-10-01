@@ -36,12 +36,12 @@ describe('copy.ts', () => {
     await settle()
     expect(btn.hasAttribute('data-copied')).toBe(true)
     expect(writeText).toHaveBeenCalledWith('chatgpt.com/oauth/codex/client.json')
-    expect(btn.querySelector('[role="status"]')!.textContent).toBe('Copied')
+    expect(btn.nextElementSibling!.textContent).toBe('Copied')
     vi.advanceTimersByTime(COPIED_MS - 1)
     expect(btn.hasAttribute('data-copied')).toBe(true)
     vi.advanceTimersByTime(1)
     expect(btn.hasAttribute('data-copied')).toBe(false)
-    expect(btn.querySelector('[role="status"]')!.textContent).toBe('')
+    expect(btn.nextElementSibling!.textContent).toBe('')
   })
 
   it('restarts the timer on a second click', async () => {

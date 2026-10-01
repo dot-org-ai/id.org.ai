@@ -12,4 +12,9 @@ describe('design tokens', () => {
     const files = ['worker/ui/ui.css', 'worker/ui/gallery/gallery.css', ...readdirSync('worker/ui/css').filter((f) => f.endsWith('.css')).map((f) => `worker/ui/css/${f}`)]
     for (const f of files) expect(readFileSync(f, 'utf8'), f).not.toMatch(/oklch\(|#[0-9a-f]{3,8}\b|rgba?\(/i)
   })
+
+  it('component CSS names its radii (tokens or the derived block in ui.css)', () => {
+    const css = readFileSync('worker/ui/ui.css', 'utf8').replace(/:root \{[^}]*\}/, '')
+    expect(css).not.toMatch(/border-radius: [1-9]/)
+  })
 })

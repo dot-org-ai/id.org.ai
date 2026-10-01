@@ -27,8 +27,8 @@ export const FAIL_SWAP_MS = T0 + F_AT + 400 + 600
 
 /** Switch a connector (or the first one inside `root`) to `state`, restarting its animations. */
 export function setConnector(root: Element, state: ConnectorState): void {
-  const el = root.matches('[data-js="connector"]') ? root : root.querySelector('[data-js="connector"]')
-  if (!(el instanceof HTMLElement)) return
+  const el = (root.matches('[data-js=connector]') ? root : root.querySelector('[data-js=connector]')) as HTMLElement | null
+  if (!el) return
   el.removeAttribute('data-state')
   // Force a style flush so a repeated state (or one sharing keyframes) restarts from zero.
   void el.offsetWidth

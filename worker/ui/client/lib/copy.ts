@@ -10,7 +10,7 @@ export const COPIED_MS = 1500
 
 export function initCopy(btn: HTMLButtonElement, clipboard: Pick<Clipboard, 'writeText'> = navigator.clipboard): void {
   btn.hidden = false
-  const status = btn.querySelector('[role="status"]')
+  const status = btn.nextElementSibling?.matches('[role="status"]') ? btn.nextElementSibling : null
   let timer: ReturnType<typeof setTimeout> | undefined
   btn.addEventListener('click', async () => {
     try {

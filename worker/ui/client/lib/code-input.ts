@@ -28,6 +28,8 @@ export function initCodeInput(group: HTMLElement): void {
   }
 
   boxes.forEach((box, i) => {
+    // Typing over a filled box replaces its character.
+    box.addEventListener('focus', () => box.select())
     box.addEventListener('input', () => {
       const chars = normalise(box.value, device)
       if (chars.length === 0) {

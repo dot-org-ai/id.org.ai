@@ -15,7 +15,7 @@ export function CardHead({ connector, title, description }: CardHeadProps): JSX.
     <div class="id-head">
       {connector}
       <div class="id-head__text">
-        <h1 class="id-title">{title}</h1>
+        <h1 class="id-title" tabindex={-1}>{title}</h1>
         {description ? <p class="id-desc">{description}</p> : null}
       </div>
     </div>

@@ -40,6 +40,7 @@ import {
   PermissionList,
   Pill,
   Pre,
+  ResendTimer,
   ProviderButton,
   Providers,
   QuoteWell,
@@ -103,6 +104,9 @@ export function ComponentSheet(): JSX.Element {
               <AppTile content={{ kind: 'monogram', text: '.d' }} />
               <AppTile content={{ kind: 'icon', icon: 'terminal' }} />
               <AppTile content={{ kind: 'icon', icon: 'bot' }} />
+              <AppTile content={{ kind: 'logo', src: '/orgLogo.svg', monogram: 'id' }} />
+              <AppTile content={{ kind: 'logo', src: 'https://example.invalid/logo.png', monogram: 'Cx' }} />
+              <AppTile content={{ kind: 'logo', src: 'http://insecure.example/logo.png', monogram: 'h' }} />
               <IconTile icon="building" />
               <SingleTile content={{ kind: 'org' }} />
             </div>
@@ -114,6 +118,9 @@ export function ComponentSheet(): JSX.Element {
               <Button variant="ghost" type="button">Ghost</Button>
               <Button variant="primary" type="button" icon="mail">With icon</Button>
               <Button variant="ghost" size="sm" type="button" icon="logout">Small ghost</Button>
+              <Button variant="primary" size="sm" type="button">Small primary</Button>
+              <Button variant="secondary" size="sm" type="button">Small secondary</Button>
+              <Button variant="secondary" href="#" disabled>Disabled link</Button>
               <Button variant="primary" type="button" busy busyLabel="Confirming…">Confirm</Button>
               <Button variant="secondary" type="button" disabled>Disabled</Button>
               <Button variant="secondary" href="#">Link button</Button>
@@ -175,6 +182,7 @@ export function ComponentSheet(): JSX.Element {
             <div class="id-sheet__row">
               <Avatar name="Bryant Skarda" />
               <Avatar name="Nathan Clevenger" size={34} />
+              <Avatar name="Photo" src="/og.png" />
               <Pill>Last used</Pill>
               <Pill accent>Accent</Pill>
             </div>
@@ -231,7 +239,14 @@ export function ComponentSheet(): JSX.Element {
             </FootText>
             <Dotted />
             <Dotted label="or" />
-            <Countdown expiresAt="2026-10-01T12:04:32Z" secondsLeft={272} />
+            <Countdown secondsLeft={272} />
+            <Countdown secondsLeft={42} urgent />
+            <ResendTimer secondsLeft={42}>
+              <button type="button" class="id-link">Resend code</button>
+            </ResendTimer>
+            <ResendTimer secondsLeft={0}>
+              <button type="button" class="id-link">Resend code</button>
+            </ResendTimer>
           </Section>
           <Section title="Icons">
             <div class="id-sheet__row">

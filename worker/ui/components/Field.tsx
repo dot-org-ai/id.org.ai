@@ -54,7 +54,6 @@ export interface InputProps {
   placeholder?: string
   autocomplete?: string
   required?: boolean
-  autofocus?: boolean
   maxlength?: number
   /** Matches the Field's hint/error ids. */
   hint?: boolean
@@ -73,7 +72,6 @@ export function Input(p: InputProps): JSX.Element {
       placeholder={p.placeholder}
       autocomplete={p.autocomplete}
       required={p.required ? true : undefined}
-      autofocus={p.autofocus ? true : undefined}
       maxlength={p.maxlength}
       aria-invalid={p.error ? 'true' : undefined}
       aria-describedby={describedBy}
@@ -87,10 +85,10 @@ export interface SelectOption {
 }
 
 /** Select: the input box, no native arrow, a chevrons-up-down icon at the right. */
-export function Select({ id, name, options, selected }: { id: string; name: string; options: SelectOption[]; selected?: string }): JSX.Element {
+export function Select({ id, name, options, selected, describedBy, invalid }: { id: string; name: string; options: SelectOption[]; selected?: string; describedBy?: string; invalid?: boolean }): JSX.Element {
   return (
     <div class="id-select-wrap">
-      <select class="id-input id-select" id={id} name={name}>
+      <select class="id-input id-select" id={id} name={name} aria-describedby={describedBy} aria-invalid={invalid ? 'true' : undefined}>
         {options.map((o) => (
           <option value={o.value} selected={o.value === selected ? true : undefined}>
             {o.label}
@@ -104,9 +102,9 @@ export function Select({ id, name, options, selected }: { id: string; name: stri
   )
 }
 
-export function Textarea({ id, name, placeholder, maxlength, value }: { id: string; name: string; placeholder?: string; maxlength?: number; value?: string }): JSX.Element {
+export function Textarea({ id, name, placeholder, maxlength, value, describedBy, invalid }: { id: string; name: string; placeholder?: string; maxlength?: number; value?: string; describedBy?: string; invalid?: boolean }): JSX.Element {
   return (
-    <textarea class="id-input id-textarea" id={id} name={name} rows={3} placeholder={placeholder} maxlength={maxlength}>
+    <textarea class="id-input id-textarea" id={id} name={name} rows={3} placeholder={placeholder} maxlength={maxlength} aria-describedby={describedBy} aria-invalid={invalid ? 'true' : undefined}>
       {value ?? ''}
     </textarea>
   )

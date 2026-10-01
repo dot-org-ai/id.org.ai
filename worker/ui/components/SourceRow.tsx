@@ -3,6 +3,7 @@ import { Icon } from '../icons'
 import { CopyButton } from './CopyButton'
 import { KeyValue, type KV } from './KeyValue'
 import { Link } from './Link'
+import { httpsOnly } from './url'
 
 export interface SourceRowProps {
   /** What's shown: the CIMD URL (without scheme), client_id, or a key fingerprint. */
@@ -20,6 +21,10 @@ export interface SourceRowProps {
 
 /** Who is asking: the app's identity, expandable details, and copy (components.md#source-row-who-is-asking). */
 export function SourceRow({ display, mono, icon, details, links, copyValue, copied }: SourceRowProps): JSX.Element {
+  const safeLinks = (links ?? []).flatMap((l) => {
+    const href = httpsOnly(l.href)
+    return href ? [{ href, label: l.label }] : []
+  })
   return (
     <div class="id-source">
       <details class="id-source__details" data-x>
@@ -36,9 +41,9 @@ export function SourceRow({ display, mono, icon, details, links, copyValue, copi
           {details.map((d) => (
             <KeyValue {...d} />
           ))}
-          {links && links.length ? (
+          {safeLinks.length ? (
             <div class="id-source__links">
-              {links.map((l) => (
+              {safeLinks.map((l) => (
                 <Link href={l.href}>{l.label}</Link>
               ))}
             </div>

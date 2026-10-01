@@ -1,11 +1,11 @@
 {
-  "claim-status.js": "/auth/claim-status.398f7bbbec.js",
-  "code-input.js": "/auth/code-input.74b8e5b145.js",
-  "copy.js": "/auth/copy.36ef424327.js",
-  "countdown.js": "/auth/countdown.34c2423b5e.js",
-  "device-confirm.js": "/auth/device-confirm.f03aaaf813.js",
+  "claim-status.js": "/auth/claim-status.4ab8df48b3.js",
+  "code-input.js": "/auth/code-input.bc3742c83a.js",
+  "copy.js": "/auth/copy.86eb66637e.js",
+  "countdown.js": "/auth/countdown.6be1075831.js",
+  "fetch-form.js": "/auth/fetch-form.fcc34d9b81.js",
   "gallery.css": "/auth/gallery.6b8071658f.css",
-  "logo.js": "/auth/logo.6cc3a1e4e2.js",
-  "submit.js": "/auth/submit.822aa40494.js",
-  "ui.css": "/auth/ui.14050fcb87.css"
+  "logo.js": "/auth/logo.484d4d765a.js",
+  "submit.js": "/auth/submit.ccc8aad409.js",
+  "ui.css": "/auth/ui.3f3e981235.css"
 }

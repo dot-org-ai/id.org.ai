@@ -13,10 +13,11 @@ export interface CopyButtonProps {
 /**
  * Copy (components.md#copy-button): hidden without JS (the value stays visible
  * and selectable); copy.ts unhides it, writes the clipboard, shows the green
- * check for 1.5s and announces "Copied" through the status region.
+ * check for 1.5s and announces "Copied" through the status region next to it.
  */
 export function CopyButton({ value, labelled, copied }: CopyButtonProps): JSX.Element {
   return (
+    <>
     <button
       type="button"
       class={labelled ? 'id-copy id-copy--label' : 'id-copy'}
@@ -34,9 +35,11 @@ export function CopyButton({ value, labelled, copied }: CopyButtonProps): JSX.El
         <Icon name="check" size={14} class="id-copy__check" />
         {labelled ? <span>Copied</span> : null}
       </span>
-      <span class="id-sr" role="status">
-        {copied ? 'Copied' : ''}
-      </span>
     </button>
+    {/* Out of flow (absolute), so it never takes a gap in the parent row. */}
+    <span class="id-sr" role="status">
+      {copied ? 'Copied' : ''}
+    </span>
+    </>
   )
 }

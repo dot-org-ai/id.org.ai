@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { initSubmit } from './submit'
+import { initLeave as initSubmit } from './leave'
 
 function mount(): HTMLFormElement {
   document.body.innerHTML = `
@@ -30,6 +30,18 @@ describe('submit.ts', () => {
     expect(cancel!.disabled).toBe(true)
     const kept = form.querySelector<HTMLInputElement>('input[type=hidden][name=approved]')!
     expect(kept.value).toBe('true')
+  })
+
+  it('data-connect forms (choosers) go connecting even without a busy label', () => {
+    document.body.innerHTML = `<div class="id-card"><form data-js="submit" data-connect method="post" action="/account/choose">
+      <div class="id-conn" data-js="connector" data-state="idle"></div>
+      <button type="submit" name="session" value="sid_1"><span>Bryant</span></button></form></div>`
+    const form = document.querySelector('form')!
+    initSubmit(form)
+    form.addEventListener('submit', (e) => e.preventDefault())
+    form.dispatchEvent(Object.assign(new Event('submit', { bubbles: true, cancelable: true }), { submitter: form.querySelector('button') }))
+    expect(document.querySelector('[data-js="connector"]')!.getAttribute('data-state')).toBe('connecting')
+    expect(form.querySelector<HTMLInputElement>('input[type=hidden][name=session]')!.value).toBe('sid_1')
   })
 
   it('Cancel: no connector, nothing busy, the deny value kept', () => {
