@@ -45,6 +45,7 @@ import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from
 import type { VerifyTokenResult } from '../src/sdk/auth'
 import { authVerifyRoutes, verifyIdentityTokenWithEnv } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
+import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
@@ -58,6 +59,9 @@ import { aapRoutes } from './routes/aap'
 import { credentialRoutes } from './routes/credentials'
 import { resolveRoutes } from './routes/resolve'
 import { dlvpRoutes } from './routes/dlvp'
+import { requestIdMiddleware } from './middleware/request-id'
+import { staticUiRoutes } from './routes/static-ui'
+import { galleryRoutes } from './ui/gallery/routes'
 
 export { IdentityDO }
 
@@ -90,6 +94,11 @@ function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
 //   4. JWTs → verified against id.org.ai JWKS, then WorkOS JWKS (also covers oauth.do-issued JWTs)
 
 export class AuthService extends WorkerEntrypoint<Env> {
+  constructor(ctx: ExecutionContext, env: Env) {
+    super(ctx, env)
+    configureWorkOSBase(env)
+  }
+
   // ── verifyToken ─────────────────────────────────────────────────────
   // Verify any token type (session, API key, or WorkOS JWT).
   // Results are cached for 5 minutes via Cache API.
@@ -383,7 +392,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
     const clientId = this.env.WORKOS_CLIENT_ID
     if (!clientId) return null
 
-    const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
+    const jwksUri = workosUrl(`/sso/jwks/${clientId}`)
 
     try {
       const jwks = getJwksVerifier(jwksUri)
@@ -485,6 +494,11 @@ export { AuthService as AuthRPC }
 // { identity }. It is a thin wrapper over the shipped `verifyToken` primitive
 // (src/sdk/auth/verify-token.ts → src/sdk/oauth/jwt-verify.ts).
 export class AuthIdentity extends WorkerEntrypoint<Env> {
+  constructor(ctx: ExecutionContext, env: Env) {
+    super(ctx, env)
+    configureWorkOSBase(env)
+  }
+
   /**
    * Verify an id.org.ai-issued JWT and return the projected identity.
    * Never throws — a malformed/expired/tampered/wrong-issuer token yields
@@ -496,6 +510,28 @@ export class AuthIdentity extends WorkerEntrypoint<Env> {
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+// ── Request IDs ─────────────────────────────────────────────────────────────
+// First, so every response (HTML and JSON) carries X-Request-Id.
+
+app.use('*', requestIdMiddleware)
+
+// ── WorkOS base (test seam) ─────────────────────────────────────────────────
+// Production leaves WORKOS_API_BASE unset (https://api.workos.com). wrangler dev
+// points it at test-visual/workos-stub.mjs (src/sdk/workos/base.ts).
+
+app.use('*', async (c, next) => {
+  configureWorkOSBase(c.env)
+  await next()
+})
+
+// ── Auth UI assets and design gallery ────────────────────────────────────────
+// Hashed /auth/*.css|js and /fonts/geist/* get an immutable cache header
+// (worker/routes/static-ui.ts). /__design is dev only (DESIGN_GALLERY=1).
+// Both fall through when they have nothing to serve.
+
+app.route('', staticUiRoutes)
+app.route('', galleryRoutes)
 
 // ── CORS ──────────────────────────────────────────────────────────────────
 // Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
@@ -683,7 +719,7 @@ app.get('/me', async (c) => {
   const clientId = c.env.WORKOS_CLIENT_ID
   if (clientId) {
     try {
-      const jwks = getJwksVerifier(`https://api.workos.com/sso/jwks/${clientId}`)
+      const jwks = getJwksVerifier(workosUrl(`/sso/jwks/${clientId}`))
       const { payload } = await jose.jwtVerify(token, jwks)
       return c.json({
         id: payload.sub || '',
@@ -978,6 +1014,7 @@ async function runSyntheticAuthCheck(env: Env, ctx: ExecutionContext): Promise<v
 export default {
   fetch: app.fetch.bind(app),
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    configureWorkOSBase(env)
     // Every-5-minutes cron: synthetic auth self-check only.
     if (event.cron === AUTH_SYNTHETIC_CRON) {
       ctx.waitUntil(runSyntheticAuthCheck(env, ctx))
