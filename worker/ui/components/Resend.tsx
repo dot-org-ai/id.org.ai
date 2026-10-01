@@ -27,7 +27,7 @@ export function Resend({ availableIn, form }: ResendProps): JSX.Element {
           Resend in <span data-countdown-text>{formatCountdown(availableIn)}</span>
         </span>
       )}
-      <button type="submit" form={form} class="id-link id-linkbtn" data-countdown-done hidden={ready ? undefined : true}>
+      <button type="submit" form={form} class="id-link" data-countdown-done hidden={ready ? undefined : true}>
         Resend code
       </button>
     </div>

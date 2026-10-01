@@ -10,21 +10,3 @@
   align-items: center;
   gap: 12px;
 }
-
-/* ── A <button> that reads as a Link (1b "Resend code") ─────────────────
-   Pair with .id-link, which gives the type, colour and underline. */
-
-.id-linkbtn {
-  appearance: none;
-  -webkit-appearance: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  font-family: inherit;
-  line-height: inherit;
-  cursor: pointer;
-}
-.id-linkbtn[hidden] {
-  display: none;
-}
