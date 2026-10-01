@@ -9,9 +9,9 @@ The autopilot updates this file at the start and end of every phase (see `autopi
 **Tracking:** beads epic `id-6zy`, one child per phase (`id-6zy.1` = phase 0 … `id-6zy.14` = phase 13)
 
 ## Where we are (resume point)
-- **Phase:** 2 (Design system), in progress.
-- **Done so far in phase 2 (uncommitted at the time of writing; see git status):** every component in `spec/components.md` as `worker/ui/components/*.tsx` with its CSS in `worker/ui/ui.css`; the 4b screen and fixture (`worker/ui/screens/DeviceConfirm.tsx`, `worker/ui/gallery/fixtures/devices.ts`) pass 7/7 at 0 px; client scripts written in `worker/ui/client/` (copy, code-input, submit, device-confirm, countdown, claim-status, logo, plus `lib/connector.ts`, `lib/submit.ts`).
-- **Next step:** client-script tests (vitest.ui.config.ts), component markup tests, the `/__design/components` sheet, split gallery CSS out of the production stylesheet, then the phase 2 gate and review.
+- **Phase 3 (Screens)**, in progress: six parallel subagents, one per screen group, each in its own git worktree and `wrangler dev` port, based on `9437f26`. They own `worker/ui/screens/*`, their group's `worker/ui/gallery/fixtures/<group>.ts` and optional `worker/ui/css/<group>.css`, never edit shared files, and commit only owned sources; the coordinator merges each branch into `product-update` and rebuilds assets. Groups: A sign-in 1a–1g · B accounts 2a/2b/2c/2e + devices 4c/4d (**done**, 12/12 at 0 px, branch `phase3-accounts`) · C authorize 3a–3d · D agents 5a–5d · E security 6a–6d + errors 7a–7c (**done**, 15/15 at 0 px, branch `phase3-security`) · F emails 8a–8c.
+- **Next step:** merge each finished group branch, consolidate duplicate components (B's `RadioList` and E's `RadioStack` are the same thing), apply the shared-file changes they asked for, rebuild, then run all 72 visual cases.
+- **Also done ahead of phase 4:** B13.2/B13.3 (`31f8499`): `/admin-portal`, `/fga/*`, `/pipes/*` authenticated and authorised; org member/invite routes check membership.
 - **Local dev on this machine:** ports 8787 and 8788 are held by other projects' long-running `workerd`, so this session runs `PORT=8797 pnpm dev:worker` and `STUB_PORT=8798 pnpm dev:stub`, with `WORKOS_API_BASE=http://127.0.0.1:8798` in `worker/.dev.vars`, and `pnpm test:visual --base http://127.0.0.1:8797`.
 
 ## Phases
@@ -20,7 +20,7 @@ The autopilot updates this file at the start and end of every phase (see `autopi
 |---|---|---|---|---|---|
 | 0 | Preflight | `prompts/00-preflight.md` | done (2026-10-01) | 2914 passed / 0 failed · visual n/a | Baseline recorded; push blocked (see Blocked) |
 | 1 | Foundation | `prompts/01-foundation.md` | done (2026-10-01) | 2938 passed / 0 failed (workers 2412, node 520, ui 6) · visual self-test 72/72 · dry-run OK | Reviewed: 1 blocking finding fixed (`form-action` dropped `[::1]`), 12 non-blocking, the important ones fixed (`79e0ffe`) |
-| 2 | Design system | `prompts/02-design-system.md` | todo | | |
+| 2 | Design system | `prompts/02-design-system.md` | done (2026-10-01) | 3023 passed / 0 failed (workers 2431, node 520, ui 72) · 4b 7/7 at 0 px · reduced motion 0 animated | Reviewed: 2 blocking (shared fetch path for forms that stay; component-sheet variants) fixed in `28cac3e`, with most non-blocking items |
 | 3 | Screens (UI) | `prompts/03-screens.md` | todo | | |
 | 4 | Errors and security prerequisites | `prompts/04-errors-and-security.md` | todo | | |
 | 5 | Consent v2 | `prompts/05-consent.md` | todo | | |
@@ -57,6 +57,10 @@ Compared by subject (`git log HEAD..origin/<b>`), since most were cherry-picked 
 - A6 (phase 1): the workers test pool reuses `worker/wrangler.jsonc`, so it would also load a developer's `worker/.dev.vars`. `vitest.config.ts` blanks every binding wrangler adds beyond `wrangler.jsonc`'s vars, so the suite behaves the same with or without local dev setup.
 - A7 (phase 1): Privacy, Terms and Status don't exist on id.org.ai yet. The footer links are placeholders in `worker/ui/links.ts` (`/privacy`, `/terms`, `/status`); see owner steps.
 - A8 (phase 1): `predeploy` now runs `build:site && build:ui && build:dash`. `build:dash` points at a sibling repo (`../../.studio/ui`) and was not run here.
+- A9 (phase 2): every `CodeInput` box is named `code`, so without JS the form posts the characters in order and the server joins them, instead of a hidden mirror input.
+- A10 (phase 2): client scripts split by what the form does: `submit.js` for forms that leave id.org.ai (connecting + busy, then the normal post) and `fetch-form.js` for forms that stay (fetch, verdict, then a server-rendered template swaps in). 4b's state machine is `fetch-form.js`; there is no separate `device-confirm.js`. `connector.ts` is a library, not an entry. Each script is under 2 KB minified (`build:ui` enforces it).
+- A11 (phase 2): countdowns run from server-rendered seconds left (`data-seconds-left`), not an absolute expiry, so client clock skew can't expire a page early.
+- A12 (phase 2): radii the mocks use that `tokens.css` doesn't name (4, 5, 6, 7, 9, 17px) are named in a derived block at the top of `ui.css`, because `tokens.css` must stay identical to the spec copy.
 - A3 (phase 0): the README's "Where this runs" note was left in place: the session's permission classifier refused that edit. It is harmless (it describes the copy in `dot-do/id.org.ai`). An owner can delete those three lines by hand.
 
 ## Owner steps (things only a person can do)
