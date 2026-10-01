@@ -1,0 +1,94 @@
+/*
+ * id.org.ai auth UI: design tokens.
+ * Every value here is copied from the reference mocks (docs/product-update/mocks).
+ * Use these variables in the component CSS; never hard-code a colour, shadow or radius.
+ * Dark only: auth pages do not have a light theme (emails are light and live in their own templates).
+ */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/geist/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/geist/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* ── Surfaces ─────────────────────────────────────────── */
+  --id-bg: oklch(0.155 0.004 286);          /* page */
+  --id-card: oklch(0.185 0.005 286);        /* card body */
+  --id-card-foot: oklch(0.155 0.004 286);   /* card action band (same as page) */
+  --id-panel: oklch(0.188 0.005 286);       /* controls: inputs, secondary buttons, radio cards */
+  --id-raised: oklch(0.225 0.006 286);      /* checked radio card, avatar, pills */
+  --id-sunk: oklch(0.13 0.004 286);         /* wells: code box, key/value boxes, code blocks */
+
+  /* ── Lines ────────────────────────────────────────────── */
+  --id-line: oklch(1 0 0 / 0.08);           /* hairlines, well borders, card foot border */
+  --id-line-2: oklch(1 0 0 / 0.14);         /* control borders, card border */
+  --id-select: oklch(1 0 0 / 0.55);         /* selected/focused border, focus outline */
+  --id-ring: 0 0 0 3px oklch(1 0 0 / 0.07); /* focus/selected halo (box-shadow) */
+  --id-dot: oklch(1 0 0 / 0.22);            /* dotted rule dots */
+  --id-ring-line: oklch(1 0 0 / 0.42);      /* connector destination ring */
+
+  /* ── Text ─────────────────────────────────────────────── */
+  --id-fg: oklch(0.965 0.002 286);          /* primary text, primary button fill */
+  --id-fg-2: oklch(0.78 0.006 286);         /* secondary text, labels, links */
+  --id-fg-3: oklch(0.64 0.008 286);         /* tertiary text, hints, icons at rest */
+
+  /* ── Accent: exceptions only (act permissions, warnings, failure X) ── */
+  --id-accent: oklch(0.81 0.135 72);
+  --id-accent-bg: oklch(0.81 0.135 72 / 0.08);
+  --id-accent-line: oklch(0.81 0.135 72 / 0.32);
+
+  /* ── Success: only the connector check and the copied check ── */
+  --id-green: oklch(0.8 0.16 152);
+
+  /* ── Depth ────────────────────────────────────────────── */
+  --id-sh-ctrl: inset 0 1px 0 0 oklch(1 0 0 / 0.045), 0 1px 2px 0 oklch(0 0 0 / 0.4);
+  --id-sh-primary: inset 0 -1px 0 0 oklch(0 0 0 / 0.16), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 4px 12px -4px oklch(0 0 0 / 0.5);
+  --id-sh-input: inset 0 1px 2px 0 oklch(0 0 0 / 0.28);
+  --id-sh-card: inset 0 1px 0 0 oklch(1 0 0 / 0.05), 0 2px 4px 0 oklch(0 0 0 / 0.35), 0 32px 64px -24px oklch(0 0 0 / 0.75);
+
+  /* ── App tile (bezel) ─────────────────────────────────── */
+  --id-bezel-bg: linear-gradient(180deg, oklch(0.28 0.006 286) 0%, oklch(0.2 0.005 286) 100%);
+  --id-bezel-border: oklch(0 0 0 / 0.55);
+  --id-bezel-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.14), inset 0 0 0 1px oklch(1 0 0 / 0.05), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 8px 20px -8px oklch(0 0 0 / 0.7);
+
+  /* ── Hover ────────────────────────────────────────────── */
+  --id-hover-ghost: oklch(1 0 0 / 0.05);    /* ghost button hover fill */
+  --id-hover-icon: oklch(1 0 0 / 0.06);     /* bare icon button (copy) hover fill */
+
+  /* ── Type ─────────────────────────────────────────────── */
+  --id-font: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --id-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ── Radii ────────────────────────────────────────────── */
+  --id-r-card: 20px;
+  --id-r-well: 14px;
+  --id-r-control: 10px;     /* inputs, md buttons, code boxes, code blocks */
+  --id-r-option: 12px;      /* radio cards, account rows */
+  --id-r-sm: 8px;           /* sm buttons, icon buttons */
+  --id-r-bezel: 16px;       /* 56px app tile */
+  --id-r-pill: 99px;
+
+  /* ── Layout ───────────────────────────────────────────── */
+  --id-column: 560px;       /* card max width */
+  --id-gap-body: 22px;      /* between blocks inside the card body */
+  --id-control-h: 44px;     /* md buttons and inputs */
+  --id-control-h-sm: 32px;
+  --id-control-h-phone: 48px; /* action buttons at <=480px (height only) */
+
+  /* ── Motion ───────────────────────────────────────────── */
+  --id-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --id-ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+  --id-ease-inout: cubic-bezier(0.65, 0, 0.35, 1);
+}

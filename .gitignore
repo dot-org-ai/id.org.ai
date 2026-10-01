@@ -142,3 +142,7 @@ vite.config.ts.timestamp-*
 .claude/scheduled_tasks.lock
 
 pnpm-workspace.yaml
+
+# Auth UI redesign (docs/product-update)
+worker/.dev.vars
+test-visual/output/

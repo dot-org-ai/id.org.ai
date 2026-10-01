@@ -1,0 +1,197 @@
+/*
+ * id.org.ai auth UI: component CSS.
+ * Every value reads from tokens.css. Values match the reference mocks
+ * (docs/product-update/mocks); see docs/product-update/spec/layout.md and components.md.
+ * No !important except in the reduced-motion and phone (<=480px) blocks, as in the mocks.
+ */
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+
+body {
+  margin: 0;
+  background: var(--id-bg);
+  color: var(--id-fg);
+  font-family: var(--id-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--id-fg-2);
+  transition: color 0.15s;
+}
+a:hover {
+  color: var(--id-fg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--id-fg-3);
+}
+
+summary::marker {
+  color: var(--id-fg-3);
+}
+
+.id-icon,
+.id-mark {
+  flex-shrink: 0;
+}
+
+/* Visually hidden, still announced and focusable. */
+.id-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Page shell (layout.md#page-shell) ─────────────────────────────────── */
+
+.id-page {
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.id-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px;
+  min-height: 72px;
+  box-sizing: border-box;
+}
+
+.id-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--id-fg);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.id-brand:hover {
+  color: var(--id-fg);
+}
+
+.id-main {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px 40px;
+}
+.id-main--top {
+  align-items: flex-start;
+  padding: 72px 20px 40px;
+}
+
+.id-column {
+  width: 100%;
+  max-width: var(--id-column);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.id-footer {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px 20px;
+  font-size: 12px;
+}
+.id-footer__link {
+  color: var(--id-fg-3);
+  text-decoration: none;
+}
+
+/* ── Card (layout.md#card-anatomy) ─────────────────────────────────────── */
+
+.id-card {
+  width: 100%;
+  max-width: var(--id-column);
+  box-sizing: border-box;
+  border-radius: var(--id-r-card);
+  background: var(--id-card);
+  border: 1px solid var(--id-line-2);
+  box-shadow: var(--id-sh-card);
+  overflow: hidden;
+  align-self: center;
+}
+
+.id-card__body {
+  padding: 32px 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--id-gap-body);
+}
+
+.id-card__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--id-card-foot);
+  border-top: 1px solid var(--id-line);
+}
+
+/* ── Phones (layout.md#phones-viewport--480px) ─────────────────────────── */
+
+@media (max-width: 480px) {
+  .id-card {
+    align-self: stretch !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 -20px !important;
+    border-radius: 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+  }
+  .id-card__body {
+    padding: 28px 20px 24px !important;
+  }
+}
+
+/* ── Design gallery index (dev only; /__design) ───────────────────────── */
+
+.id-gallery__title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.id-gallery {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.id-gallery__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.id-gallery__missing {
+  color: var(--id-fg-3);
+}

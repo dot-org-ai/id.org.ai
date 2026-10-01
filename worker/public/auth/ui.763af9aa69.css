@@ -1,0 +1,292 @@
+/*
+ * id.org.ai auth UI: design tokens.
+ * Every value here is copied from the reference mocks (docs/product-update/mocks).
+ * Use these variables in the component CSS; never hard-code a colour, shadow or radius.
+ * Dark only: auth pages do not have a light theme (emails are light and live in their own templates).
+ */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/geist/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/geist/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* ── Surfaces ─────────────────────────────────────────── */
+  --id-bg: oklch(0.155 0.004 286);          /* page */
+  --id-card: oklch(0.185 0.005 286);        /* card body */
+  --id-card-foot: oklch(0.155 0.004 286);   /* card action band (same as page) */
+  --id-panel: oklch(0.188 0.005 286);       /* controls: inputs, secondary buttons, radio cards */
+  --id-raised: oklch(0.225 0.006 286);      /* checked radio card, avatar, pills */
+  --id-sunk: oklch(0.13 0.004 286);         /* wells: code box, key/value boxes, code blocks */
+
+  /* ── Lines ────────────────────────────────────────────── */
+  --id-line: oklch(1 0 0 / 0.08);           /* hairlines, well borders, card foot border */
+  --id-line-2: oklch(1 0 0 / 0.14);         /* control borders, card border */
+  --id-select: oklch(1 0 0 / 0.55);         /* selected/focused border, focus outline */
+  --id-ring: 0 0 0 3px oklch(1 0 0 / 0.07); /* focus/selected halo (box-shadow) */
+  --id-dot: oklch(1 0 0 / 0.22);            /* dotted rule dots */
+  --id-ring-line: oklch(1 0 0 / 0.42);      /* connector destination ring */
+
+  /* ── Text ─────────────────────────────────────────────── */
+  --id-fg: oklch(0.965 0.002 286);          /* primary text, primary button fill */
+  --id-fg-2: oklch(0.78 0.006 286);         /* secondary text, labels, links */
+  --id-fg-3: oklch(0.64 0.008 286);         /* tertiary text, hints, icons at rest */
+
+  /* ── Accent: exceptions only (act permissions, warnings, failure X) ── */
+  --id-accent: oklch(0.81 0.135 72);
+  --id-accent-bg: oklch(0.81 0.135 72 / 0.08);
+  --id-accent-line: oklch(0.81 0.135 72 / 0.32);
+
+  /* ── Success: only the connector check and the copied check ── */
+  --id-green: oklch(0.8 0.16 152);
+
+  /* ── Depth ────────────────────────────────────────────── */
+  --id-sh-ctrl: inset 0 1px 0 0 oklch(1 0 0 / 0.045), 0 1px 2px 0 oklch(0 0 0 / 0.4);
+  --id-sh-primary: inset 0 -1px 0 0 oklch(0 0 0 / 0.16), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 4px 12px -4px oklch(0 0 0 / 0.5);
+  --id-sh-input: inset 0 1px 2px 0 oklch(0 0 0 / 0.28);
+  --id-sh-card: inset 0 1px 0 0 oklch(1 0 0 / 0.05), 0 2px 4px 0 oklch(0 0 0 / 0.35), 0 32px 64px -24px oklch(0 0 0 / 0.75);
+
+  /* ── App tile (bezel) ─────────────────────────────────── */
+  --id-bezel-bg: linear-gradient(180deg, oklch(0.28 0.006 286) 0%, oklch(0.2 0.005 286) 100%);
+  --id-bezel-border: oklch(0 0 0 / 0.55);
+  --id-bezel-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.14), inset 0 0 0 1px oklch(1 0 0 / 0.05), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 8px 20px -8px oklch(0 0 0 / 0.7);
+
+  /* ── Hover ────────────────────────────────────────────── */
+  --id-hover-ghost: oklch(1 0 0 / 0.05);    /* ghost button hover fill */
+  --id-hover-icon: oklch(1 0 0 / 0.06);     /* bare icon button (copy) hover fill */
+
+  /* ── Type ─────────────────────────────────────────────── */
+  --id-font: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --id-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ── Radii ────────────────────────────────────────────── */
+  --id-r-card: 20px;
+  --id-r-well: 14px;
+  --id-r-control: 10px;     /* inputs, md buttons, code boxes, code blocks */
+  --id-r-option: 12px;      /* radio cards, account rows */
+  --id-r-sm: 8px;           /* sm buttons, icon buttons */
+  --id-r-bezel: 16px;       /* 56px app tile */
+  --id-r-pill: 99px;
+
+  /* ── Layout ───────────────────────────────────────────── */
+  --id-column: 560px;       /* card max width */
+  --id-gap-body: 22px;      /* between blocks inside the card body */
+  --id-control-h: 44px;     /* md buttons and inputs */
+  --id-control-h-sm: 32px;
+  --id-control-h-phone: 48px; /* action buttons at <=480px (height only) */
+
+  /* ── Motion ───────────────────────────────────────────── */
+  --id-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --id-ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+  --id-ease-inout: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/*
+ * id.org.ai auth UI: component CSS.
+ * Every value reads from tokens.css. Values match the reference mocks
+ * (docs/product-update/mocks); see docs/product-update/spec/layout.md and components.md.
+ * No !important except in the reduced-motion and phone (<=480px) blocks, as in the mocks.
+ */
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+
+body {
+  margin: 0;
+  background: var(--id-bg);
+  color: var(--id-fg);
+  font-family: var(--id-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--id-fg-2);
+  transition: color 0.15s;
+}
+a:hover {
+  color: var(--id-fg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--id-fg-3);
+}
+
+summary::marker {
+  color: var(--id-fg-3);
+}
+
+.id-icon,
+.id-mark {
+  flex-shrink: 0;
+}
+
+/* Visually hidden, still announced and focusable. */
+.id-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Page shell (layout.md#page-shell) ─────────────────────────────────── */
+
+.id-page {
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.id-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px;
+  min-height: 72px;
+  box-sizing: border-box;
+}
+
+.id-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--id-fg);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.id-brand:hover {
+  color: var(--id-fg);
+}
+
+.id-main {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px 40px;
+}
+.id-main--top {
+  align-items: flex-start;
+  padding: 72px 20px 40px;
+}
+
+.id-column {
+  width: 100%;
+  max-width: var(--id-column);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.id-footer {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px 20px;
+  font-size: 12px;
+}
+.id-footer__link {
+  color: var(--id-fg-3);
+  text-decoration: none;
+}
+
+/* ── Card (layout.md#card-anatomy) ─────────────────────────────────────── */
+
+.id-card {
+  width: 100%;
+  max-width: var(--id-column);
+  box-sizing: border-box;
+  border-radius: var(--id-r-card);
+  background: var(--id-card);
+  border: 1px solid var(--id-line-2);
+  box-shadow: var(--id-sh-card);
+  overflow: hidden;
+  align-self: center;
+}
+
+.id-card__body {
+  padding: 32px 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--id-gap-body);
+}
+
+.id-card__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--id-card-foot);
+  border-top: 1px solid var(--id-line);
+}
+
+/* ── Phones (layout.md#phones-viewport--480px) ─────────────────────────── */
+
+@media (max-width: 480px) {
+  .id-card {
+    align-self: stretch !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 -20px !important;
+    border-radius: 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+  }
+  .id-card__body {
+    padding: 28px 20px 24px !important;
+  }
+}
+
+/* ── Design gallery index (dev only; /__design) ───────────────────────── */
+
+.id-gallery__title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.id-gallery {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.id-gallery__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.id-gallery__missing {
+  color: var(--id-fg-3);
+}
