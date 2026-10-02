@@ -42,9 +42,9 @@ const CONFIG: OAuthConfig = {
 const PERSON = 'human:user_device_person'
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 
-function makeProvider(members = new Set(['org_A'])) {
+function makeProvider(members = new Set(['org_A']), storage = createStorage()) {
   return new OAuthProvider({
-    storage: createStorage(),
+    storage,
     config: CONFIG,
     getIdentity: async (id) => ({ id, name: 'Ada', email: 'ada@example.com', emailVerified: true, level: 2 }),
     validateOrgMembership: async (_id, org) => members.has(org),
@@ -91,7 +91,8 @@ describe('device metadata', () => {
     const provider = makeProvider()
     const { d } = await setup(provider, { device_name: 'macOS · bryants-mbp' }, { 'cf-connecting-ip': '203.0.113.7' }, { city: 'Miami', regionCode: 'FL', country: 'US' })
     const view = await provider.getDeviceRequest(d.user_code)
-    expect(view?.meta).toMatchObject({ os: 'macOS · bryants-mbp', city: 'Miami', region: 'FL', country: 'US', ip: '203.0.113.7' })
+    // The client's separators are dropped (phase 6 review S5): only the page draws "·".
+    expect(view?.meta).toMatchObject({ os: 'macOS bryants-mbp', city: 'Miami', region: 'FL', country: 'US', ip: '203.0.113.7' })
     expect(view!.meta!.requestedAt).toBeGreaterThan(Date.now() - 5000)
 
     const ua = makeProvider()
@@ -173,5 +174,75 @@ describe('signing a device out', () => {
     expect(await provider.revokeDeviceGrant(view!.family, PERSON)).toBe(true)
     const r = await provider.handleToken(form('https://id.org.ai/oauth/token', { grant_type: 'refresh_token', refresh_token: t.refresh_token, client_id: clientId }))
     expect(r.status).toBe(400)
+  })
+})
+
+describe('phase 6 review fixes', () => {
+  it('B1: a decision made while a poll is in flight is never undone by that poll', async () => {
+    const storage = createStorage()
+    const provider = makeProvider(undefined, storage)
+    const { clientId, d } = await setup(provider)
+    const realGet = storage.get.bind(storage)
+    let armed = true
+    // The poll reads the pending record; the approval lands before the poll writes anything.
+    storage.get = (async (key: string) => {
+      const value = await realGet(key)
+      if (armed && key.startsWith('device:')) {
+        armed = false
+        expect(await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve' })).toMatchObject({ ok: true })
+      }
+      return value
+    }) as typeof storage.get
+    expect(((await (await poll(provider, clientId, d.device_code)).json()) as { error: string }).error).toBe('authorization_pending')
+    storage.get = realGet
+    expect((await provider.getDeviceRequest(d.user_code))?.status).toBe('approved')
+    expect((await poll(provider, clientId, d.device_code)).status).toBe(200)
+  })
+
+  it('N1: slow_down tolerates a second of jitter and the interval stops growing at 60 seconds', async () => {
+    const provider = makeProvider()
+    const { clientId, d } = await setup(provider)
+    await poll(provider, clientId, d.device_code)
+    for (let i = 0; i < 30; i++) await poll(provider, clientId, d.device_code)
+    expect((await provider.getDeviceRequest(d.user_code))?.interval).toBe(60)
+  })
+
+  it('N2: two parallel collections of an approved code issue tokens once', async () => {
+    const storage = Object.assign(createStorage(), {
+      claimed: new Set<string>(),
+      async claimOnce(this: { claimed: Set<string> }, key: string) {
+        if (this.claimed.has(key)) return false
+        this.claimed.add(key)
+        return true
+      },
+    })
+    const provider = makeProvider(undefined, storage)
+    const { clientId, d } = await setup(provider)
+    await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve' })
+    const [a, b] = await Promise.all([poll(provider, clientId, d.device_code), poll(provider, clientId, d.device_code)])
+    expect([a.status, b.status].sort()).toEqual([200, 400])
+  })
+
+  it('N3: approving again with a different workspace is already_used, not ok', async () => {
+    const provider = makeProvider(new Set(['org_A', 'org_B']))
+    const { d } = await setup(provider)
+    await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve', orgId: 'org_A' })
+    expect(await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve', orgId: 'org_B' })).toMatchObject({ ok: false, error: 'already_used' })
+  })
+
+  it('S5: a device_name can’t imitate the place line or reorder it', async () => {
+    const provider = makeProvider()
+    const { d } = await setup(provider, { device_name: 'macOS · Miami, FL · requested just now \u202Eevil\u200B' })
+    const os = (await provider.getDeviceRequest(d.user_code))!.meta!.os!
+    expect(os).not.toMatch(/[·,\u202E\u200B]/)
+  })
+
+  it('S4: the grant copy kept for signing the device out holds no IP', async () => {
+    const storage = createStorage()
+    const provider = makeProvider(undefined, storage)
+    const { d } = await setup(provider, {}, { 'cf-connecting-ip': '203.0.113.7' })
+    const view = await provider.getDeviceRequest(d.user_code)
+    await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve' })
+    expect(JSON.stringify(storage.store.get(`device-grant:${view!.family}`))).not.toContain('203.0.113.7')
   })
 })

@@ -22,9 +22,13 @@ export interface DevicePageContext {
   now: number
 }
 
-/** "macOS · Miami, FL": the parts that are known, in order. */
+/**
+ * "macOS · Miami, FL": the OS when known, then always a place (the city and
+ * region, else the country, else "location unknown"), so a device name can
+ * never stand in for the place (phase 6 review S5).
+ */
 export function deviceWhere(meta: DeviceMeta | undefined): string {
-  const place = [meta?.city, meta?.region].filter(Boolean).join(', ')
+  const place = [meta?.city, meta?.region].filter(Boolean).join(', ') || meta?.country || 'location unknown'
   return [meta?.os, place].filter(Boolean).join(' · ')
 }
 

@@ -11,6 +11,9 @@
  *
  * Every page needs a session: without one, sign in and come back (the code
  * survives the round trip). The decision itself is the provider's decideDevice.
+ * The POSTs carry a page token bound to the person (worker/utils/page-csrf.ts),
+ * and looking codes up or deciding them spends a guess budget per person and
+ * per IP (RFC 8628 §5.1, security.md "Codes and budgets").
  */
 import { Hono, type Context } from 'hono'
 import type { Env, Variables } from '../types'
@@ -19,7 +22,7 @@ import { formatUserCode, type DeviceRequestView } from '../../src/sdk/oauth/prov
 import { getOAuthProvider } from './oauth'
 import { checkPageCsrf, issuePageCsrf } from '../utils/page-csrf'
 import { personAccount, personWorkspaces } from '../utils/person'
-import { readSessionOrgId } from '../middleware/tenant'
+import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
 import { renderPage } from '../ui/render'
 import { renderErrorPage } from '../ui/errors'
 import { deviceClientName, deviceConfirmProps, deviceWhere } from '../ui/device-props'
@@ -62,15 +65,48 @@ async function formFields(c: C): Promise<{ get(name: string): string | undefined
   }
 }
 
-async function withCsrf(c: C, render: (csrf: string) => Promise<Response>): Promise<Response> {
-  const { token, cookie } = await issuePageCsrf(c)
-  const res = await render(token)
-  res.headers.append('Set-Cookie', cookie)
-  return res
+async function withCsrf(c: C, identityId: string, render: (csrf: string) => Promise<Response>): Promise<Response> {
+  return render(await issuePageCsrf(c, identityId))
 }
 
-function entryPage(c: C, extra: { value?: string; error?: string } = {}): Promise<Response> {
-  return withCsrf(c, (csrf) =>
+/** The page token from the X-CSRF-Token header or the csrf field; both at once is refused (security.md: no duplicates). */
+function submittedCsrf(c: C, field: string | undefined): string | undefined {
+  const header = c.req.header('x-csrf-token')
+  if (header && field) return undefined
+  return header ?? field
+}
+
+const GUESS_WINDOW_MS = 15 * 60 * 1000
+
+/**
+ * Looking a code up or deciding one spends a guess budget, per person and per
+ * IP (phase 6 review S3): user codes are short, so guessing must be slow.
+ * Answers the seconds to wait when it's spent, else null.
+ */
+async function guessBudgetSpent(c: C, identityId: string): Promise<number | null> {
+  const stub = getStubForIdentity(c.env, 'oauth')
+  const ip = c.req.header('cf-connecting-ip') ?? 'no-ip'
+  const [byPerson, byIp] = await Promise.all([
+    stub.consumeBudget({ key: `device-guess:id:${identityId}`, max: 30, windowMs: GUESS_WINDOW_MS }),
+    stub.consumeBudget({ key: `device-guess:ip:${ip}`, max: 60, windowMs: GUESS_WINDOW_MS }),
+  ])
+  if (byPerson.allowed && byIp.allowed) return null
+  return Math.max(byPerson.retryAfterSec, byIp.retryAfterSec, 60)
+}
+
+function tooManyTries(c: C, retryAfterSeconds: number, json = false): Response | Promise<Response> {
+  if (json) {
+    c.header('Retry-After', String(retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited' }, 429)
+  }
+  return renderErrorPage(c, 'rate_limited', { requestId: c.get('requestId'), retryAfterSeconds }, 429).then((res) => {
+    res.headers.set('Retry-After', String(retryAfterSeconds))
+    return res
+  })
+}
+
+function entryPage(c: C, identityId: string, extra: { value?: string; error?: string } = {}): Promise<Response> {
+  return withCsrf(c, identityId, (csrf) =>
     renderPage(c, DeviceEntry({ action: '/device', csrf, ...extra }), {
       title: 'Connect a device · id.org.ai',
       scripts: ['code-input.js', 'submit.js'],
@@ -82,7 +118,7 @@ function entryPage(c: C, extra: { value?: string; error?: string } = {}): Promis
 async function confirmPage(c: C, view: DeviceRequestView, identityId: string): Promise<Response> {
   const [account, workspaces, sessionOrg] = await Promise.all([personAccount(c.env, identityId), personWorkspaces(c.env, identityId), readSessionOrgId(c.req.raw, c.env)])
   const here = new URL(c.req.url)
-  return withCsrf(c, (csrf) => {
+  return withCsrf(c, identityId, (csrf) => {
     const props = deviceConfirmProps(view, {
       account,
       workspaces,
@@ -110,9 +146,11 @@ deviceRoutes.get('/device', async (c) => {
   const identityId = identityOf(c)
   if (!identityId) return signInFirst(c)
   const code = codeParam(c)
-  if (!code) return entryPage(c)
+  if (!code) return entryPage(c, identityId)
+  const wait = await guessBudgetSpent(c, identityId)
+  if (wait !== null) return tooManyTries(c, wait)
   const view = await getOAuthProvider(c).getDeviceRequest(code)
-  if (!view) return entryPage(c, { value: code, error: BAD_CODE })
+  if (!view) return entryPage(c, identityId, { value: code, error: BAD_CODE })
   if (view.status === 'expired') return expiredPage(c)
   if (view.status === 'pending') return confirmPage(c, view, identityId)
   // Decided already: the person who decided sees the result; anyone else, "already used".
@@ -125,10 +163,12 @@ deviceRoutes.post('/device', async (c) => {
   const identityId = identityOf(c)
   if (!identityId) return signInFirst(c)
   const form = await formFields(c)
-  if (!(await checkPageCsrf(c, form.get('csrf')))) return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
+  if (!(await checkPageCsrf(c, submittedCsrf(c, form.get('csrf')), identityId))) return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
+  const wait = await guessBudgetSpent(c, identityId)
+  if (wait !== null) return tooManyTries(c, wait)
   const typed = form.all('code').join('')
   const view = await getOAuthProvider(c).getDeviceRequest(typed)
-  if (!view) return entryPage(c, { value: typed, error: BAD_CODE })
+  if (!view) return entryPage(c, identityId, { value: typed, error: BAD_CODE })
   return c.redirect(`/device?code=${view.userCode}`, 303)
 })
 
@@ -139,9 +179,11 @@ deviceRoutes.post('/device/decision', async (c) => {
   const json = wantsJson(c)
   if (!identityId) return json ? c.json({ ok: false, error: 'unauthenticated' }, 401) : errorResponse(c, 401, ErrorCode.Unauthorized, 'Sign in to confirm a device')
   const form = await formFields(c)
-  if (!(await checkPageCsrf(c, c.req.header('x-csrf-token') ?? form.get('csrf')))) {
+  if (!(await checkPageCsrf(c, submittedCsrf(c, form.get('csrf')), identityId))) {
     return json ? c.json({ ok: false, error: 'csrf' }, 403) : errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
   }
+  const wait = await guessBudgetSpent(c, identityId)
+  if (wait !== null) return tooManyTries(c, wait, json)
   const decision = form.get('decision')
   if (decision !== 'approve' && decision !== 'deny') {
     return json ? c.json({ ok: false, error: 'invalid_request' }, 400) : errorResponse(c, 400, ErrorCode.InvalidRequest, 'decision must be approve or deny')
@@ -165,6 +207,8 @@ deviceRoutes.get('/device/done', async (c) => {
   const view = await getOAuthProvider(c).getDeviceRequest(codeParam(c) ?? '')
   if (!view) return expiredPage(c)
   if (view.status === 'pending') return c.redirect(`/device?code=${view.userCode}`, 303)
+  // A reload re-reads the state (motion.md): a denied code shows its cancelled page.
+  if (view.status === 'denied') return c.redirect(`/device/cancelled?code=${view.userCode}`, 303)
   if ((view.status !== 'approved' && view.status !== 'collected') || view.identityId !== identityId) return expiredPage(c, true)
   const [account, workspaces] = await Promise.all([personAccount(c.env, identityId), personWorkspaces(c.env, identityId)])
   const { name } = deviceClientName(view)
@@ -184,6 +228,7 @@ deviceRoutes.get('/device/cancelled', async (c) => {
   const view = await getOAuthProvider(c).getDeviceRequest(codeParam(c) ?? '')
   if (!view) return expiredPage(c)
   if (view.status === 'pending') return c.redirect(`/device?code=${view.userCode}`, 303)
+  if ((view.status === 'approved' || view.status === 'collected') && view.identityId === identityId) return c.redirect(`/device/done?code=${view.userCode}`, 303)
   if (view.status !== 'denied') return expiredPage(c, true)
   const { name, cliName } = deviceClientName(view)
   return renderPage(c, DeviceDone({ outcome: 'cancelled', client: { name, tile: TERMINAL }, cliName }), { title: 'Sign-in cancelled · id.org.ai' })
@@ -199,7 +244,7 @@ async function signOutPage(c: C, identityId: string, state: 'confirm' | 'done'):
   const device = deviceWhere(grant.meta) || undefined
   const base = { client: { name, tile: TERMINAL }, ...(device && { device }), action: `/device/${encodeURIComponent(family)}/revoke`, cancelHref: '/' }
   if (state === 'done') return renderPage(c, DeviceSignOut({ ...base, state, csrf: '' }), { title: 'Device signed out · id.org.ai' })
-  return withCsrf(c, (csrf) => renderPage(c, DeviceSignOut({ ...base, state, csrf }), { title: 'Sign this device out · id.org.ai', scripts: ['submit.js'] }))
+  return withCsrf(c, identityId, (csrf) => renderPage(c, DeviceSignOut({ ...base, state, csrf }), { title: 'Sign this device out · id.org.ai', scripts: ['submit.js'] }))
 }
 
 deviceRoutes.get('/device/:family/revoke', async (c) => {
@@ -212,7 +257,7 @@ deviceRoutes.post('/device/:family/revoke', async (c) => {
   const identityId = identityOf(c)
   if (!identityId) return errorResponse(c, 401, ErrorCode.Unauthorized, 'Sign in to sign a device out')
   const form = await formFields(c)
-  if (!(await checkPageCsrf(c, form.get('csrf')))) return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
+  if (!(await checkPageCsrf(c, submittedCsrf(c, form.get('csrf')), identityId))) return errorResponse(c, 403, ErrorCode.Forbidden, 'Invalid or expired CSRF token')
   const page = await signOutPage(c, identityId, 'done')
   if (page.status !== 200) return page
   await getOAuthProvider(c).revokeDeviceGrant(c.req.param('family') ?? '', identityId)

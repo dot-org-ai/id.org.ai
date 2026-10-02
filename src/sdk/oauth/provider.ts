@@ -253,10 +253,14 @@ interface DeviceCode {
   family?: string
   /** The workspace chosen on the confirm page (B6). */
   orgId?: string
-  /** When the client last polled (slow_down, RFC 8628 §3.5). */
-  lastPollAt?: number
   /** What asked for the code (backend.md#b3). */
   meta?: DeviceMeta
+}
+
+/** How a device code is being polled (slow_down), kept apart from the device record. */
+interface DevicePoll {
+  lastPollAt: number
+  interval: number
 }
 
 /** The device behind a device authorization request (backend.md#b3). `ip` is stored, never shown. */
@@ -514,11 +518,21 @@ function osFromUserAgent(ua: string | null): string | undefined {
   return undefined
 }
 
-/** A client-supplied device name: printable, single-spaced, at most 64 characters. */
+/**
+ * A client-supplied device name: letters, digits, spaces and `._()'-` only,
+ * single-spaced, at most 64 characters. No separators (`·`, `,`) and no bidi or
+ * zero-width characters, so it can't imitate or reorder the place line the
+ * confirm page builds around it (phase 6 review S5).
+ */
 function cleanDeviceName(raw: string | undefined): string | undefined {
   if (!raw) return undefined
-  // eslint-disable-next-line no-control-regex
-  const clean = raw.replace(/[\u0000-\u001f\u007f]|\[\d+(;\d+)*m/g, '').replace(/\s+/g, ' ').trim().slice(0, 64).trim()
+  const clean = raw
+    .replace(/\x1b\[[\d;]*[A-Za-z]/g, ' ')
+    .replace(/[^\p{L}\p{N} ._()'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64)
+    .trim()
   return clean || undefined
 }
 
@@ -622,6 +636,7 @@ const REFRESH_TOKEN_TTL = 30 * 24 * 3600   // 30 days
 const AUTH_CODE_TTL = 600                   // 10 minutes
 const DEVICE_CODE_TTL = 1800               // 30 minutes
 const DEVICE_POLL_INTERVAL = 5             // 5 seconds
+const DEVICE_POLL_INTERVAL_MAX = 60        // slow_down never asks for more than this
 
 // ============================================================================
 // OAuthProvider
@@ -1495,6 +1510,14 @@ export class OAuthProvider {
    * Called when the user visits /device and enters the user code.
    * Returns an HTML page or handles the POST approval.
    */
+  /**
+   * GET only: the minimal device page for hosts without their own.
+   *
+   * Breaking (phase 6, backend.md#b3): the decision is no longer a POST here,
+   * which had no CSRF token. A host renders its own confirm page and calls
+   * `decideDevice` behind its own session and CSRF checks, as id.org.ai's worker
+   * does (worker/routes/device.ts); a POST here answers 405.
+   */
   async handleDeviceVerification(request: Request, identityId: string | null): Promise<Response> {
     if (!identityId) {
       const loginUrl = new URL('/login', this.config.issuer)
@@ -1525,6 +1548,7 @@ export class OAuthProvider {
     const id = await this.storage.get<string>(`device-user:${userCode}`)
     const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
     if (!rec) return null
+    const pacing = await this.storage.get<DevicePoll>(`device-poll:${rec.id}`)
     const client = await this.getClient(rec.clientId)
     let host: string | undefined
     try {
@@ -1538,7 +1562,7 @@ export class OAuthProvider {
       status: rec.expiresAt < Date.now() && rec.status === 'pending' ? 'expired' : rec.status,
       clientId: rec.clientId,
       scopes: rec.scopes,
-      interval: rec.interval,
+      interval: pacing?.interval ?? rec.interval,
       expiresAt: rec.expiresAt,
       family: rec.family ?? '',
       ...(rec.orgId && { orgId: rec.orgId }),
@@ -1560,7 +1584,8 @@ export class OAuthProvider {
     if (!rec || rec.expiresAt < Date.now()) return { ok: false, error: 'expired' }
     const want = input.decision === 'approve' ? 'approved' : 'denied'
     if (rec.status !== 'pending') {
-      const same = rec.status === want && (want === 'denied' || rec.identityId === input.identityId)
+      // The same decision again is fine; an approval by someone else, or for another workspace, is not.
+      const same = rec.status === want && (want === 'denied' || (rec.identityId === input.identityId && rec.orgId === (input.orgId || undefined)))
       return same ? { ok: true, state: want } : { ok: false, error: 'already_used' }
     }
     const orgId = input.orgId || undefined
@@ -1577,7 +1602,8 @@ export class OAuthProvider {
         identityId: input.identityId,
         clientId: rec.clientId,
         createdAt: now,
-        ...(rec.meta && { meta: rec.meta }),
+        // Without the IP: this copy outlives the device code (phase 6 review S4).
+        ...(rec.meta && { meta: { ...rec.meta, ip: undefined } }),
       } satisfies DeviceGrantRecord)
     }
     return { ok: true, state: want }
@@ -2186,11 +2212,17 @@ export class OAuthProvider {
     switch (deviceCode.status) {
       case 'pending': {
         // RFC 8628 §3.5: polling faster than the interval gets slow_down, and
-        // the interval grows by 5 seconds (the client must follow it).
+        // the interval grows by 5 seconds (capped at 60) that the client must
+        // follow; a second's jitter is allowed. The pacing lives in its own
+        // record: rewriting the device record here could undo a decision made
+        // while this poll was in flight (phase 6 review B1).
         const now = Date.now()
-        const tooSoon = deviceCode.lastPollAt !== undefined && now - deviceCode.lastPollAt < deviceCode.interval * 1000
-        const next: DeviceCode = { ...deviceCode, lastPollAt: now, ...(tooSoon && { interval: deviceCode.interval + 5 }) }
-        await this.storage.put(`device:${deviceCodeId}`, next, { expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - now) / 1000) + 60) })
+        const pollKey = `device-poll:${deviceCodeId}`
+        const last = await this.storage.get<DevicePoll>(pollKey)
+        const interval = last?.interval ?? deviceCode.interval
+        const tooSoon = last !== undefined && now - last.lastPollAt < interval * 1000 - 1000
+        const next: DevicePoll = { lastPollAt: now, interval: tooSoon ? Math.min(interval + 5, DEVICE_POLL_INTERVAL_MAX) : interval }
+        await this.storage.put(pollKey, next, { expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - now) / 1000) + 60) })
         return tooSoon
           ? oauthError('slow_down', `Polling too fast; wait ${next.interval} seconds between requests`)
           : oauthError('authorization_pending', 'The user has not yet authorized this device')
@@ -2208,8 +2240,12 @@ export class OAuthProvider {
           return oauthError('server_error', 'Device code approved but missing identity')
         }
 
-        // One use: collected from here on, but kept until it expires so the
-        // person's result page (GET /device/done) still finds it.
+        // One use, even for two polls at once (an atomic first claim where the storage has one).
+        if (this.storage.claimOnce && !(await this.storage.claimOnce(`device-collect:${deviceCodeId}`, DEVICE_CODE_TTL * 1000 + 60_000))) {
+          return oauthError('invalid_grant', 'The device code has already been used')
+        }
+        // Collected from here on, but kept until it expires so the person's
+        // result page (GET /device/done) still finds it.
         await this.storage.put(`device:${deviceCodeId}`, { ...deviceCode, status: 'collected' } satisfies DeviceCode, {
           expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - Date.now()) / 1000) + 60),
         })
@@ -2949,7 +2985,7 @@ export class OAuthProvider {
   ${error ? `<div class="error">${this.escapeHtml(error)}</div>` : ''}
   <form method="POST" action="/device">
     <label for="user_code">Device Code</label>
-    <input type="text" id="user_code" name="user_code" maxlength="8" autocomplete="off" autofocus
+    <input type="text" id="user_code" name="user_code" maxlength="9" autocomplete="off" autofocus
       value="${this.escapeHtml(userCode)}" placeholder="ABCD1234">
     <div class="buttons">
       <button type="submit" name="approved" value="false" class="deny">Deny</button>
@@ -2962,29 +2998,6 @@ export class OAuthProvider {
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     })
-  }
-
-  private deviceApprovedHtml(): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Device Authorized - id.org.ai</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 420px; margin: 60px auto; padding: 24px; color: #111; text-align: center; }
-    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 8px; }
-    .check { font-size: 3rem; margin-bottom: 16px; }
-    .subtitle { color: #666; }
-  </style>
-</head>
-<body>
-  <div class="check">&#10003;</div>
-  <h1>Device Authorized</h1>
-  <p class="subtitle">You can close this window and return to your device or agent.</p>
-</body>
-</html>`
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

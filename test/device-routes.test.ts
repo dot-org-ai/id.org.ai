@@ -6,7 +6,9 @@
  * WorkOS is faked with fetchMock.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { SELF, fetchMock } from 'cloudflare:test'
+import { SELF, fetchMock, env } from 'cloudflare:test'
+import { getStubForIdentity } from '../worker/middleware/tenant'
+import type { Env } from '../worker/types'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
@@ -69,12 +71,12 @@ const poll = async (deviceCode: string) =>
     })
   ).json()) as Record<string, any>
 
-/** Open 4b: the page, its CSRF token, and the cookies to send back. */
+/** Open 4b: the page, and its page token (bound to the person; no cookie). */
 async function open(cookies: Record<string, string>, code: string) {
   const page = await SELF.fetch(`${BASE}/device?code=${code}`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
   expect(page.status).toBe(200)
   const html = await page.text()
-  return { html, csrf: field(html, 'csrf')!, cookies: { ...cookies, __csrf: setCookies(page).__csrf! } }
+  return { html, csrf: field(html, 'csrf')!, cookies }
 }
 
 const decide = (cookies: Record<string, string>, fields: Record<string, string>, headers: Record<string, string> = {}) =>
@@ -102,7 +104,8 @@ describe('device flow v2 through the worker', () => {
 
     const page = await open(cookies, d.user_code)
     expect(page.html).toContain('<title>Confirm id.org.ai CLI · id.org.ai</title>')
-    expect(page.html).toContain('macOS · test-mbp · requested just now')
+    // The client's separators are dropped and a place is always shown (review S5).
+    expect(page.html).toContain('macOS test-mbp · location unknown · requested just now')
     expect(page.html).toMatch(/<option value="org_ACME"[^>]*>Acme<\/option>/)
     expect(page.html).toContain('action="/device/decision"')
 
@@ -162,7 +165,7 @@ describe('device flow v2 through the worker', () => {
     const d = await deviceAuth()
     const entry = await SELF.fetch(`${BASE}/device`, { headers: { cookie: cookieHeader(cookies) } })
     const html = await entry.text()
-    const withCsrf = { ...cookies, __csrf: setCookies(entry).__csrf! }
+    const withCsrf = cookies
     const typed = new URLSearchParams({ csrf: field(html, 'csrf')! })
     for (const ch of d.user_code.replace('-', '').toLowerCase()) typed.append('code', ch)
     const go = await SELF.fetch(`${BASE}/device`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(withCsrf) }, body: typed.toString() })
@@ -194,7 +197,7 @@ describe('device flow v2 through the worker', () => {
     expect(askHtml).toContain('Sign this device out?')
     const post = await SELF.fetch(`${BASE}${revokeHref}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: setCookies(ask).__csrf! }) },
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies) },
       body: new URLSearchParams({ csrf: field(askHtml, 'csrf')! }).toString(),
     })
     expect(await post.text()).toContain('Device signed out')
@@ -208,5 +211,88 @@ describe('device flow v2 through the worker', () => {
     expect(page.headers.get('access-control-allow-origin')).toBeNull()
     const res = await decide(cookies, { code: d.user_code, decision: 'approve' }, { origin: 'https://evil.headless.ly', accept: 'application/json', 'sec-fetch-site': 'same-site' })
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
+  })
+})
+
+describe('phase 6 review: the device routes’ guards', () => {
+  const jsonHeaders = (csrf: string) => ({ 'x-csrf-token': csrf, accept: 'application/json', 'sec-fetch-site': 'same-origin' })
+
+  it('S8/M6: only the page’s own fetch gets JSON; a same-site one gets the redirect', async () => {
+    const cookies = await signIn('user_01DEVICE_H')
+    const d = await deviceAuth()
+    const page = await open(cookies, d.user_code)
+    const res = await decide(cookies, { code: d.user_code, decision: 'deny' }, { 'x-csrf-token': page.csrf, accept: 'application/json', 'sec-fetch-site': 'same-site' })
+    expect(res.status).toBe(303)
+  })
+
+  it('S2/M13: a page token answers one POST', async () => {
+    const cookies = await signIn('user_01DEVICE_I')
+    const d = await deviceAuth()
+    const page = await open(cookies, d.user_code)
+    expect((await decide(cookies, { code: d.user_code, decision: 'deny' }, jsonHeaders(page.csrf))).status).toBe(200)
+    expect((await decide(cookies, { code: d.user_code, decision: 'deny' }, jsonHeaders(page.csrf))).status).toBe(403)
+  })
+
+  it('S1: a token from someone else’s page is refused', async () => {
+    const mallory = await signIn('user_01DEVICE_J')
+    const victim = await signIn('user_01DEVICE_K')
+    const d = await deviceAuth()
+    const malloryPage = await open(mallory, d.user_code)
+    expect((await decide(victim, { code: d.user_code, decision: 'approve' }, jsonHeaders(malloryPage.csrf))).status).toBe(403)
+    expect((await poll(d.device_code)).error).toBe('authorization_pending')
+  })
+
+  it('N5: the token in both the header and the field is refused', async () => {
+    const cookies = await signIn('user_01DEVICE_L')
+    const d = await deviceAuth()
+    const page = await open(cookies, d.user_code)
+    expect((await decide(cookies, { code: d.user_code, decision: 'deny', csrf: page.csrf }, jsonHeaders(page.csrf))).status).toBe(403)
+  })
+
+  it('S8/M16: no session, no decision', async () => {
+    const d = await deviceAuth()
+    expect((await decide({}, { code: d.user_code, decision: 'approve', csrf: 'x'.repeat(64) })).status).toBe(401)
+  })
+
+  it('S8/M15 and N4: 4d is the approver’s; a reload re-reads the state', async () => {
+    const cookies = await signIn('user_01DEVICE_M')
+    const other = await signIn('user_01DEVICE_N')
+    const d = await deviceAuth()
+    const page = await open(cookies, d.user_code)
+    await decide(cookies, { code: d.user_code, decision: 'approve', csrf: page.csrf })
+    const theirs = await SELF.fetch(`${BASE}/device/done?code=${d.user_code}`, { headers: { cookie: cookieHeader(other) } })
+    expect(theirs.status).toBe(409)
+    const wrongPage = await SELF.fetch(`${BASE}/device/cancelled?code=${d.user_code}`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(wrongPage.headers.get('location')).toBe(`/device/done?code=${d.user_code}`)
+  })
+
+  it('S8/M17: signing a device out needs the page token', async () => {
+    const cookies = await signIn('user_01DEVICE_O')
+    const d = await deviceAuth()
+    const page = await open(cookies, d.user_code)
+    const revokeHref = page.html.match(/href="(\/device\/[^"]+\/revoke)"/)![1]!
+    await decide(cookies, { code: d.user_code, decision: 'approve', csrf: page.csrf })
+    const res = await SELF.fetch(`${BASE}${revokeHref}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies) }, body: '' })
+    expect(res.status).toBe(403)
+    expect((await poll(d.device_code)).access_token).toBeTruthy()
+  })
+
+  it('an expired code shows 7b in place', async () => {
+    const cookies = await signIn('user_01DEVICE_P')
+    const d = await deviceAuth()
+    const stub = getStubForIdentity(env as unknown as Env, 'oauth')
+    const rec = (await stub.oauthStorageOp({ op: 'get', key: `device:${d.device_code}` })).value as Record<string, unknown>
+    await stub.oauthStorageOp({ op: 'put', key: `device:${d.device_code}`, value: { ...rec, expiresAt: Date.now() - 1000 } })
+    const res = await SELF.fetch(`${BASE}/device?code=${d.user_code}`, { headers: { cookie: cookieHeader(cookies) } })
+    expect(res.status).toBe(410)
+    expect(await res.text()).toContain('This code has expired')
+  })
+
+  it('S3: code lookups spend a guess budget per person', async () => {
+    const cookies = await signIn('user_01DEVICE_Q')
+    const statuses: number[] = []
+    for (let i = 0; i < 31; i++) statuses.push((await SELF.fetch(`${BASE}/device?code=ZZZZ-ZZZZ`, { headers: { cookie: cookieHeader(cookies) } })).status)
+    expect(statuses.slice(0, 30).every((s) => s === 400)).toBe(true)
+    expect(statuses[30]).toBe(429)
   })
 })
