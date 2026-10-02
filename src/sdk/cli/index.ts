@@ -21,7 +21,7 @@ import { createStorage, SecureFileTokenStorage } from './storage.js'
 import { provisionCommand } from './provision.js'
 import { claimCommand } from './claim.js'
 import { ProvisionStorage } from './provision-storage.js'
-import { cleanText } from './untrusted'
+import { cleanStack, cleanText } from './untrusted'
 
 const ANSI = {
   reset: '\x1b[0m',
@@ -49,8 +49,9 @@ function printError(message: string, error?: Error) {
   // Error text can carry a server's words; never print it raw.
   if (error?.message) console.error(cleanText(error.message))
   if (error?.stack && process.env.DEBUG) {
+    // The stack repeats the message: cleaned line by line, line breaks kept.
     console.error(`\n${colors.dim}Stack trace:${colors.reset}`)
-    console.error(`${colors.dim}${error.stack}${colors.reset}`)
+    console.error(`${colors.dim}${cleanStack(error.stack)}${colors.reset}`)
   }
 }
 
@@ -212,7 +213,8 @@ async function tokenCommand() {
       return
     }
 
-    // Output raw token (for piping to other commands)
+    // The token as is, for piping. Only token characters are ever stored, and
+    // ensureValidToken hands back nothing else (untrusted.ts, parseToken).
     console.log(token)
   } catch (error) {
     printError('Failed to get token', error instanceof Error ? error : undefined)

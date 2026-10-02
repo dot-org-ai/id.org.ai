@@ -35,15 +35,16 @@ export interface OpenOptions {
 
 /**
  * The commands that open a link, in the order to try them. Each gets the link
- * as one argument and runs without a shell. Not the `open` package: on Windows
- * and WSL it runs PowerShell with the link inside a double-quoted string, where
- * `$(…)` runs as a command.
+ * as one argument and runs without a shell. Not the `open` package, and not
+ * wslview: on Windows and WSL they run PowerShell with the link inside a
+ * double-quoted string, where `$(…)` runs as a command. WSL uses the Windows
+ * opener directly, as on Windows, then xdg-open (when interop is off).
  */
 function browserCommands(url: string, platform: string, env: Env): Array<[string, string[]]> {
   if (platform === 'darwin') return [['open', [url]]]
   if (platform === 'win32') return [['rundll32', ['url.dll,FileProtocolHandler', url]]]
   const commands: Array<[string, string[]]> = []
-  if (env.WSL_DISTRO_NAME) commands.push(['wslview', [url]], ['rundll32.exe', ['url.dll,FileProtocolHandler', url]])
+  if (env.WSL_DISTRO_NAME) commands.push(['rundll32.exe', ['url.dll,FileProtocolHandler', url]])
   commands.push(['xdg-open', [url]])
   return commands
 }
@@ -71,8 +72,9 @@ const OPENABLE = /^https?:\/\/[\x21-\x7e]+$/i
 /**
  * Open `url` in the default browser. Resolves whether a browser opener started.
  * Anything but an http(s) link is refused, so nothing starting with `-` ever
- * reaches an opener as an option; runLogin already opens only the API's own
- * https links (untrusted.ts), and this holds for any other caller too.
+ * reaches an opener as an option, for any caller. runLogin opens only the link
+ * it built itself: the API origin and the checked user code (device.ts), with
+ * no character an opener's shell, if it had one, would treat specially.
  */
 export async function openInBrowser(url: string, options: OpenOptions = {}): Promise<boolean> {
   const env = options.env ?? process.env

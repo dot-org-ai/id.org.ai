@@ -5,7 +5,7 @@
  */
 
 import { CANONICAL_API_ORIGIN } from '../auth/index.js'
-import { cleanText, openableUrl, parseUserCode } from './untrusted.js'
+import { cleanText, openableUrl, originOf, parseUserCode } from './untrusted.js'
 
 export interface DeviceAuthorizationResponse {
   device_code: string
@@ -26,7 +26,7 @@ export interface TokenResponse {
 
 export type TokenError = 'authorization_pending' | 'slow_down' | 'access_denied' | 'expired_token' | 'unknown'
 
-/** The API the CLI talks to. The confirm link is opened only on this origin. */
+/** The API the CLI talks to. The confirm link is built on this origin. */
 export const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 
 /** What the person reads when a reply can't be parsed. The reply itself is never quoted. */
@@ -145,9 +145,12 @@ export interface DeviceGrant {
   deviceCode: string
   /** The user code as `XXXX-XXXX`, checked against the code alphabet. */
   userCode: string
-  /** The confirm link as printed: normalised when it is safe, else cleaned (see untrusted.ts). */
+  /**
+   * The confirm link as printed: `{API origin}/device?code=XXXX-XXXX`, built by
+   * the CLI; normalised when it is safe to open, else cleaned (see untrusted.ts).
+   */
   url: string
-  /** The same link when it is safe to open and copy (https on the API's origin); else undefined. */
+  /** The same link when it is safe to open and copy (the API is https, or http on loopback); else undefined. */
   link?: string
   /** Seconds the code lives (default 600). */
   expiresIn: number
@@ -161,27 +164,35 @@ export type ParsedDeviceAuthorization = { ok: true; grant: DeviceGrant } | { ok:
  * Check and clean a device authorization reply (RFC 8628 §3.2) before any of
  * it reaches the terminal or the browser. The user code must be 8 characters
  * of the code alphabet (XXXX-XXXX); anything else is a protocol error, and its
- * value is never echoed. The confirm link is kept for opening only when it is
- * https (or loopback http) on `apiBase`'s origin; otherwise it is only shown,
- * cleaned.
+ * value is never echoed.
+ *
+ * The confirm link is built here, as `{apiBase's origin}/device?code=XXXX-XXXX`
+ * from the checked code, never taken from the reply's verification_uri_complete:
+ * an opener may hand the link to a shell (wslview runs PowerShell with it in a
+ * double-quoted string), and RFC 3986 allows `$`, `(` and `)`. Built, the link
+ * holds only the API origin and [A-Z2-9-]. The reply must still name a
+ * verification_uri (RFC 8628 requires one), but it is not printed or opened.
+ * The link is kept for opening only when the API is https (or loopback http);
+ * otherwise it is only shown.
  */
 export function parseDeviceAuthorization(reply: unknown, apiBase: string = API_BASE): ParsedDeviceAuthorization {
   const body = (reply && typeof reply === 'object' ? reply : {}) as Record<string, unknown>
   const userCode = parseUserCode(body.user_code)
   if (!userCode) return { ok: false, error: 'the server sent an invalid user code' }
   const complete = body.verification_uri_complete
-  const raw = typeof complete === 'string' && complete ? complete : body.verification_uri
+  const sent = typeof complete === 'string' && complete ? complete : body.verification_uri
   const deviceCode = body.device_code
-  if (typeof deviceCode !== 'string' || !deviceCode || typeof raw !== 'string' || !raw) {
+  if (typeof deviceCode !== 'string' || !deviceCode || typeof sent !== 'string' || !sent) {
     return { ok: false, error: 'the server sent an invalid reply' }
   }
-  const link = openableUrl(raw, apiBase) ?? undefined
+  const built = `${originOf(apiBase)}/device?code=${userCode}`
+  const link = openableUrl(built, apiBase) ?? undefined
   return {
     ok: true,
     grant: {
       deviceCode,
       userCode,
-      url: link ?? cleanText(raw),
+      url: link ?? cleanText(built),
       link,
       expiresIn: secondsOr(body.expires_in, DEFAULT_EXPIRES_IN),
       interval: secondsOr(body.interval, DEFAULT_INTERVAL),
