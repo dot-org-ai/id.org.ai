@@ -45,7 +45,7 @@ const cookieHeader = (c: Record<string, string>) =>
     .join('; ')
 function consentFields(html: string): Record<string, string> {
   const f: Record<string, string> = {}
-  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"\s*\/?>/g)) {
     f[m[1]!] = m[2]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
   }
   return f
@@ -159,7 +159,9 @@ describe('Client ID Metadata Documents through the worker', () => {
     const page = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
     expect(page.status).toBe(200)
     const html = await page.text()
-    expect(html).toContain('<div class="app-name">claude.ai</div>')
+    // Named by its CIMD host, never the name its document gives it (D3, 3c).
+    expect(html).toMatch(/>claude\.ai wants to read your Startups</)
+    expect(html).not.toContain('Claude Code')
     const back = await consent(url, cookies) // served from the cache: the mock answered once
     expect(`${back.origin}${back.pathname}`).toBe(redirect)
     expect(back.searchParams.get('iss')).toBe(BASE)

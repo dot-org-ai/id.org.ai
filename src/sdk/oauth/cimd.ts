@@ -133,6 +133,8 @@ export function parseClientMetadataDocument(clientId: string, doc: unknown): Cim
   const host = new URL(clientId).host
   const logo = str(d.logo_uri, 2048)
   const website = str(d.client_uri, 2048)
+  const policyUri = str(d.policy_uri, 2048)
+  const tosUri = str(d.tos_uri, 2048)
   return {
     ok: true,
     client: {
@@ -148,6 +150,8 @@ export function parseClientMetadataDocument(clientId: string, doc: unknown): Cim
       tokenEndpointAuthMethod: 'none',
       ...(logo && logo.startsWith('https://') && { logo }),
       ...(website && website.startsWith('https://') && { website }),
+      ...(policyUri && policyUri.startsWith('https://') && { policyUri }),
+      ...(tosUri && tosUri.startsWith('https://') && { tosUri }),
       createdAt: 0,
     },
   }

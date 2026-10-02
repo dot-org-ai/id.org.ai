@@ -12,9 +12,6 @@ import { parseCookieValue } from '../utils/cookies'
 import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { OAuthProvider, applySignInClaims } from '../../src/sdk/oauth/provider'
 import {
-  generateCSRFToken,
-  buildCSRFCookie,
-  encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
   canonicalHostname,
@@ -23,6 +20,8 @@ import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { indexClientOrigins } from '../utils/relying-parties'
 import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 import { fetchClientMetadataDocument } from '../utils/client-metadata'
+import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
+import { renderConsentScreen } from './consent-screen'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -61,8 +60,8 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
-export function getOAuthProvider(c: any): OAuthProvider {
-  return createOAuthProvider(c.env, c.req.raw)
+export function getOAuthProvider(c: any, extra: { renderConsent?: ConsentRenderer } = {}): OAuthProvider {
+  return createOAuthProvider(c.env, c.req.raw, extra)
 }
 
 /**
@@ -70,7 +69,7 @@ export function getOAuthProvider(c: any): OAuthProvider {
  * (optional) supplies the IP and user agent for audit events; RPC callers
  * (AuthService.exchangeToken) have none.
  */
-export function createOAuthProvider(env: Env, request?: Request): OAuthProvider {
+export function createOAuthProvider(env: Env, request?: Request, extra: { renderConsent?: ConsentRenderer } = {}): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(env, 'oauth')
@@ -140,6 +139,9 @@ export function createOAuthProvider(env: Env, request?: Request): OAuthProvider 
       }
     },
     signingKeyManager,
+    // Consent v2 (backend.md#b2): the worker renders 3a/3b/3c; verified CIMD hosts per D3.
+    ...(extra.renderConsent && { renderConsent: extra.renderConsent }),
+    verifiedClientHosts: (env.VERIFIED_CLIENT_HOSTS ?? '').split(','),
     // Client ID Metadata Documents: an https client_id is fetched (SSRF-guarded),
     // at most CIMD_FETCHES_PER_IP uncached documents per caller IP per window,
     // so the unauthenticated authorize endpoint is not an open fetch relay.
@@ -234,52 +236,13 @@ app.get('/oauth/authorize', async (c) => {
   // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
   // CSRF binding like any browser consent (and the POST checks it).
   const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.getAll('scope').join(' '))
-  if ((isServiceBinding && !asksSb) || isTrustedAccount) {
-    const provider = getOAuthProvider(c)
-    return provider.handleAuthorize(c.req.raw, identityId, signIn)
-  }
-
-  // Resolve the request with the client's state untouched first. Only a consent
-  // page needs the CSRF-bound state; a login redirect, an error redirect or an
-  // issued code (consent already on record) must carry the client's own state.
-  // Wrapping before this point leaked `base64url({csrf, s})` to every
-  // registered client that had already consented, and double-wrapped the state
-  // across the /login round-trip.
-  const direct = await getOAuthProvider(c).handleAuthorize(c.req.raw, identityId, signIn)
-  const isConsentPage = direct.status === 200 && (direct.headers.get('content-type') || '').includes('text/html')
-  if (!isConsentPage) {
-    return direct
-  }
-
-  // Consent page: generate a CSRF token for the consent form (browser-direct requests only)
-  const csrfToken = generateCSRFToken()
-  // Store the CSRF token in the oauth DO's storage via RPC
-  await oauthStub.oauthStorageOp({
-    op: 'put',
-    key: `csrf:${csrfToken}`,
-    value: { token: csrfToken, createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 },
-  })
-
-  // Inject the CSRF token into the state parameter
-  const url = new URL(c.req.url)
-  const originalState = url.searchParams.get('state') ?? undefined
-  const stateWithCSRF = encodeStateWithCSRF(csrfToken, originalState)
-  url.searchParams.set('state', stateWithCSRF)
-
-  // Create a modified request with the CSRF-enhanced state
-  const modifiedRequest = new Request(url.toString(), {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-  })
-
-  const provider = getOAuthProvider(c)
-  const response = await provider.handleAuthorize(modifiedRequest, identityId, signIn)
-
-  // Set the CSRF cookie on the response
-  const isSecure = new URL(c.req.url).protocol === 'https:'
-  const newResponse = new Response(response.body, response)
-  newResponse.headers.append('Set-Cookie', buildCSRFCookie(csrfToken, isSecure))
-  return newResponse
+  // The consent screen binds its form to a CSRF token (the renderer stores it,
+  // sets the cookie and folds it into the form's state). Only a rendered
+  // consent screen carries it: a login redirect, an error redirect or an issued
+  // code (consent on record) keeps the client's own state untouched.
+  const csrf = !((isServiceBinding && !asksSb) || isTrustedAccount)
+  const provider = getOAuthProvider(c, { renderConsent: (vm) => renderConsentScreen(c, vm, { csrf }) })
+  return provider.handleAuthorize(c.req.raw, identityId, signIn)
 })
 
 // Authorization Consent Submission — CSRF validated (skipped for service binding)

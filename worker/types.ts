@@ -78,6 +78,8 @@ export interface Env {
    * /fga/* and /pipes/* if an unknown estate caller breaks. `0` (secure) by default.
    */
   LEGACY_OPEN_WORKOS_ROUTES?: string
+  /** CIMD client hosts shown as verified on consent (D3), comma-separated. Empty: only first-party clients are. */
+  VERIFIED_CLIENT_HOSTS?: string
   /** `1` serves the design gallery at /__design (worker/.dev.vars only; never in wrangler.jsonc). */
   DESIGN_GALLERY?: string
 }

@@ -684,7 +684,9 @@ describe('OAuthProvider', () => {
       expect(res.headers.get('Content-Type')).toContain('text/html')
       const html = await res.text()
       expect(html).toContain('Authorize application')
-      expect(html).toContain('Untrusted')
+      // Every DCR client is unverified (D3): named by its registered redirect host, never its own name.
+      expect(html).toContain(`<div class="app-name">${new URL(redir).host}</div>`)
+      expect(html).not.toContain('Untrusted')
     })
 
     it('trusted client skips consent', async () => {

@@ -60,6 +60,11 @@ export interface ConsentScreenOptions {
  *
  * Shows the user what permissions a third-party client is requesting
  * and provides Allow/Deny buttons.
+ *
+ * @deprecated id.org.ai's own consent is now built from a ConsentViewModel
+ * (`./consent-view.ts`) and rendered by the host: `OAuthProvider`'s
+ * `renderConsent` option, with `renderConsentFallback` when none is given.
+ * Kept because it is a public export of `id.org.ai/oauth`.
  */
 export function generateConsentScreenHtml(options: ConsentScreenOptions): string {
   const { issuer, clientName, clientId, redirectUri, scopes, consentToken } = options

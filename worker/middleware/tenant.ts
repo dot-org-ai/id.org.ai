@@ -142,6 +142,24 @@ export async function readSessionSignIn(
 }
 
 /**
+ * The organization the browser session is in (the `auth` cookie JWT's `org.id`),
+ * verified like readSessionSignIn. Consent preselects it when the request names none.
+ */
+export async function readSessionOrgId(request: Request, env: Env): Promise<string | undefined> {
+  const cookie = request.headers.get('cookie')
+  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
+  if (!jwt) return undefined
+  try {
+    const jwks = await getSigningKeyManager(env).getJWKS()
+    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const org = payload.org as { id?: unknown } | undefined
+    return typeof org?.id === 'string' ? org.id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Resolve the identity ID from a claim token via KV.
  */
 export async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<string | null> {

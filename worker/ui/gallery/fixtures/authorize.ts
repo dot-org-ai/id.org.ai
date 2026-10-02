@@ -1,7 +1,7 @@
 /** Authorize (3a–3d) group fixtures: strings copied verbatim from the mocks. */
 import type { PermissionItem } from '../../components'
 import { AdminApprove, type AdminApproveProps } from '../../screens/AdminApprove'
-import { Consent, consentAppName, consentVariant, type ConsentProps } from '../../screens/Consent'
+import { Consent, consentAppName, consentTitle, type ConsentProps } from '../../screens/Consent'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const account = { name: 'Bryant Skarda', email: 'bryant@driv.ly' }
@@ -183,9 +183,6 @@ const approve: AdminApproveProps = {
   csrf: 'gallery',
 }
 
-/** The document title names the app the way the screen does (the host for an unverified client). */
-const consentTitle = (p: ConsentProps) =>
-  consentVariant(p) === 'basic' ? `Sign in to ${consentAppName(p.client)} · id.org.ai` : `Authorize ${consentAppName(p.client)} · id.org.ai`
 const consentScripts: ['copy.js', 'submit.js', 'logo.js'] = ['copy.js', 'submit.js', 'logo.js']
 
 export const authorizeFixtures: FixtureGroup = {

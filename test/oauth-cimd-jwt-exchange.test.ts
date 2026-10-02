@@ -241,6 +241,11 @@ describe('4. Client ID Metadata Documents', () => {
     // Only browser grants survive.
     const cc = parseClientMetadataDocument(CLAUDE_CODE, { ...base, grant_types: ['authorization_code', 'client_credentials', 'urn:ietf:params:oauth:grant-type:device_code'] })
     expect(cc.ok && cc.client.grantTypes).toEqual(['authorization_code'])
+    // policy_uri and tos_uri (shown on consent, backend.md#b2): https only.
+    const links = parseClientMetadataDocument(CLAUDE_CODE, { ...base, policy_uri: 'https://claude.ai/privacy', tos_uri: 'https://claude.ai/terms' })
+    expect(links.ok && [links.client.policyUri, links.client.tosUri]).toEqual(['https://claude.ai/privacy', 'https://claude.ai/terms'])
+    const insecure = parseClientMetadataDocument(CLAUDE_CODE, { ...base, policy_uri: 'http://claude.ai/privacy', tos_uri: 'javascript:alert(1)' })
+    expect(insecure.ok && [insecure.client.policyUri, insecure.client.tosUri]).toEqual([undefined, undefined])
   })
 
   it('matches loopback redirects on any port, everything else exactly', () => {

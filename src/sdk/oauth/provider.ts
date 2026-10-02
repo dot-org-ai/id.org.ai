@@ -84,6 +84,7 @@ import {
   splitScopes,
 } from './delegation'
 import { checkClientSecret, clientHasSecret, hashClientSecret, withHashedSecret } from './client-secret'
+import { buildConsentViewModel, renderConsentFallback, type ConsentViewModel } from './consent-view'
 
 export interface OAuthConfig {
   issuer: string
@@ -131,6 +132,10 @@ export interface OAuthProviderClient {
   tokenEndpointAuthMethod: 'client_secret_basic' | 'client_secret_post' | 'none'
   logo?: string
   website?: string
+  /** The client's privacy policy (CIMD `policy_uri`, https only), linked on consent. */
+  policyUri?: string
+  /** The client's terms of service (CIMD `tos_uri`, https only), linked on consent. */
+  tosUri?: string
   createdAt: number
 }
 
@@ -522,6 +527,9 @@ interface CimdCacheEntry {
   expiresAt: number
 }
 
+/** Renders the consent screen for a view model (see ./consent-view.ts). */
+export type ConsentRenderer = (vm: ConsentViewModel, request: Request) => Response | Promise<Response>
+
 export class OAuthProvider {
   private storage: StorageLike
   private config: OAuthConfig
@@ -530,6 +538,8 @@ export class OAuthProvider {
   private trustedAccount?: TrustedAccountConfig
   private auditEmit?: OAuthAuditEmit
   private fetchClientMetadata?: ClientMetadataFetcher
+  private renderConsent?: ConsentRenderer
+  private verifiedClientHosts: ReadonlySet<string>
 
   get issuer(): string {
     return this.config.issuer
@@ -570,6 +580,14 @@ export class OAuthProvider {
      * such a client_id is simply unknown.
      */
     fetchClientMetadata?: ClientMetadataFetcher
+    /**
+     * Renders the consent screen from the view model (backend.md#b2). The
+     * id.org.ai worker renders 3a/3b/3c with the person and their workspaces;
+     * without it the provider serves a minimal fallback form.
+     */
+    renderConsent?: ConsentRenderer
+    /** CIMD client hosts that count as verified (D3, the VERIFIED_CLIENT_HOSTS env list). */
+    verifiedClientHosts?: Iterable<string>
   }) {
     this.storage = options.storage
     this.config = options.config
@@ -578,6 +596,8 @@ export class OAuthProvider {
     this.trustedAccount = options.trustedAccount
     this.auditEmit = options.auditEmit
     this.fetchClientMetadata = options.fetchClientMetadata
+    this.renderConsent = options.renderConsent
+    this.verifiedClientHosts = new Set([...(options.verifiedClientHosts ?? [])].map((h) => h.trim().toLowerCase()).filter(Boolean))
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -807,16 +827,20 @@ export class OAuthProvider {
     const alwaysAsk = looksLikeCimdClientId(clientId) && isLoopbackUri(redirectUri)
 
     if ((consentRequired && !hasFullConsent) || alwaysAsk) {
-      return this.renderConsentPage(client, {
-        clientId,
+      const vm = buildConsentViewModel({
+        client,
+        verifiedHosts: this.verifiedClientHosts,
         redirectUri,
-        scope: requestedScopes.join(' '),
+        scopes: requestedScopes,
         state,
         codeChallenge,
         codeChallengeMethod: codeChallenge ? 'S256' : undefined,
         nonce,
         resource,
+        identityId,
+        orgHint: params.get('organization_id') || undefined,
       })
+      return this.renderConsent ? await this.renderConsent(vm, request) : renderConsentFallback(vm)
     }
 
     // ── Generate authorization code ─────────────────────────────────────
@@ -2460,123 +2484,6 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Consent Page
   // ═══════════════════════════════════════════════════════════════════════════
-
-  private renderConsentPage(
-    client: OAuthProviderClient,
-    params: {
-      clientId: string
-      redirectUri: string
-      scope: string
-      state?: string
-      codeChallenge?: string
-      codeChallengeMethod?: string
-      nonce?: string
-      resource?: string
-    },
-  ): Response {
-    const esc = (v: string) => this.escapeHtml(v)
-    const scopes = splitScopes(params.scope)
-    const delegatesDo = scopes.includes(SB_SCOPE_DO)
-    // Every scope string is escaped: a registered client chooses its own
-    // scope names, and this page is served from id.org.ai's origin.
-    const scopeItems = scopes
-      .map((s) => {
-        const text = esc(SCOPE_DESCRIPTIONS[s] ?? s)
-        if (s === SB_SCOPE_DO) return `<div class="scope write">${text}<div class="note">Changes are made in your name. Choose “Allow read only” to keep api.sb read-only.</div></div>`
-        return `<div class="scope">${text}</div>`
-      })
-      .join('\n        ')
-
-    // Name where the answer goes and which resource the access is for, from
-    // values id.org.ai checked (the registered redirect_uri, the RFC 8707
-    // resource), not from the client's self-chosen name.
-    const hostOf = (u: string) => {
-      try {
-        return new URL(u).host
-      } catch {
-        return u
-      }
-    }
-    const returnsTo = hostOf(params.redirectUri)
-    const audience = params.resource ? hostOf(params.resource) : undefined
-    // A CIMD client is named by the host of its client_id URL (which id.org.ai
-    // fetched it from); the document's client_name is only what it calls itself.
-    const cimd = looksLikeCimdClientId(client.id)
-    const appName = cimd ? hostOf(client.id) : client.name
-
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Authorize ${esc(appName)} - id.org.ai</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 420px; margin: 60px auto; padding: 24px; color: #111; }
-    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 8px; }
-    .subtitle { color: #666; margin-bottom: 24px; }
-    .app { display: flex; align-items: center; gap: 12px; padding: 16px; background: #f9f9f9; border-radius: 12px; margin-bottom: 24px; }
-    .app img { width: 40px; height: 40px; border-radius: 8px; }
-    .app-name { font-weight: 600; }
-    .app-url { font-size: 0.875rem; color: #666; }
-    .scopes { margin-bottom: 24px; }
-    .scope { padding: 10px 0; border-bottom: 1px solid #eee; font-size: 0.9375rem; }
-    .scope:last-child { border-bottom: none; }
-    .scope.write { font-weight: 600; }
-    .note { font-weight: 400; font-size: 0.8125rem; color: #8a4b00; margin-top: 4px; }
-    .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
-    button { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
-    button:hover { opacity: 0.85; }
-    .allow { background: #111; color: #fff; }
-    .deny { background: #f0f0f0; color: #333; }
-    .read { background: #e8eefc; color: #123; }
-  </style>
-</head>
-<body>
-  <h1>Authorize application</h1>
-  <p class="subtitle">Grant access to your id.org.ai account</p>
-  <div class="app">
-    ${client.logo ? `<img src="${esc(client.logo)}" alt="">` : ''}
-    <div>
-      <div class="app-name">${esc(appName)}</div>
-      ${cimd ? `<div class="app-url">Calls itself “${esc(client.name)}” · ${esc(client.id)}</div>` : ''}
-      ${client.website && !cimd ? `<div class="app-url">${esc(client.website)}</div>` : ''}
-      <div class="app-url">Returns to ${esc(returnsTo)}</div>
-      ${audience ? `<div class="app-url">Access for ${esc(audience)}</div>` : ''}
-    </div>
-  </div>
-  <div class="scopes">
-    ${scopeItems}
-  </div>
-  <form method="POST" action="/oauth/authorize">
-    <input type="hidden" name="client_id" value="${esc(params.clientId)}">
-    <input type="hidden" name="redirect_uri" value="${esc(params.redirectUri)}">
-    <input type="hidden" name="scope" value="${esc(params.scope)}">
-    ${params.state ? `<input type="hidden" name="state" value="${esc(params.state)}">` : ''}
-    ${params.codeChallenge ? `<input type="hidden" name="code_challenge" value="${esc(params.codeChallenge)}">` : ''}
-    ${params.codeChallengeMethod ? `<input type="hidden" name="code_challenge_method" value="${esc(params.codeChallengeMethod)}">` : ''}
-    ${params.nonce ? `<input type="hidden" name="nonce" value="${esc(params.nonce)}">` : ''}
-    ${params.resource ? `<input type="hidden" name="resource" value="${esc(params.resource)}">` : ''}
-    <div class="buttons">
-      <button type="submit" name="approved" value="false" class="deny">Deny</button>
-      ${delegatesDo ? '<button type="submit" name="approved" value="read" class="read">Allow read only</button>' : ''}
-      <button type="submit" name="approved" value="true" class="allow">Allow</button>
-    </div>
-  </form>
-</body>
-</html>`
-
-    return new Response(html, {
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        // The consent screen must not be framed: a framed "Allow" button can be
-        // clicked by a Person who never saw what it grants (clickjacking).
-        'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "frame-ancestors 'none'",
-        'Cache-Control': 'no-store',
-      },
-    })
-  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Device Verification Page

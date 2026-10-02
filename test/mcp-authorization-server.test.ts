@@ -45,7 +45,7 @@ const cookieHeader = (c: Record<string, string>) =>
     .join('; ')
 function consentFields(html: string): Record<string, string> {
   const f: Record<string, string> = {}
-  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"\s*\/?>/g)) {
     f[m[1]!] = m[2]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
   }
   return f
@@ -181,8 +181,9 @@ describe('an MCP client delegated sb:read for api.sb', () => {
     expect(page.status).toBe(200)
     expect(page.headers.get('x-frame-options')).toBe('DENY')
     const html = await page.text()
-    expect(html).toContain('Read your Startups on api.sb')
-    expect(html).toContain('Access for api.sb')
+    // 3c (a DCR client is unverified): the registry's row and the resource it's for.
+    expect(html).toContain('Search and read your Startups on api.sb')
+    expect(html).toContain('for read access to api.sb.')
 
     const back = await consent(url, cookies)
     expect(`${back.origin}${back.pathname}`).toBe(MCP_REDIRECT)

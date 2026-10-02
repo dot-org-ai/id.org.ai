@@ -75,6 +75,9 @@
     // Escape hatch: "1" restores the old unauthenticated /admin-portal,
     // /fga/* and /pipes/* if an unknown estate caller breaks. "0" is secure.
     "LEGACY_OPEN_WORKOS_ROUTES": "0",
+    // CIMD client hosts shown as verified on consent (D3), comma-separated.
+    // Empty: only the seeded first-party clients are verified (owner step).
+    "VERIFIED_CLIENT_HOSTS": "",
   },
 
   "routes": [

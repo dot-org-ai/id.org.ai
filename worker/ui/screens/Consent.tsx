@@ -270,6 +270,11 @@ function Foot({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
   )
 }
 
+/** The document title, naming the app as the screen does (the host for an unverified client). */
+export function consentTitle(p: ConsentProps): string {
+  return consentVariant(p) === 'basic' ? `Sign in to ${consentAppName(p.client)} · id.org.ai` : `Authorize ${consentAppName(p.client)} · id.org.ai`
+}
+
 export function Consent(p: ConsentProps): JSX.Element {
   const view: View = { v: consentVariant(p), app: consentAppName(p.client) }
   const showsWorkspaces = !!(p.workspaces && p.workspaces.length)
