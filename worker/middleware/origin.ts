@@ -23,9 +23,10 @@ const allowlistedCors = cors({
 /**
  * Navigation endpoints no other origin may read with credentials: the consent
  * page (the person, their workspaces) and its POST, whose fetch-submit answer
- * carries an authorization code (phase 5 review S3).
+ * carries an authorization code (phase 5 review S3), and the device pages and
+ * their decision (the same shape, backend.md#b3).
  */
-const NO_CORS = /^\/oauth\/authorize$/
+const NO_CORS = /^\/(oauth\/authorize|device(\/.*)?)$/
 
 export async function corsMiddleware(c: any, next: () => Promise<void>) {
   if (NO_CORS.test(new URL(c.req.url).pathname)) return next()

@@ -239,15 +239,64 @@ interface RefreshToken {
 interface DeviceCode {
   id: string                   // dc_xxx
   clientId: string
-  userCode: string             // 8-char alphanumeric
+  userCode: string             // 8-char alphanumeric, stored without the hyphen
   scopes: string[]
-  status: 'pending' | 'approved' | 'denied' | 'expired'
+  // collected: approved and its tokens issued (one use); kept until expiry so
+  // the person's result page still finds it after the device has polled.
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'collected'
   identityId?: string          // set when user approves
   approvedAt?: number          // when the Person approved (the grant's time, see isTokenRevoked)
-  interval: number             // polling interval in seconds
+  interval: number             // polling interval in seconds (grows on slow_down)
   expiresAt: number
   createdAt: number
+  /** The grant's refresh family, fixed at the request, so the device can be signed out before it collects tokens. */
+  family?: string
+  /** The workspace chosen on the confirm page (B6). */
+  orgId?: string
+  /** When the client last polled (slow_down, RFC 8628 §3.5). */
+  lastPollAt?: number
+  /** What asked for the code (backend.md#b3). */
+  meta?: DeviceMeta
 }
+
+/** The device behind a device authorization request (backend.md#b3). `ip` is stored, never shown. */
+export interface DeviceMeta {
+  os?: string
+  city?: string
+  region?: string
+  country?: string
+  ip?: string
+  requestedAt: number
+}
+
+/** Who approved a device grant, and for which device (its sign-out page). */
+interface DeviceGrantRecord {
+  identityId: string
+  clientId: string
+  createdAt: number
+  meta?: DeviceMeta
+}
+
+/** A device request as the confirm page needs it. */
+export interface DeviceRequestView {
+  /** XXXX-XXXX */
+  userCode: string
+  status: DeviceCode['status']
+  clientId: string
+  scopes: string[]
+  interval: number
+  expiresAt: number
+  family: string
+  orgId?: string
+  identityId?: string
+  meta?: DeviceMeta
+  /** The client as registered: its own name, whether it's first-party (D3), and its first redirect host if any. */
+  client: { name: string; trusted: boolean; host?: string }
+}
+
+export type DeviceDecision =
+  | { ok: true; state: 'approved' | 'denied' }
+  | { ok: false; error: 'expired' | 'already_used' | 'invalid_org' }
 
 // Internal storage type — see OAuthConsent in ./types.ts for canonical API type
 interface ConsentRecord {
@@ -441,6 +490,36 @@ function generateId(prefix: string): string {
   crypto.getRandomValues(bytes)
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   return `${prefix}${hex}`
+}
+
+/** A user code for display: XXXX-XXXX (backend.md#b3). */
+export function formatUserCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
+}
+
+/** What a person typed (any case, with or without the hyphen or spaces) as the stored code. */
+export function normalizeUserCode(input: string): string {
+  return input.toUpperCase().replace(/[\s-]/g, '')
+}
+
+/** The OS from a User-Agent, or undefined. */
+function osFromUserAgent(ua: string | null): string | undefined {
+  if (!ua) return undefined
+  if (/iPhone|iPad|iOS/.test(ua)) return 'iOS'
+  if (/Android/.test(ua)) return 'Android'
+  if (/CrOS/.test(ua)) return 'ChromeOS'
+  if (/Mac OS X|Macintosh|darwin/i.test(ua)) return 'macOS'
+  if (/Windows|win32/i.test(ua)) return 'Windows'
+  if (/Linux|linux/.test(ua)) return 'Linux'
+  return undefined
+}
+
+/** A client-supplied device name: printable, single-spaced, at most 64 characters. */
+function cleanDeviceName(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  // eslint-disable-next-line no-control-regex
+  const clean = raw.replace(/[\u0000-\u001f\u007f]|\[\d+(;\d+)*m/g, '').replace(/\s+/g, ' ').trim().slice(0, 64).trim()
+  return clean || undefined
 }
 
 function generateUserCode(): string {
@@ -1360,6 +1439,21 @@ export class OAuthProvider {
     const now = Date.now()
     const expiresAt = now + DEVICE_CODE_TTL * 1000
 
+    // What asked for the code (backend.md#b3): shown on the confirm page so the
+    // person can tell their own device's request from someone else's.
+    const cf = (request as Request & { cf?: { city?: unknown; regionCode?: unknown; region?: unknown; country?: unknown } }).cf
+    const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 64) : undefined)
+    const meta: DeviceMeta = {
+      requestedAt: now,
+      ...((cleanDeviceName(body.device_name) ?? osFromUserAgent(request.headers.get('user-agent'))) && {
+        os: cleanDeviceName(body.device_name) ?? osFromUserAgent(request.headers.get('user-agent')),
+      }),
+      ...(str(cf?.city) && { city: str(cf?.city) }),
+      ...(str(cf?.regionCode ?? cf?.region) && { region: str(cf?.regionCode ?? cf?.region) }),
+      ...(str(cf?.country) && { country: str(cf?.country) }),
+      ...(request.headers.get('cf-connecting-ip') && { ip: request.headers.get('cf-connecting-ip')! }),
+    }
+
     const deviceCode: DeviceCode = {
       id: deviceCodeId,
       clientId,
@@ -1369,6 +1463,8 @@ export class OAuthProvider {
       interval: DEVICE_POLL_INTERVAL,
       expiresAt,
       createdAt: now,
+      family: crypto.randomUUID(),
+      meta,
     }
 
     await this.storage.put(`device:${deviceCodeId}`, deviceCode, {
@@ -1380,11 +1476,12 @@ export class OAuthProvider {
       expirationTtl: DEVICE_CODE_TTL + 60,
     })
 
+    const display = formatUserCode(userCode)
     return jsonResponse({
       device_code: deviceCodeId,
-      user_code: userCode,
+      user_code: display,
       verification_uri: `${this.config.issuer}/device`,
-      verification_uri_complete: `${this.config.issuer}/device?user_code=${userCode}`,
+      verification_uri_complete: `${this.config.issuer}/device?code=${display}`,
       expires_in: DEVICE_CODE_TTL,
       interval: DEVICE_POLL_INTERVAL,
     })
@@ -1407,56 +1504,112 @@ export class OAuthProvider {
 
     if (request.method === 'GET') {
       const url = new URL(request.url)
-      const userCode = url.searchParams.get('user_code') || ''
+      const userCode = url.searchParams.get('code') || url.searchParams.get('user_code') || ''
       return this.renderDeviceVerificationPage(userCode)
     }
 
-    if (request.method === 'POST') {
-      const body = await parseBody(request)
-      const userCode = (body.user_code || '').toUpperCase().replace(/[\s-]/g, '')
-      const approved = body.approved === 'true'
-
-      if (!userCode || userCode.length !== 8) {
-        return this.renderDeviceVerificationPage('', 'Please enter a valid 8-character code')
-      }
-
-      const deviceCodeId = await this.storage.get<string>(`device-user:${userCode}`)
-      if (!deviceCodeId) {
-        return this.renderDeviceVerificationPage(userCode, 'Invalid or expired code. Please try again.')
-      }
-
-      const deviceCode = await this.storage.get<DeviceCode>(`device:${deviceCodeId}`)
-      if (!deviceCode || deviceCode.expiresAt < Date.now()) {
-        return this.renderDeviceVerificationPage(userCode, 'This code has expired. Please request a new one.')
-      }
-
-      if (deviceCode.status !== 'pending') {
-        return this.renderDeviceVerificationPage(userCode, 'This code has already been used.')
-      }
-
-      // Update device code status
-      await this.storage.put(`device:${deviceCodeId}`, {
-        ...deviceCode,
-        status: approved ? 'approved' : 'denied',
-        identityId: approved ? identityId : undefined,
-        ...(approved && { approvedAt: Date.now() }),
-      } satisfies DeviceCode)
-
-      if (approved) {
-        return new Response(this.deviceApprovedHtml(), {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        })
-      }
-
-      return this.renderDeviceVerificationPage('', 'Authorization denied.')
-    }
-
+    // The decision is decideDevice, behind a CSRF-checked endpoint (the
+    // worker's POST /device/decision). The old POST here took one with no
+    // CSRF token at all (backend.md#b3), so it is gone.
     return oauthError('invalid_request', 'Method not allowed', 405)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // UserInfo Endpoint (OIDC Core)
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /** The device request behind a code someone typed, for the confirm page; null when there is none. */
+  async getDeviceRequest(input: string): Promise<DeviceRequestView | null> {
+    const userCode = normalizeUserCode(input)
+    if (!/^[A-Z2-9]{8}$/.test(userCode)) return null
+    const id = await this.storage.get<string>(`device-user:${userCode}`)
+    const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
+    if (!rec) return null
+    const client = await this.getClient(rec.clientId)
+    let host: string | undefined
+    try {
+      host = client?.redirectUris[0] ? new URL(client.redirectUris[0]).host : undefined
+    } catch {
+      host = undefined
+    }
+    return {
+      client: { name: client?.name ?? rec.clientId, trusted: !!client?.trusted, ...(host && { host }) },
+      userCode: formatUserCode(rec.userCode),
+      status: rec.expiresAt < Date.now() && rec.status === 'pending' ? 'expired' : rec.status,
+      clientId: rec.clientId,
+      scopes: rec.scopes,
+      interval: rec.interval,
+      expiresAt: rec.expiresAt,
+      family: rec.family ?? '',
+      ...(rec.orgId && { orgId: rec.orgId }),
+      ...(rec.identityId && { identityId: rec.identityId }),
+      ...(rec.meta && { meta: rec.meta }),
+    }
+  }
+
+  /**
+   * A person's decision on a device request (backend.md#b3). Repeating the
+   * same decision answers the same; a different one after a decision is
+   * already_used. A workspace must be one of theirs, and travels into the
+   * device's tokens as org_id. The caller checks the session and CSRF.
+   */
+  async decideDevice(input: { code: string; identityId: string; decision: 'approve' | 'deny'; orgId?: string }): Promise<DeviceDecision> {
+    const userCode = normalizeUserCode(input.code)
+    const id = /^[A-Z2-9]{8}$/.test(userCode) ? await this.storage.get<string>(`device-user:${userCode}`) : undefined
+    const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
+    if (!rec || rec.expiresAt < Date.now()) return { ok: false, error: 'expired' }
+    const want = input.decision === 'approve' ? 'approved' : 'denied'
+    if (rec.status !== 'pending') {
+      const same = rec.status === want && (want === 'denied' || rec.identityId === input.identityId)
+      return same ? { ok: true, state: want } : { ok: false, error: 'already_used' }
+    }
+    const orgId = input.orgId || undefined
+    if (want === 'approved' && orgId !== undefined && !(await this.isOrgMember(input.identityId, orgId))) return { ok: false, error: 'invalid_org' }
+    const now = Date.now()
+    const next: DeviceCode =
+      want === 'approved'
+        ? { ...rec, status: 'approved', identityId: input.identityId, approvedAt: now, ...(orgId && { orgId }) }
+        : { ...rec, status: 'denied' }
+    await this.storage.put(`device:${rec.id}`, next, { expirationTtl: Math.max(60, Math.ceil((rec.expiresAt - now) / 1000) + 60) })
+    // Who may sign this device out later (revokeDeviceGrant).
+    if (want === 'approved' && rec.family) {
+      await this.storage.put(`device-grant:${rec.family}`, {
+        identityId: input.identityId,
+        clientId: rec.clientId,
+        createdAt: now,
+        ...(rec.meta && { meta: rec.meta }),
+      } satisfies DeviceGrantRecord)
+    }
+    return { ok: true, state: want }
+  }
+
+  /**
+   * "Sign this device out" (backend.md#b3): revoke the device grant's refresh
+   * family, if `identityId` approved it. Works before the device has collected
+   * its tokens too: the family's tombstone refuses them at the poll.
+   */
+  /** A device grant `identityId` made, for its "sign this device out" page; null otherwise. */
+  async getDeviceGrant(family: string, identityId: string): Promise<{ client: DeviceRequestView['client']; meta?: DeviceMeta } | null> {
+    if (!family) return null
+    const grant = await this.storage.get<DeviceGrantRecord>(`device-grant:${family}`)
+    if (!grant || grant.identityId !== identityId) return null
+    const client = await this.getClient(grant.clientId)
+    let host: string | undefined
+    try {
+      host = client?.redirectUris[0] ? new URL(client.redirectUris[0]).host : undefined
+    } catch {
+      host = undefined
+    }
+    return { client: { name: client?.name ?? grant.clientId, trusted: !!client?.trusted, ...(host && { host }) }, ...(grant.meta && { meta: grant.meta }) }
+  }
+
+  async revokeDeviceGrant(family: string, identityId: string): Promise<boolean> {
+    if (!family) return false
+    const grant = await this.storage.get<{ identityId: string }>(`device-grant:${family}`)
+    if (!grant || grant.identityId !== identityId) return false
+    await this.revokeRefreshTokenFamily(family)
+    return true
+  }
 
   async handleUserinfo(request: Request): Promise<Response> {
     const authHeader = request.headers.get('authorization')
@@ -2031,37 +2184,51 @@ export class OAuthProvider {
     }
 
     switch (deviceCode.status) {
-      case 'pending':
-        return oauthError('authorization_pending', 'The user has not yet authorized this device')
+      case 'pending': {
+        // RFC 8628 §3.5: polling faster than the interval gets slow_down, and
+        // the interval grows by 5 seconds (the client must follow it).
+        const now = Date.now()
+        const tooSoon = deviceCode.lastPollAt !== undefined && now - deviceCode.lastPollAt < deviceCode.interval * 1000
+        const next: DeviceCode = { ...deviceCode, lastPollAt: now, ...(tooSoon && { interval: deviceCode.interval + 5 }) }
+        await this.storage.put(`device:${deviceCodeId}`, next, { expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - now) / 1000) + 60) })
+        return tooSoon
+          ? oauthError('slow_down', `Polling too fast; wait ${next.interval} seconds between requests`)
+          : oauthError('authorization_pending', 'The user has not yet authorized this device')
+      }
 
       case 'denied':
-        // Clean up
-        await this.storage.delete(`device:${deviceCodeId}`)
-        await this.storage.delete(`device-user:${deviceCode.userCode}`)
+        // Kept until it expires: the person's "cancelled" page reads it.
         return oauthError('access_denied', 'The user denied the authorization request')
+
+      case 'collected':
+        return oauthError('invalid_grant', 'The device code has already been used')
 
       case 'approved': {
         if (!deviceCode.identityId) {
           return oauthError('server_error', 'Device code approved but missing identity')
         }
 
-        // Clean up device code (one-time use)
-        await this.storage.delete(`device:${deviceCodeId}`)
-        await this.storage.delete(`device-user:${deviceCode.userCode}`)
+        // One use: collected from here on, but kept until it expires so the
+        // person's result page (GET /device/done) still finds it.
+        await this.storage.put(`device:${deviceCodeId}`, { ...deviceCode, status: 'collected' } satisfies DeviceCode, {
+          expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - Date.now()) / 1000) + 60),
+        })
 
         // The grant is the approval: if the Person revoked this client since
         // approving, the approval is dead too.
         const grantedAt = deviceCode.approvedAt ?? deviceCode.createdAt
-        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt })) {
+        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt, family: deviceCode.family })) {
           return oauthError('invalid_grant', 'The grant for this device code has been revoked')
         }
 
-        // Issue tokens
+        // Issue tokens in the family fixed at the request, with the chosen workspace.
         return this.issueTokenPair({
           clientId,
           identityId: deviceCode.identityId,
           scopes: deviceCode.scopes,
           grantedAt,
+          ...(deviceCode.family && { family: deviceCode.family }),
+          ...(deviceCode.orgId && { orgId: deviceCode.orgId }),
         })
       }
 

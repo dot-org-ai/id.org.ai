@@ -22,6 +22,7 @@ import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
 import { renderConsentScreen } from './consent-screen'
+import { deviceRoutes } from './device'
 import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 import { validateOrgMembershipFor } from '../utils/org-membership'
 
@@ -189,6 +190,7 @@ export function createOAuthProvider(env: Env, request?: Request, extra: { render
 // ── Auth Middleware for OAuth routes ─────────────────────────────────────────
 app.use('/oauth/authorize', authenticateRequest)
 app.use('/device', authenticateRequest)
+app.use('/device/*', authenticateRequest)
 
 // ── Dynamic Client Registration (RFC 7591) ──────────────────────────────────
 app.post('/oauth/register', async (c) => {
@@ -440,12 +442,8 @@ app.post('/oauth/device', async (c) => {
 })
 
 // Device Verification (browser-side)
-app.all('/device', async (c) => {
-  const auth = c.get('auth')
-  const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
-  const provider = getOAuthProvider(c)
-  return provider.handleDeviceVerification(c.req.raw, identityId)
-})
+// The device pages (4b–4d, backend.md#b3): worker/routes/device.ts.
+app.route('', deviceRoutes)
 
 // UserInfo Endpoint (OIDC Core)
 // Handled at the worker level (not delegated to OAuthProvider) because

@@ -14,10 +14,10 @@ import type { Context } from 'hono'
 import type { Env, Variables } from '../types'
 import type { ConsentViewModel } from '../../src/sdk/oauth/consent-view'
 import { buildCSRFCookie, encodeStateWithCSRF, generateCSRFToken } from '../../src/sdk/csrf'
-import { fetchOrgInfo, listUserOrgMemberships } from '../../src/sdk/workos/upstream'
+import { personAccount, personWorkspaces } from '../utils/person'
 import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
 import { renderPage } from '../ui/render'
-import { consentProps, type ConsentPageContext } from '../ui/consent-props'
+import { consentProps } from '../ui/consent-props'
 import { Consent, consentTitle } from '../ui/screens/Consent'
 
 type C = Context<{ Bindings: Env; Variables: Variables }>
@@ -27,31 +27,8 @@ export interface ConsentScreenOptions {
   csrf: boolean
 }
 
-/** The person: name, email and avatar from their identity record. */
-async function account(env: Env, identityId: string): Promise<ConsentPageContext['account']> {
-  const identity = (await getStubForIdentity(env, identityId)
-    .getIdentity(identityId)
-    .catch(() => null)) as { name?: string; email?: string; image?: string } | null
-  const email = identity?.email ?? ''
-  return { name: identity?.name || email || 'You', email, ...(identity?.image && { avatar: identity.image }) }
-}
-
-/** Their active WorkOS workspaces, named. Empty when WorkOS isn't configured or the identity isn't linked. */
-async function workspaces(env: Env, identityId: string): Promise<ConsentPageContext['workspaces']> {
-  if (!env.WORKOS_API_KEY) return []
-  const stored = await getStubForIdentity(env, identityId)
-    .oauthStorageOp({ op: 'get', key: `identity:${identityId}` })
-    .catch(() => null)
-  const workosUserId = (stored?.value as { workosUserId?: string } | null)?.workosUserId
-  if (!workosUserId) return []
-  const memberships = (await listUserOrgMemberships(env.WORKOS_API_KEY, workosUserId)).filter((m) => m.status === 'active')
-  return Promise.all(
-    memberships.map(async (m) => ({ id: m.organization_id, name: (await fetchOrgInfo(env.WORKOS_API_KEY!, m.organization_id))?.name ?? m.organization_id })),
-  )
-}
-
 export async function renderConsentScreen(c: C, vm: ConsentViewModel, opts: ConsentScreenOptions): Promise<Response> {
-  const [person, orgs, sessionOrg] = await Promise.all([account(c.env, vm.identityId), workspaces(c.env, vm.identityId), readSessionOrgId(c.req.raw, c.env)])
+  const [person, orgs, sessionOrg] = await Promise.all([personAccount(c.env, vm.identityId), personWorkspaces(c.env, vm.identityId), readSessionOrgId(c.req.raw, c.env)])
   const isMember = (id: string | undefined) => !!id && orgs.some((o) => o.id === id)
   const selectedOrgId = [vm.orgHint, vm.rememberedOrgId, sessionOrg].find(isMember) ?? orgs[0]?.id
 

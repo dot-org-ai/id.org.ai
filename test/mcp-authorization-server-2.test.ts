@@ -355,8 +355,17 @@ describe('PR #31 review round 2: the device flow and revocation', () => {
     const d = await SELF.fetch(`${BASE}/oauth/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, scope: 'openid profile email offline_access' }).toString() })
     expect(d.status).toBe(200)
     const dev = (await d.json()) as { device_code: string; user_code: string }
-    const ok = await SELF.fetch(`${BASE}/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies) }, body: new URLSearchParams({ user_code: dev.user_code, approved: 'true' }).toString() })
-    expect(ok.status).toBe(200)
+    // Open the confirm page (it sets the CSRF cookie), then approve through the
+    // CSRF-checked decision endpoint (backend.md#b3; the old POST /device had none).
+    const page = await SELF.fetch(`${BASE}/device?code=${dev.user_code}`, { headers: { cookie: cookieHeader(cookies) } })
+    const csrf = (await page.text()).match(/<input type="hidden" name="csrf" value="([^"]*)"/)![1]!
+    const ok = await SELF.fetch(`${BASE}/device/decision`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: setCookies(page).__csrf! }) },
+      body: new URLSearchParams({ code: dev.user_code, decision: 'approve', csrf }).toString(),
+    })
+    expect(ok.status).toBe(303)
     return dev.device_code
   }
   const poll = (clientId: string, deviceCode: string) => token({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientId, device_code: deviceCode })
