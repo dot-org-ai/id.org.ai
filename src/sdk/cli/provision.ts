@@ -1,5 +1,6 @@
 import { provision } from '../claim/client.js'
 import type { ProvisionStorage } from './provision-storage.js'
+import { cleanText } from './untrusted.js'
 
 export interface ProvisionCommandOptions {
   baseUrl: string
@@ -26,15 +27,15 @@ export async function provisionCommand(opts: ProvisionCommandOptions): Promise<v
     console.log('')
     console.log('  Anonymous sandbox created')
     console.log('')
-    console.log(`  Tenant:      ${result.tenantId}`)
-    console.log(`  Claim Token: ${result.claimToken}`)
-    console.log(`  Level:       ${result.level}`)
-    console.log(`  Expires:     ${result.limits.ttlHours} hours`)
+    console.log(`  Tenant:      ${cleanText(result.tenantId)}`)
+    console.log(`  Claim Token: ${cleanText(result.claimToken)}`)
+    console.log(`  Level:       ${cleanText(String(result.level))}`)
+    console.log(`  Expires:     ${cleanText(String(result.limits?.ttlHours))} hours`)
     console.log('')
     console.log('  Next step: id.org.ai claim')
     console.log('')
   } catch (err) {
-    console.error(`Provision failed: ${err instanceof Error ? err.message : err}`)
+    console.error(`Provision failed: ${cleanText(err instanceof Error ? err.message : err)}`)
     console.error('Try again, or check https://id.org.ai for status.')
     process.exit(1)
   }

@@ -92,7 +92,6 @@
     "@workos-inc/node": "^7.0.0",
     "hono": "^4.0.0",
     "jose": "^6.0.0",
-    "open": "^10.1.0",
     "schema.org.ai": "^0.1.0"
   },
   "devDependencies": {

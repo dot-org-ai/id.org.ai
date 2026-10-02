@@ -1267,3 +1267,23 @@ describe('openInBrowser', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('other commands never print server text raw (phase 6 review B2, beyond login)', () => {
+  it('provision cleans the tenant, claim token, level and expiry it prints', async () => {
+    const { provisionCommand } = await import('../src/sdk/cli/provision')
+    const evil = 'ten\u001b]52;c;ZXZpbA==\u0007\u001b[2J\u202Eant'
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ tenantId: evil, sessionToken: 's', claimToken: evil, level: evil, limits: { ttlHours: evil } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const lines: string[] = []
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')))
+    try {
+      await provisionCommand({ baseUrl: 'http://127.0.0.1:1', json: false, storage: { setProvisionData: async () => {} } as never })
+    } finally {
+      log.mockRestore()
+      vi.unstubAllGlobals()
+    }
+    const out = lines.join('\n')
+    expect(out).toContain('Tenant:')
+    expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/)
+  })
+})

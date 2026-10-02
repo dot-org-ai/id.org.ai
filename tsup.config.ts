@@ -22,5 +22,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
-  external: ['open', 'cloudflare:workers'],
+  external: ['cloudflare:workers'],
 })

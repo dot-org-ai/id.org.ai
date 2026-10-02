@@ -2,6 +2,7 @@ import { execSync } from 'child_process'
 import { writeClaimWorkflow } from '../claim/workflow-fs'
 import { getClaimStatus } from '../claim/client'
 import type { ProvisionStorage } from './provision-storage'
+import { cleanText } from './untrusted'
 
 export interface ClaimCommandOptions {
   baseUrl: string
@@ -76,7 +77,7 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
     }
   } catch (err) {
     if (err instanceof Error && err.message === 'exit') throw err
-    console.error(`Claim failed: ${err instanceof Error ? err.message : err}`)
+    console.error(`Claim failed: ${cleanText(err instanceof Error ? err.message : err)}`)
     process.exit(1)
   }
 }

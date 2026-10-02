@@ -21,6 +21,7 @@ import { createStorage, SecureFileTokenStorage } from './storage.js'
 import { provisionCommand } from './provision.js'
 import { claimCommand } from './claim.js'
 import { ProvisionStorage } from './provision-storage.js'
+import { cleanText } from './untrusted'
 
 const ANSI = {
   reset: '\x1b[0m',
@@ -45,7 +46,8 @@ const storage = createStorage(process.env.ID_ORG_AI_STORAGE_PATH)
 
 function printError(message: string, error?: Error) {
   console.error(`${colors.red}Error:${colors.reset} ${message}`)
-  if (error?.message) console.error(error.message)
+  // Error text can carry a server's words; never print it raw.
+  if (error?.message) console.error(cleanText(error.message))
   if (error?.stack && process.env.DEBUG) {
     console.error(`\n${colors.dim}Stack trace:${colors.reset}`)
     console.error(`${colors.dim}${error.stack}${colors.reset}`)
