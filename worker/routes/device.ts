@@ -21,6 +21,7 @@ import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { formatUserCode, type DeviceRequestView } from '../../src/sdk/oauth/provider'
 import { getOAuthProvider } from './oauth'
 import { checkPageCsrf, issuePageCsrf } from '../utils/page-csrf'
+import { isBrowserSession } from '../utils/browser-session'
 import { personAccount, personWorkspaces } from '../utils/person'
 import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
 import { renderPage } from '../ui/render'
@@ -38,9 +39,15 @@ export const deviceRoutes = new Hono<{ Bindings: Env; Variables: Variables }>()
 const BAD_CODE = 'That code is invalid or has expired. Check your terminal for the current code.'
 const TERMINAL = { kind: 'icon', icon: 'terminal' } as const
 
+/**
+ * The person, signed in with their browser session. A device is approved by a
+ * person, so an API key, a session token or an anonymous sandbox (`ses_`) is
+ * treated as signed out (phase 6 re-review SF-2).
+ */
 function identityOf(c: C): string | null {
   const auth = c.get('auth')
-  return auth?.authenticated ? (auth.identityId ?? null) : null
+  if (!auth?.authenticated || !auth.identityId || !isBrowserSession(c.req.raw)) return null
+  return auth.identityId
 }
 
 /** Sign in, then come back here (a relative continue, so local development stays local). */
@@ -85,13 +92,13 @@ const GUESS_WINDOW_MS = 15 * 60 * 1000
  */
 async function guessBudgetSpent(c: C, identityId: string): Promise<number | null> {
   const stub = getStubForIdentity(c.env, 'oauth')
+  // The person's budget first: someone who has spent theirs doesn't also spend
+  // their IP's, so one person can't lock out everyone behind a shared IP (re-review SF-5).
+  const byPerson = await stub.consumeBudget({ key: `device-guess:id:${identityId}`, max: 30, windowMs: GUESS_WINDOW_MS })
+  if (!byPerson.allowed) return Math.max(byPerson.retryAfterSec, 60)
   const ip = c.req.header('cf-connecting-ip') ?? 'no-ip'
-  const [byPerson, byIp] = await Promise.all([
-    stub.consumeBudget({ key: `device-guess:id:${identityId}`, max: 30, windowMs: GUESS_WINDOW_MS }),
-    stub.consumeBudget({ key: `device-guess:ip:${ip}`, max: 60, windowMs: GUESS_WINDOW_MS }),
-  ])
-  if (byPerson.allowed && byIp.allowed) return null
-  return Math.max(byPerson.retryAfterSec, byIp.retryAfterSec, 60)
+  const byIp = await stub.consumeBudget({ key: `device-guess:ip:${ip}`, max: 60, windowMs: GUESS_WINDOW_MS })
+  return byIp.allowed ? null : Math.max(byIp.retryAfterSec, 60)
 }
 
 function tooManyTries(c: C, retryAfterSeconds: number, json = false): Response | Promise<Response> {
@@ -204,6 +211,9 @@ deviceRoutes.post('/device/decision', async (c) => {
 deviceRoutes.get('/device/done', async (c) => {
   const identityId = identityOf(c)
   if (!identityId) return signInFirst(c)
+  // A code lookup like any other (re-review SF-1): it spends the guess budget.
+  const wait = await guessBudgetSpent(c, identityId)
+  if (wait !== null) return tooManyTries(c, wait)
   const view = await getOAuthProvider(c).getDeviceRequest(codeParam(c) ?? '')
   if (!view) return expiredPage(c)
   if (view.status === 'pending') return c.redirect(`/device?code=${view.userCode}`, 303)
@@ -225,6 +235,8 @@ deviceRoutes.get('/device/done', async (c) => {
 deviceRoutes.get('/device/cancelled', async (c) => {
   const identityId = identityOf(c)
   if (!identityId) return signInFirst(c)
+  const wait = await guessBudgetSpent(c, identityId)
+  if (wait !== null) return tooManyTries(c, wait)
   const view = await getOAuthProvider(c).getDeviceRequest(codeParam(c) ?? '')
   if (!view) return expiredPage(c)
   if (view.status === 'pending') return c.redirect(`/device?code=${view.userCode}`, 303)

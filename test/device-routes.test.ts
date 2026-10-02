@@ -296,3 +296,39 @@ describe('phase 6 review: the device routes’ guards', () => {
     expect(statuses[30]).toBe(429)
   })
 })
+
+describe('phase 6 re-review: who may approve, and the budget everywhere', () => {
+  it('SF-2: an anonymous sandbox session (ses_) is signed out here: no page, no decision', async () => {
+    const prov = await SELF.fetch(`${BASE}/api/provision`, { method: 'POST' })
+    const { sessionToken } = (await prov.json()) as { sessionToken: string }
+    expect(sessionToken).toMatch(/^ses_/)
+    const d = await deviceAuth()
+    const page = await SELF.fetch(`${BASE}/device?code=${d.user_code}`, { redirect: 'manual', headers: { authorization: `Bearer ${sessionToken}` } })
+    expect(page.status).toBe(302)
+    expect(new URL(page.headers.get('location')!, BASE).pathname).toBe('/login')
+    const res = await SELF.fetch(`${BASE}/device/decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Bearer ${sessionToken}` },
+      body: new URLSearchParams({ code: d.user_code, decision: 'approve', csrf: 'x'.repeat(64) }).toString(),
+    })
+    expect(res.status).toBe(401)
+    expect((await poll(d.device_code)).error).toBe('authorization_pending')
+  })
+
+  it('SF-1: the result pages spend the guess budget too', async () => {
+    const cookies = await signIn('user_01DEVICE_R')
+    const statuses: number[] = []
+    for (let i = 0; i < 31; i++) statuses.push((await SELF.fetch(`${BASE}/device/done?code=ZZZZ-ZZZZ`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })).status)
+    expect(statuses[30]).toBe(429)
+  })
+
+  it('SF-5: someone who has spent their own budget doesn’t spend their IP’s', async () => {
+    const spender = await signIn('user_01DEVICE_S')
+    const neighbour = await signIn('user_01DEVICE_T')
+    const ip = { 'cf-connecting-ip': '198.51.100.20' }
+    for (let i = 0; i < 60; i++) await SELF.fetch(`${BASE}/device?code=ZZZZ-ZZZZ`, { headers: { cookie: cookieHeader(spender), ...ip } })
+    // 30 of those spent the IP's budget; the other 30 stopped at the person's.
+    const res = await SELF.fetch(`${BASE}/device?code=ZZZZ-ZZZZ`, { headers: { cookie: cookieHeader(neighbour), ...ip } })
+    expect(res.status).toBe(400)
+  })
+})

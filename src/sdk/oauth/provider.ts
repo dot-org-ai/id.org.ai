@@ -519,16 +519,17 @@ function osFromUserAgent(ua: string | null): string | undefined {
 }
 
 /**
- * A client-supplied device name: letters, digits, spaces and `._()'-` only,
- * single-spaced, at most 64 characters. No separators (`·`, `,`) and no bidi or
- * zero-width characters, so it can't imitate or reorder the place line the
- * confirm page builds around it (phase 6 review S5).
+ * A client-supplied device name: ASCII letters, digits, spaces and `._()'-`
+ * only, single-spaced, at most 64 characters. No separators (`·`, `,`), no
+ * letters that look like them, and no bidi or zero-width characters, so it
+ * can't imitate or reorder the place line the confirm page builds around it
+ * (phase 6 review S5 and re-review).
  */
 function cleanDeviceName(raw: string | undefined): string | undefined {
   if (!raw) return undefined
   const clean = raw
     .replace(/\x1b\[[\d;]*[A-Za-z]/g, ' ')
-    .replace(/[^\p{L}\p{N} ._()'-]/gu, ' ')
+    .replace(/[^A-Za-z0-9 ._()'-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 64)
@@ -1583,13 +1584,25 @@ export class OAuthProvider {
     const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
     if (!rec || rec.expiresAt < Date.now()) return { ok: false, error: 'expired' }
     const want = input.decision === 'approve' ? 'approved' : 'denied'
-    if (rec.status !== 'pending') {
-      // The same decision again is fine; an approval by someone else, or for another workspace, is not.
-      const same = rec.status === want && (want === 'denied' || (rec.identityId === input.identityId && rec.orgId === (input.orgId || undefined)))
-      return same ? { ok: true, state: want } : { ok: false, error: 'already_used' }
-    }
+    // The same decision again is fine; an approval by someone else, or for another workspace, is not.
+    const decided = (r: DeviceCode): DeviceDecision =>
+      r.status === want && (want === 'denied' || (r.identityId === input.identityId && r.orgId === (input.orgId || undefined)))
+        ? { ok: true, state: want }
+        : { ok: false, error: 'already_used' }
+    if (rec.status !== 'pending') return decided(rec)
     const orgId = input.orgId || undefined
     if (want === 'approved' && orgId !== undefined && !(await this.isOrgMember(input.identityId, orgId))) return { ok: false, error: 'invalid_org' }
+    // One decision per code, even when two arrive at once (an atomic first
+    // claim where the storage has one; phase 6 re-review SF-3). The other waits
+    // briefly for the winner's write and answers from it.
+    if (this.storage.claimOnce && !(await this.storage.claimOnce(`device-decide:${rec.id}`, DEVICE_CODE_TTL * 1000 + 60_000))) {
+      for (let i = 0; i < 10; i++) {
+        const current = await this.storage.get<DeviceCode>(`device:${rec.id}`)
+        if (current && current.status !== 'pending') return decided(current)
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return { ok: false, error: 'already_used' }
+    }
     const now = Date.now()
     const next: DeviceCode =
       want === 'approved'

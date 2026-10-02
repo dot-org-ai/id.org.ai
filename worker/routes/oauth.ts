@@ -8,8 +8,6 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager, readSessionSignIn } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
-import { parseCookieValue } from '../utils/cookies'
-import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { OAuthProvider, applySignInClaims } from '../../src/sdk/oauth/provider'
 import {
   decodeStateWithCSRF,
@@ -23,6 +21,7 @@ import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
 import { renderConsentScreen } from './consent-screen'
 import { deviceRoutes } from './device'
+import { isBrowserSession } from '../utils/browser-session'
 import { fetchOrgInfo } from '../../src/sdk/workos/upstream'
 import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 import { validateOrgMembershipFor } from '../utils/org-membership'
@@ -292,13 +291,7 @@ app.post('/oauth/authorize', async (c) => {
   // Tenant resolution takes an API key (header, X-API-Key, ?api_key=) or a
   // session token before the cookie, so any of those present means the
   // identity did not come from the browser session.
-  const authCookie = parseCookieValue(c.req.header('cookie') ?? '', 'auth')
-  const viaBrowserSession =
-    !extractApiKey(c.req.raw) &&
-    !extractSessionToken(c.req.raw) &&
-    !c.req.header('authorization') &&
-    !!authCookie &&
-    isSessionCookieJwt(authCookie)
+  const viaBrowserSession = isBrowserSession(c.req.raw)
   if (asksSb && !viaBrowserSession) {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'api.sb access can only be granted from a signed-in browser session')
   }
@@ -381,30 +374,6 @@ function asFetchSubmit(c: { req: { header(name: string): string | undefined } },
   return new Response(JSON.stringify({ redirect: location }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
 }
 
-/**
- * Is the `auth` cookie shaped like an id.org.ai browser-session JWT (what
- * /api/callback and magic link sign), rather than some other
- * id.org.ai-signed JWT placed there? Tenant resolution has already verified
- * its signature and issuer; this looks at its shape. A session JWT carries no
- * `aud`, `nonce` or `at_hash`; an id_token (issued to a relying party) always
- * carries `aud` and `at_hash`; an access token is typ at+jwt. So an RP that
- * holds a Person's id_token cannot pose as that Person's browser to grant
- * sb scopes.
- */
-function isSessionCookieJwt(jwt: string): boolean {
-  const parts = jwt.split('.')
-  if (parts.length !== 3) return false
-  try {
-    const dec = (s: string) => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)))
-    const header = dec(parts[0]!) as Record<string, unknown>
-    const payload = dec(parts[1]!) as Record<string, unknown>
-    if (typeof header.typ === 'string' && header.typ.toLowerCase().replace(/^application\//, '') !== 'jwt') return false
-    if ('crit' in header) return false
-    return !('aud' in payload) && !('nonce' in payload) && !('at_hash' in payload)
-  } catch {
-    return false
-  }
-}
 
 /** Rebuild a consent POST with `state` replaced by the client's original state. */
 async function withOriginalState(request: Request, contentType: string, originalState: string | undefined): Promise<Request> {

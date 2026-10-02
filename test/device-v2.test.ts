@@ -246,3 +246,35 @@ describe('phase 6 review fixes', () => {
     expect(JSON.stringify(storage.store.get(`device-grant:${view!.family}`))).not.toContain('203.0.113.7')
   })
 })
+
+describe('phase 6 re-review fixes', () => {
+  it('S5: look-alike letters for "·" and "," are not kept either (device names are ASCII)', async () => {
+    const provider = makeProvider()
+    const { d } = await setup(provider, { device_name: 'macOS \uA78F Miami\uA4F9 FL \u1427 requested\u02CF just now' })
+    const os = (await provider.getDeviceRequest(d.user_code))!.meta!.os!
+    expect(os).toMatch(/^[\x20-\x7e]*$/)
+  })
+
+  it('SF-3: an approval and a denial in flight together: exactly one wins, and the record agrees with it', async () => {
+    const storage = Object.assign(createStorage(), {
+      claimed: new Set<string>(),
+      async claimOnce(this: { claimed: Set<string> }, key: string) {
+        if (this.claimed.has(key)) return false
+        this.claimed.add(key)
+        return true
+      },
+    })
+    const provider = makeProvider(undefined, storage)
+    const { d } = await setup(provider)
+    const view = await provider.getDeviceRequest(d.user_code)
+    const [a, b] = await Promise.all([
+      provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve' }),
+      provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'deny' }),
+    ])
+    const wins = [a, b].filter((r) => r.ok)
+    expect(wins).toHaveLength(1)
+    const final = (await provider.getDeviceRequest(d.user_code))!.status
+    expect(final).toBe((wins[0] as { state: string }).state)
+    expect(storage.store.has(`device-grant:${view!.family}`)).toBe(final === 'approved')
+  })
+})
