@@ -1579,7 +1579,9 @@ describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
       return command === 'git rev-parse --show-toplevel' ? repo : 'true'
     }
     vi.stubGlobal('fetch', vi.fn(async () => json(200, { status: 'claimed', level: 2 })))
-    const claimToken = `clm_${evil}`
+    // A hostile token is refused before it reaches the workflow (next test); a
+    // real one is what --json prints, terminal-safe and lossless.
+    const claimToken = 'clm_0123456789abcdef0123456789abcdef'
     const lines: string[] = []
     const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')))
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -1611,6 +1613,38 @@ describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
     const out = lines.at(-1)!
     expect(out).not.toMatch(TERMINAL_UNSAFE)
     expect(JSON.parse(out)).toEqual({ claimToken, confirmed: true, level: 2 })
+  })
+
+  it('claim refuses a hostile token before anything is written, committed or pushed', async () => {
+    const { claimCommand } = await import('../src/sdk/cli/claim')
+    const commands: string[] = []
+    const exec = (command: string) => {
+      commands.push(command)
+      return command === 'git rev-parse --show-toplevel' ? '/nonexistent-repo' : 'true'
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, { status: 'claimed', level: 2 })))
+    const errors: string[] = []
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const error = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void errors.push(a.join(' ')))
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+    try {
+      await claimCommand({
+        baseUrl: 'http://127.0.0.1:1',
+        json: true,
+        token: `clm_${evil}`,
+        noPush: false,
+        storage: { getProvisionData: async () => null, removeProvisionData: async () => {} } as never,
+        exec,
+      }).catch(() => undefined)
+    } finally {
+      log.mockRestore()
+      error.mockRestore()
+      exit.mockRestore()
+    }
+    expect(commands.some((c) => c.startsWith('git add') || c.startsWith('git commit') || c.startsWith('git push'))).toBe(false)
+    expect(errors.join('\n')).not.toMatch(TERMINAL_UNSAFE)
   })
 })
 

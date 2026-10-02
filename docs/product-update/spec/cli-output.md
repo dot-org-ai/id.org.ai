@@ -50,7 +50,8 @@ $ npx auto.dev login
 
 **Behaviour**
 - **Code**: the user code in `XXXX-XXXX` form.
-- **Confirm URL**: `verification_uri_complete` with the code. Open it in the default browser right away.
+- **Confirm URL**: `{API origin}/device?code=XXXX-XXXX`, built by the CLI from the user code it has checked (`XXXX-XXXX` from the code alphabet), never the server's `verification_uri_complete` text (phase 6 review: a server-chosen link must not reach the browser opener or the clipboard). Open it in the default browser right away, without a shell.
+- **Server text**: every string from the server (codes, error descriptions, names, emails, workspace names) is stripped of control, C1, bidi and zero-width characters before it is printed; a user code that isn't `XXXX-XXXX` from the alphabet, or a token outside `[A-Za-z0-9._~+/=:-]`, is a protocol error (exit 1).
 - **Keys**: `c` copies the link to the clipboard and `o` opens it again. Both are active only while waiting.
 - **Spinner**: the braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, 80ms). The expiry counts down in mm:ss (29:52).
 - **Polling**: follow `interval`, and back off on `slow_down`.

@@ -51,7 +51,7 @@ App ──▶ GET /oauth/authorize?client_id&redirect_uri&scope&state&code_chall
 
 ```
 CLI ── POST /oauth/device {client_id, scope} (+ User-Agent, IP → device metadata) ──▶ {device_code, user_code, verification_uri_complete}
-CLI prints 4a, opens verification_uri_complete in the browser
+CLI prints 4a, opens {API origin}/device?code=XXXX-XXXX in the browser (built from the checked code)
 Browser ── GET /device?code=WDJB-MJHT ──▶ [sign in] ──▶ 4b ──Confirm──▶ POST /device/decision ──▶ signed (4d in place)
 CLI polls POST /oauth/token (device_code) ──▶ authorization_pending … ──▶ tokens ──▶ prints "✓ Signed in as …"
 ```
