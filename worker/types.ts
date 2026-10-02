@@ -80,6 +80,8 @@ export interface Env {
   LEGACY_OPEN_WORKOS_ROUTES?: string
   /** CIMD client hosts shown as verified on consent (D3), comma-separated. Empty: only first-party clients are. */
   VERIFIED_CLIENT_HOSTS?: string
+  /** "1": a consent granting act permissions (sb:do) from a sign-in older than 10 minutes steps up first (B2, B5). */
+  FEATURE_STEP_UP?: string
   /** `1` serves the design gallery at /__design (worker/.dev.vars only; never in wrangler.jsonc). */
   DESIGN_GALLERY?: string
 }

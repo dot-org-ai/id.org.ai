@@ -53,7 +53,7 @@ async function workspaces(env: Env, identityId: string): Promise<ConsentPageCont
 export async function renderConsentScreen(c: C, vm: ConsentViewModel, opts: ConsentScreenOptions): Promise<Response> {
   const [person, orgs, sessionOrg] = await Promise.all([account(c.env, vm.identityId), workspaces(c.env, vm.identityId), readSessionOrgId(c.req.raw, c.env)])
   const isMember = (id: string | undefined) => !!id && orgs.some((o) => o.id === id)
-  const selectedOrgId = [vm.orgHint, sessionOrg].find(isMember) ?? orgs[0]?.id
+  const selectedOrgId = [vm.orgHint, vm.rememberedOrgId, sessionOrg].find(isMember) ?? orgs[0]?.id
 
   // "Switch" signs in again and comes back to this same request (FEATURE_SESSIONS_V2 off).
   const here = new URL(c.req.url)

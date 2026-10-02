@@ -78,6 +78,9 @@
     // CIMD client hosts shown as verified on consent (D3), comma-separated.
     // Empty: only the seeded first-party clients are verified (owner step).
     "VERIFIED_CLIENT_HOSTS": "",
+    // "1": step up before granting act permissions (sb:do) on a sign-in older
+    // than 10 minutes. /step-up arrives in phase 9; keep "0" until then.
+    "FEATURE_STEP_UP": "0",
   },
 
   "routes": [

@@ -200,6 +200,30 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(html).toMatch(/<option value="org_BETA" selected[^>]*>Beta<\/option>/)
   })
 
+  it('a fetch submit (Accept: application/json) gets {redirect}; a form post keeps the 302', async () => {
+    const cookies = await signIn('user_01CONSENT_D')
+    // A fresh client each time: once consented, the next visit is a silent redirect.
+    const post = async (accept?: string) => {
+      const clientId = await register('Fetch submit')
+      const page = await SELF.fetch(authorizeUrl(clientId, DCR_REDIRECT, await challenge()), { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+      const csrf = setCookies(page).__csrf!
+      return SELF.fetch(`${BASE}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: csrf }), ...(accept && { accept }) },
+        body: new URLSearchParams({ ...hiddenFields(await page.text()), approved: 'true', org_id: '' }).toString(),
+      })
+    }
+    const json = await post('application/json')
+    expect(json.status).toBe(200)
+    const { redirect } = (await json.json()) as { redirect: string }
+    expect(new URL(redirect).searchParams.get('code')).toMatch(/^ac_/)
+    expect(new URL(redirect).searchParams.get('state')).toBe('client-state')
+    const form = await post()
+    expect(form.status).toBe(302)
+    expect(new URL(form.headers.get('location')!).searchParams.get('code')).toMatch(/^ac_/)
+  })
+
   it('a verified CIMD client gets 3a for sb scopes and 3b for identity scopes, under its own (escaped) name', async () => {
     const cookies = await signIn('user_01CONSENT_C')
     const verified = { VERIFIED_CLIENT_HOSTS: 'app.verified.example' }

@@ -55,6 +55,8 @@ export interface ConsentViewModel {
   identityId: string
   /** `organization_id` from the authorization request, preselecting a workspace. */
   orgHint?: string
+  /** The workspace this client was last consented for: preselected when the request names none. */
+  rememberedOrgId?: string
 }
 
 export interface ConsentViewInput {
@@ -69,6 +71,7 @@ export interface ConsentViewInput {
   resource?: string
   identityId: string
   orgHint?: string
+  rememberedOrgId?: string
 }
 
 function hostOf(uri: string): string {
@@ -123,6 +126,7 @@ export function buildConsentViewModel(i: ConsentViewInput): ConsentViewModel {
     fields,
     identityId: i.identityId,
     ...(i.orgHint && { orgHint: i.orgHint }),
+    ...(i.rememberedOrgId && { rememberedOrgId: i.rememberedOrgId }),
   }
 }
 

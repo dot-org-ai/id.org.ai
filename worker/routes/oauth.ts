@@ -148,6 +148,8 @@ export function createOAuthProvider(env: Env, request?: Request, extra: { render
     // Consent v2 (backend.md#b2): the worker renders 3a/3b/3c; verified CIMD hosts per D3.
     ...(extra.renderConsent && { renderConsent: extra.renderConsent }),
     verifiedClientHosts: (env.VERIFIED_CLIENT_HOSTS ?? '').split(','),
+    // FEATURE_STEP_UP: a consent granting sb:do from a sign-in older than 10 minutes steps up first.
+    ...(env.FEATURE_STEP_UP === '1' && { stepUpMaxAgeSeconds: 600 }),
     validateOrgMembership: validateOrgMembershipFor(env), // consent org_id must be an active WorkOS membership
     // Client ID Metadata Documents: an https client_id is fetched (SSRF-guarded),
     // at most CIMD_FETCHES_PER_IP uncached documents per caller IP per window,
@@ -304,7 +306,7 @@ app.post('/oauth/authorize', async (c) => {
   if (isServiceBinding && !asksSb) {
     const provider = getOAuthProvider(c)
     // No CSRF check on this path, so never interactive: no sb scopes.
-    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false })
+    return asFetchSubmit(c, await provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false }))
   }
 
   // Extract CSRF token from cookie
@@ -354,10 +356,24 @@ app.post('/oauth/authorize', async (c) => {
   // client carries exactly the state it sent (not the CSRF wrapper).
   const provider = getOAuthProvider(c)
   // CSRF verified above; interactive when the identity is the browser session.
-  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn, {
-    interactive: viaBrowserSession,
-  })
+  return asFetchSubmit(
+    c,
+    await provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn, {
+      interactive: viaBrowserSession,
+    }),
+  )
 })
+
+/**
+ * Fetch submit (backend.md#b2): a consent POST with `Accept: application/json`
+ * gets `{ redirect }` instead of the 302, so the page can run its connector and
+ * then leave. A form post keeps the 302.
+ */
+function asFetchSubmit(c: { req: { header(name: string): string | undefined } }, res: Response): Response {
+  const location = res.headers.get('location')
+  if (!(c.req.header('accept') ?? '').includes('application/json') || res.status < 300 || res.status >= 400 || !location) return res
+  return new Response(JSON.stringify({ redirect: location }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
+}
 
 /**
  * Is the `auth` cookie shaped like an id.org.ai browser-session JWT (what

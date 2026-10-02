@@ -11,6 +11,7 @@ import { renderHtml } from '../render'
 import { authorizeFixtures } from '../gallery/fixtures/authorize'
 import type { Variant } from '../gallery/types'
 import { initFetchForm, type FetchDeps } from '../client/lib/fetch-form'
+import { initLeave } from '../client/lib/leave'
 import { FAIL_SWAP_MS, SUCCESS_SWAP_MS } from '../client/lib/connector'
 import { Consent, consentVariant, firstName, type ConsentProps } from './Consent'
 import { AdminApprove, type AdminApproveProps } from './AdminApprove'
@@ -633,5 +634,36 @@ describe('request data is escaped', () => {
     const approved = d.querySelector<HTMLTemplateElement>('[data-region="body"] ~ template[data-state="approved"]')!
     expect(approved.content.querySelectorAll('script').length).toBe(0)
     expect(text(approved.content.querySelector('h1'))).toBe(`${evil} is approved for ${evil}`)
+  })
+})
+
+describe('3a on lib/leave.ts (Task 4: consent leaves id.org.ai)', () => {
+  async function mount(): Promise<HTMLFormElement> {
+    document.body.innerHTML = await renderHtml(authorizeFixtures['3a-consent']!.default.render(), { title: 't' }).then((h) => h.match(/<body[^>]*>([\s\S]*)<\/body>/)![1]!)
+    const form = document.querySelector<HTMLFormElement>('form[data-js="submit"]')!
+    initLeave(form)
+    form.addEventListener('submit', (e) => e.preventDefault())
+    return form
+  }
+  const press = (form: HTMLFormElement, value: string) => {
+    const btn = form.querySelector<HTMLButtonElement>(`button[name="approved"][value="${value}"]`)!
+    form.dispatchEvent(Object.assign(new Event('submit', { bubbles: true, cancelable: true }), { submitter: btn }))
+    return btn
+  }
+  afterEach(() => (document.body.innerHTML = ''))
+
+  it('Allow: the connector connects and the button reads "Allowing…" while the post and redirect happen', async () => {
+    const form = await mount()
+    const allow = press(form, 'true')
+    expect(document.querySelector('[data-js="connector"]')!.getAttribute('data-state')).toBe('connecting')
+    expect(allow.getAttribute('aria-busy')).toBe('true')
+    expect(allow.textContent).toBe('Allowing…')
+    expect(form.querySelector<HTMLInputElement>('input[type=hidden][name=approved]')!.value).toBe('true')
+  })
+
+  it('Cancel posts the deny (approved=false)', async () => {
+    const form = await mount()
+    press(form, 'false')
+    expect(form.querySelector<HTMLInputElement>('input[type=hidden][name=approved]')!.value).toBe('false')
   })
 })

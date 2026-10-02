@@ -251,8 +251,55 @@ interface DeviceCode {
 
 // Internal storage type — see OAuthConsent in ./types.ts for canonical API type
 interface ConsentRecord {
+  /**
+   * Consent for any workspace: records from before per-workspace consent, and
+   * consents given with no workspace. Emptied once the client is re-consented
+   * for a workspace (backend.md#b2).
+   */
   scopes: string[]
   createdAt: number
+  /**
+   * Per-workspace consent, by org id (backend.md#b2). Kept inside the one
+   * record per client rather than as `consent:{identityId}:{clientId}:{orgId}`:
+   * CIMD client ids are URLs full of colons, so an org suffix couldn't be told
+   * apart from the client id when the records are listed.
+   */
+  orgs?: Record<string, { scopes: string[]; createdAt: number }>
+}
+
+/** A consent parked while the Person steps up (backend.md#b2, B5): single use, 10 minutes. */
+interface ConsentResumeRecord {
+  identityId: string
+  clientId: string
+  redirectUri: string
+  scopes: string[]
+  state?: string
+  codeChallenge: string
+  nonce?: string
+  resource?: string
+  orgId?: string
+  effectiveIssuer: string
+  createdAt: number
+}
+
+const CONSENT_RESUME_TTL_S = 600
+
+/** The workspaces in a consent record whose scopes cover `scopes`, most recent first. */
+function consentOrgsCovering(rec: ConsentRecord | undefined, scopes: string[]): string[] {
+  return Object.entries(rec?.orgs ?? {})
+    .filter(([, o]) => scopes.every((s) => o.scopes.includes(s)))
+    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+    .map(([id]) => id)
+}
+
+/** Did the Person sign in within `maxAgeSeconds` (the session's auth_time)? */
+function signedInWithin(signIn: SignInContext | undefined, maxAgeSeconds: number): boolean {
+  return !!signIn?.authTime && Math.floor(Date.now() / 1000) - signIn.authTime <= maxAgeSeconds
+}
+
+/** The most recently consented workspace in a record, whatever its scopes. */
+function rememberedOrg(rec: ConsentRecord | undefined): string | undefined {
+  return Object.entries(rec?.orgs ?? {}).sort((a, b) => b[1].createdAt - a[1].createdAt)[0]?.[0]
 }
 
 // Internal display type — see OAuthUser in ./types.ts for canonical API type
@@ -555,6 +602,7 @@ export class OAuthProvider {
   private fetchClientMetadata?: ClientMetadataFetcher
   private renderConsent?: ConsentRenderer
   private verifiedClientHosts: ReadonlySet<string>
+  private stepUpMaxAgeSeconds?: number
   private validateOrgMembership?: OrgMembershipValidator
 
   get issuer(): string {
@@ -605,6 +653,12 @@ export class OAuthProvider {
     /** CIMD client hosts that count as verified (D3, the VERIFIED_CLIENT_HOSTS env list). */
     verifiedClientHosts?: Iterable<string>
     /**
+     * Step-up before act permissions (FEATURE_STEP_UP, backend.md#b2): a consent
+     * granting `sb:do` from a sign-in older than this many seconds is parked and
+     * sent to /step-up first. Off when absent.
+     */
+    stepUpMaxAgeSeconds?: number
+    /**
      * Validates the workspace (`org_id`) a Person chose on the consent screen
      * against their memberships. Without it, a consent naming an `org_id` is
      * refused; a consent without one is unaffected.
@@ -619,6 +673,7 @@ export class OAuthProvider {
     this.auditEmit = options.auditEmit
     this.fetchClientMetadata = options.fetchClientMetadata
     this.renderConsent = options.renderConsent
+    this.stepUpMaxAgeSeconds = options.stepUpMaxAgeSeconds
     this.verifiedClientHosts = new Set([...(options.verifiedClientHosts ?? [])].map((h) => h.trim().toLowerCase()).filter(Boolean))
     this.validateOrgMembership = options.validateOrgMembership
   }
@@ -841,7 +896,10 @@ export class OAuthProvider {
     // Person once per client (and again on a step-up to more scopes).
     const consentKey = `consent:${identityId}:${clientId}`
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
-    const hasFullConsent = !!existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
+    const orgHint = params.get('organization_id') || undefined
+    // undefined: consent for any workspace; a string: that workspace's consent; null: none.
+    const consentOrg = await this.consentOnRecord(identityId, existingConsent, requestedScopes, orgHint)
+    const hasFullConsent = consentOrg !== null
     const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
     // A CIMD client with a loopback redirect is a public native client whose
     // client_id is public and whose port is free: anyone can start its flow
@@ -861,13 +919,15 @@ export class OAuthProvider {
         nonce,
         resource,
         identityId,
-        orgHint: params.get('organization_id') || undefined,
+        orgHint,
+        rememberedOrgId: rememberedOrg(existingConsent),
       })
       return this.renderConsent ? await this.renderConsent(vm, request) : renderConsentFallback(vm)
     }
 
     // ── Generate authorization code ─────────────────────────────────────
     return this.issueAuthorizationCode(client, identityId, {
+      ...(consentOrg && { orgId: consentOrg }),
       redirectUri,
       scopes: requestedScopes,
       codeChallenge: codeChallenge || '',
@@ -1088,6 +1148,13 @@ export class OAuthProvider {
       return this.redirectError(redirectUri, 'invalid_request', 'org_id is not one of your workspaces', state, iss)
     }
 
+    // The access level (B2): `access=read|act`. `approved=read` is the older
+    // form of read (the "Allow read only" button).
+    if (body.access !== undefined && body.access !== 'read' && body.access !== 'act') {
+      return this.redirectError(redirectUri, 'invalid_request', 'access must be read or act', state, iss)
+    }
+    const readOnly = body.approved === 'read' || body.access === 'read'
+
     // The sb scopes are delegated only by the Person in their browser.
     if (checked.scopes.some(isSbScope) && !context.interactive) {
       return jsonResponse(
@@ -1096,19 +1163,42 @@ export class OAuthProvider {
       )
     }
 
-    // "Allow read only": sb:do becomes sb:read (never an empty grant).
+    // Read only: sb:do becomes sb:read (never an empty grant).
     let scopes = checked.scopes
-    if (body.approved === 'read' && scopes.includes(SB_SCOPE_DO)) {
+    if (readOnly && scopes.includes(SB_SCOPE_DO)) {
       scopes = scopes.filter((s) => s !== SB_SCOPE_DO)
       if (!scopes.includes(SB_SCOPE_READ)) scopes.push(SB_SCOPE_READ)
     }
 
-    // Store consent
-    const consentKey = `consent:${identityId}:${client.id}`
-    await this.storage.put(consentKey, {
-      scopes,
-      createdAt: Date.now(),
-    } satisfies ConsentRecord)
+    // Step-up before act permissions (FEATURE_STEP_UP): a stale sign-in granting
+    // sb:do parks this consent and confirms it's the Person first (B5). Nothing
+    // is granted or recorded until resumeAuthorizeConsent.
+    if (this.stepUpMaxAgeSeconds !== undefined && scopes.includes(SB_SCOPE_DO) && !signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
+      const resumeId = generateId('rsm_')
+      await this.storage.put(
+        `consent-resume:${resumeId}`,
+        {
+          identityId,
+          clientId: client.id,
+          redirectUri,
+          scopes,
+          state,
+          codeChallenge: codeChallenge || '',
+          nonce,
+          resource,
+          orgId,
+          effectiveIssuer: iss,
+          createdAt: Date.now(),
+        } satisfies ConsentResumeRecord,
+        { expirationTtl: CONSENT_RESUME_TTL_S },
+      )
+      const to = new URL('/step-up', this.config.issuer)
+      to.searchParams.set('resume', resumeId)
+      to.searchParams.set('reason', 'act_permissions')
+      return Response.redirect(to.toString(), 302)
+    }
+
+    await this.recordConsent(identityId, client.id, scopes, orgId)
 
     // Issue authorization code
     return this.issueAuthorizationCode(client, identityId, {
@@ -1123,6 +1213,54 @@ export class OAuthProvider {
       signIn,
       orgId,
     })
+  }
+
+  /**
+   * Finish a consent parked for step-up (backend.md#b2, B5), once the Person
+   * has signed in again: single use, 10 minutes, the same Person, a fresh
+   * sign-in. Records the consent and issues the code, as the POST would have.
+   */
+  async resumeAuthorizeConsent(resumeId: string, identityId: string, signIn?: SignInContext): Promise<Response> {
+    const key = `consent-resume:${resumeId}`
+    const gone = () => oauthError('invalid_request', 'This request expired or was already used. Start again from the app.')
+    // Look before taking, so someone else's attempt can't spend the Person's record.
+    const peek = await this.storage.get<ConsentResumeRecord>(key)
+    if (!peek || peek.identityId !== identityId) return gone()
+    if (this.stepUpMaxAgeSeconds !== undefined && !signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
+      return oauthError('invalid_request', 'Sign in again to continue.')
+    }
+    const rec = this.storage.take ? await this.storage.take<ConsentResumeRecord>(key) : ((await this.storage.delete(key)) ? peek : undefined)
+    if (!rec || Date.now() - rec.createdAt > CONSENT_RESUME_TTL_S * 1000) return gone()
+    const resolved = await this.resolveClientRedirect(rec.clientId, rec.redirectUri)
+    if (!resolved.ok) return resolved.response
+    await this.recordConsent(identityId, rec.clientId, rec.scopes, rec.orgId)
+    return this.issueAuthorizationCode(resolved.client, identityId, {
+      redirectUri: rec.redirectUri,
+      scopes: rec.scopes,
+      codeChallenge: rec.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: rec.state,
+      nonce: rec.nonce,
+      resource: rec.resource,
+      effectiveIssuer: rec.effectiveIssuer,
+      signIn,
+      orgId: rec.orgId,
+    })
+  }
+
+  /**
+   * Record a consent (backend.md#b2). With a workspace it is that workspace's,
+   * and the client's any-workspace consent (a legacy record) ends: it meant
+   * "any org" only until re-consented. Without one it is for any workspace.
+   */
+  private async recordConsent(identityId: string, clientId: string, scopes: string[], orgId?: string): Promise<void> {
+    const key = `consent:${identityId}:${clientId}`
+    const prev = await this.storage.get<ConsentRecord>(key)
+    const now = Date.now()
+    const record: ConsentRecord = orgId
+      ? { scopes: [], createdAt: now, orgs: { ...prev?.orgs, [orgId]: { scopes, createdAt: now } } }
+      : { scopes, createdAt: now, ...(prev?.orgs && { orgs: prev.orgs }) }
+    await this.storage.put(key, record)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2378,7 +2516,11 @@ export class OAuthProvider {
     const prefix = `consent:${identityId}:`
     const consents = await this.storage.list<ConsentRecord>({ prefix })
     const out = new Map<string, { client_id: string; scopes: string[]; created_at: number }>()
-    for (const [key, rec] of consents) out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes: rec.scopes, created_at: rec.createdAt })
+    for (const [key, rec] of consents) {
+      // Everything granted to the client: any workspace, and each workspace's (backend.md#b2).
+      const scopes = [...new Set([...rec.scopes, ...Object.values(rec.orgs ?? {}).flatMap((o) => o.scopes)])]
+      out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes, created_at: rec.createdAt })
+    }
     // Clients holding tokens without a consent record (device flow, first-party
     // clients) come from the grant index, unless revoked since.
     const gPrefix = `grant:${encodeURIComponent(identityId)}:`
@@ -2525,6 +2667,27 @@ export class OAuthProvider {
    * Is `orgId` one of the Person's workspaces? Fails closed: with no
    * `validateOrgMembership` hook, or when it throws, the answer is no.
    */
+  /**
+   * The consent on record for this request (backend.md#b2): a string is the
+   * workspace whose consent covers it, undefined is consent for any workspace
+   * (a legacy record, or one given with no workspace), null is none. A
+   * workspace is reused only while the Person is still a member. Without a
+   * membership validator, workspaces don't apply and only the any-workspace
+   * consent counts, as before per-workspace consent.
+   */
+  private async consentOnRecord(identityId: string, rec: ConsentRecord | undefined, scopes: string[], orgHint?: string): Promise<string | undefined | null> {
+    if (!rec) return null
+    const anyOrg = scopes.every((s) => rec.scopes.includes(s))
+    if (!this.validateOrgMembership) return anyOrg ? undefined : null
+    if (orgHint) {
+      const named = consentOrgsCovering(rec, scopes).includes(orgHint)
+      return (named || anyOrg) && (await this.isOrgMember(identityId, orgHint)) ? orgHint : null
+    }
+    if (anyOrg) return undefined
+    for (const org of consentOrgsCovering(rec, scopes)) if (await this.isOrgMember(identityId, org)) return org
+    return null
+  }
+
   private async isOrgMember(identityId: string, orgId: string): Promise<boolean> {
     if (!this.validateOrgMembership) return false
     try {
