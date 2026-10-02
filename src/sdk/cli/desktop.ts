@@ -17,18 +17,71 @@ export function canOpenBrowser(env: Env, platform: string): boolean {
   return true
 }
 
-/** Open `url` in the default browser. Resolves whether it was handed to one. */
-export async function openInBrowser(url: string, env: Env = process.env, platform: string = process.platform): Promise<boolean> {
-  if (!canOpenBrowser(env, platform)) return false
-  try {
-    const { default: open } = await import('open')
-    const child = await open(url)
-    // A missing opener (ENOENT) arrives as an event, after this resolves.
-    child.on('error', () => {})
-    return true
-  } catch {
-    return false
+/** The part of child_process.spawn the opener uses; tests pass a stand-in. */
+export type SpawnBrowser = (
+  command: string,
+  args: string[],
+  options: { stdio: 'ignore'; detached: boolean; shell: false; windowsHide: boolean },
+) => {
+  once(event: 'spawn' | 'error', listener: () => void): unknown
+  unref(): void
+}
+
+export interface OpenOptions {
+  env?: Env
+  platform?: string
+  spawn?: SpawnBrowser
+}
+
+/**
+ * The commands that open a link, in the order to try them. Each gets the link
+ * as one argument and runs without a shell. Not the `open` package: on Windows
+ * and WSL it runs PowerShell with the link inside a double-quoted string, where
+ * `$(…)` runs as a command.
+ */
+function browserCommands(url: string, platform: string, env: Env): Array<[string, string[]]> {
+  if (platform === 'darwin') return [['open', [url]]]
+  if (platform === 'win32') return [['rundll32', ['url.dll,FileProtocolHandler', url]]]
+  const commands: Array<[string, string[]]> = []
+  if (env.WSL_DISTRO_NAME) commands.push(['wslview', [url]], ['rundll32.exe', ['url.dll,FileProtocolHandler', url]])
+  commands.push(['xdg-open', [url]])
+  return commands
+}
+
+/** Start `command` without a shell; resolves whether it started (a missing one fails with ENOENT). */
+async function launch(command: string, args: string[], spawn?: SpawnBrowser): Promise<boolean> {
+  const start = spawn ?? ((await import('node:child_process')).spawn as unknown as SpawnBrowser)
+  return new Promise((resolve) => {
+    try {
+      const child = start(command, args, { stdio: 'ignore', detached: true, shell: false, windowsHide: true })
+      child.once('error', () => resolve(false))
+      child.once('spawn', () => {
+        child.unref()
+        resolve(true)
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
+/** Only an http(s) link of printable ASCII: nothing an opener could take for an option or a second argument. */
+const OPENABLE = /^https?:\/\/[\x21-\x7e]+$/i
+
+/**
+ * Open `url` in the default browser. Resolves whether a browser opener started.
+ * Anything but an http(s) link is refused, so nothing starting with `-` ever
+ * reaches an opener as an option; runLogin already opens only the API's own
+ * https links (untrusted.ts), and this holds for any other caller too.
+ */
+export async function openInBrowser(url: string, options: OpenOptions = {}): Promise<boolean> {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  if (!OPENABLE.test(url) || !canOpenBrowser(env, platform)) return false
+  for (const [command, args] of browserCommands(url, platform, env)) {
+    if (await launch(command, args, options.spawn)) return true
   }
+  return false
 }
 
 /** Run `command` with `input` on stdin; resolves whether it exited 0. */

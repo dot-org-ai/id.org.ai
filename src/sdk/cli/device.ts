@@ -5,6 +5,7 @@
  */
 
 import { CANONICAL_API_ORIGIN } from '../auth/index.js'
+import { cleanText, openableUrl, parseUserCode } from './untrusted.js'
 
 export interface DeviceAuthorizationResponse {
   device_code: string
@@ -25,7 +26,11 @@ export interface TokenResponse {
 
 export type TokenError = 'authorization_pending' | 'slow_down' | 'access_denied' | 'expired_token' | 'unknown'
 
-const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
+/** The API the CLI talks to. The confirm link is opened only on this origin. */
+export const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
+
+/** What the person reads when a reply can't be parsed. The reply itself is never quoted. */
+const UNREADABLE_REPLY = "the server sent a reply the CLI can't read"
 
 const DEVICE_CODE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 
@@ -124,20 +129,75 @@ export async function authorizeDevice(
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     const body = parseOAuthError(text)
-    throw new DeviceFlowError(`Device authorization failed: ${response.status} - ${text}`, body.error ?? `http_${response.status}`, body.error_description)
+    throw new DeviceFlowError(`Device authorization failed: ${response.status} - ${cleanText(text)}`, body.error ?? `http_${response.status}`, body.error_description)
   }
 
-  return (await response.json()) as DeviceAuthorizationResponse
+  try {
+    return (await response.json()) as DeviceAuthorizationResponse
+  } catch {
+    // V8's SyntaxError quotes the body, so it is not passed on.
+    throw new DeviceFlowError('Device authorization failed: the reply is not JSON', 'invalid_response', UNREADABLE_REPLY)
+  }
 }
 
+/** A device authorization reply, checked and cleaned: what `login` uses and prints. */
+export interface DeviceGrant {
+  deviceCode: string
+  /** The user code as `XXXX-XXXX`, checked against the code alphabet. */
+  userCode: string
+  /** The confirm link as printed: normalised when it is safe, else cleaned (see untrusted.ts). */
+  url: string
+  /** The same link when it is safe to open and copy (https on the API's origin); else undefined. */
+  link?: string
+  /** Seconds the code lives (default 600). */
+  expiresIn: number
+  /** Seconds between polls (default 5). */
+  interval: number
+}
+
+export type ParsedDeviceAuthorization = { ok: true; grant: DeviceGrant } | { ok: false; error: string }
+
+/**
+ * Check and clean a device authorization reply (RFC 8628 §3.2) before any of
+ * it reaches the terminal or the browser. The user code must be 8 characters
+ * of the code alphabet (XXXX-XXXX); anything else is a protocol error, and its
+ * value is never echoed. The confirm link is kept for opening only when it is
+ * https (or loopback http) on `apiBase`'s origin; otherwise it is only shown,
+ * cleaned.
+ */
+export function parseDeviceAuthorization(reply: unknown, apiBase: string = API_BASE): ParsedDeviceAuthorization {
+  const body = (reply && typeof reply === 'object' ? reply : {}) as Record<string, unknown>
+  const userCode = parseUserCode(body.user_code)
+  if (!userCode) return { ok: false, error: 'the server sent an invalid user code' }
+  const complete = body.verification_uri_complete
+  const raw = typeof complete === 'string' && complete ? complete : body.verification_uri
+  const deviceCode = body.device_code
+  if (typeof deviceCode !== 'string' || !deviceCode || typeof raw !== 'string' || !raw) {
+    return { ok: false, error: 'the server sent an invalid reply' }
+  }
+  const link = openableUrl(raw, apiBase) ?? undefined
+  return {
+    ok: true,
+    grant: {
+      deviceCode,
+      userCode,
+      url: link ?? cleanText(raw),
+      link,
+      expiresIn: secondsOr(body.expires_in, DEFAULT_EXPIRES_IN),
+      interval: secondsOr(body.interval, DEFAULT_INTERVAL),
+    },
+  }
+}
+
+/** An OAuth error body's `error` and `error_description`, cleaned for printing. */
 function parseOAuthError(text: string): { error?: string; error_description?: string } {
   try {
     const body = JSON.parse(text) as unknown
     if (body && typeof body === 'object') {
       const { error, error_description } = body as Record<string, unknown>
       return {
-        error: typeof error === 'string' ? error : undefined,
-        error_description: typeof error_description === 'string' ? error_description : undefined,
+        error: cleanText(error) || undefined,
+        error_description: cleanText(error_description) || undefined,
       }
     }
   } catch {
@@ -224,7 +284,14 @@ export async function pollDeviceToken(options: PollDeviceTokenOptions): Promise<
       continue
     }
 
-    if (response.ok) return { status: 'approved', tokens: (await response.json()) as TokenResponse }
+    if (response.ok) {
+      // A body that isn't JSON would throw V8's SyntaxError, which quotes it.
+      const tokens = (await response.json().catch(() => null)) as TokenResponse | null
+      if (!tokens || typeof tokens !== 'object' || typeof tokens.access_token !== 'string' || !tokens.access_token) {
+        return { status: 'error', error: 'invalid_response', description: UNREADABLE_REPLY }
+      }
+      return { status: 'approved', tokens }
+    }
 
     const body = parseOAuthError(await response.text().catch(() => ''))
     if (response.status >= 500 && !body.error) {
