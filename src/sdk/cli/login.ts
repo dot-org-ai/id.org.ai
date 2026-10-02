@@ -6,11 +6,17 @@
  * requests, the spinner, the `c` and `o` keys and the in-place redraws. Every
  * stream, the browser and the clipboard come in through `io`, so tests drive it
  * with a fake terminal and a mocked fetch.
+ *
+ * Nothing the server sends is printed or opened as sent: the device reply is
+ * parsed (parseDeviceAuthorization) and userinfo is cleaned (getUser) before
+ * use, and the link is opened or copied only when it is https on the API's
+ * own origin (untrusted.ts).
  */
 
-import { authorizeDevice, formatUserCode, pollDeviceToken, secondsOr, DeviceFlowError, DEFAULT_EXPIRES_IN } from './device.js'
+import { API_BASE, authorizeDevice, parseDeviceAuthorization, pollDeviceToken, DeviceFlowError } from './device.js'
 import type { DeviceAuthorizationResponse, DevicePollResult } from './device.js'
 import { getUser } from './auth.js'
+import { originOf } from './untrusted.js'
 import type { TokenStorage } from './storage.js'
 import {
   SPINNER_INTERVAL_MS,
@@ -125,21 +131,26 @@ export async function runLogin(options: LoginOptions): Promise<number> {
   }
 
   write(paintLines(headerBlock(app), mode.colour))
-
-  let device: DeviceAuthorizationResponse
-  try {
-    device = await authorizeDevice(options.clientId, options.headers, { deviceName: options.deviceName })
-  } catch (error) {
-    write(paintLines([...outcomeLines({ kind: 'error', message: describeError(error) }, app), []], mode.colour))
+  const fail = (message: string) => {
+    write(paintLines([...outcomeLines({ kind: 'error', message }, app), []], mode.colour))
     return EXIT.failed
+  }
+
+  let reply: DeviceAuthorizationResponse
+  try {
+    reply = await authorizeDevice(options.clientId, options.headers, { deviceName: options.deviceName })
+  } catch (error) {
+    return fail(describeError(error))
   }
   if (options.signal?.aborted) return EXIT.interrupted
 
-  const code = formatUserCode(device.user_code)
-  const url = device.verification_uri_complete || device.verification_uri
-  const expiresIn = secondsOr(device.expires_in, DEFAULT_EXPIRES_IN)
+  // From here on only checked, cleaned values: a bad user code ends the run
+  // without being echoed, and `link` is set only for a link safe to open.
+  const parsed = parseDeviceAuthorization(reply, API_BASE)
+  if (!parsed.ok) return fail(parsed.error)
+  const { userCode: code, url, link, expiresIn } = parsed.grant
   const expiresAt = Date.now() + expiresIn * 1000
-  const browser: BrowserState = { opened: await io.openUrl(url).catch(() => false) }
+  const browser: BrowserState = link ? { opened: await io.openUrl(link).catch(() => false) } : { opened: false, refusedFor: originOf(API_BASE) }
 
   let frame = 0
   let remaining = () => expiresAt - Date.now()
@@ -164,14 +175,17 @@ export async function runLogin(options: LoginOptions): Promise<number> {
   let cursorHidden = false
   let waitLineEnded = !mode.spinner
 
+  // An unsafe link is never copied or opened; the keys do nothing for it.
   const copy = async () => {
-    const ok = await io.copyText(url).catch(() => false)
+    if (!link) return
+    const ok = await io.copyText(link).catch(() => false)
     if (!listening) return
     browser.note = ok ? 'copied' : 'copy-failed'
     redrawHint()
   }
   const reopen = async () => {
-    const ok = await io.openUrl(url).catch(() => false)
+    if (!link) return
+    const ok = await io.openUrl(link).catch(() => false)
     if (!listening) return
     browser.opened = ok
     browser.note = undefined
@@ -208,8 +222,8 @@ export async function runLogin(options: LoginOptions): Promise<number> {
 
     result = await pollDeviceToken({
       clientId: options.clientId,
-      deviceCode: device.device_code,
-      interval: device.interval,
+      deviceCode: parsed.grant.deviceCode,
+      interval: parsed.grant.interval,
       expiresIn,
       headers: options.headers,
       signal: stop.signal,

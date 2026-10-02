@@ -40,6 +40,11 @@ export interface BrowserState {
   opened: boolean
   /** The last key's result, shown in place of the browser sentence. */
   note?: 'copied' | 'copy-failed'
+  /**
+   * Set when the link isn't safe to open or copy (not https on the API's
+   * origin): that origin, for the warning shown instead of the keys.
+   */
+  refusedFor?: string
 }
 
 export interface WaitingState {
@@ -63,11 +68,16 @@ export type LoginOutcome =
   | { kind: 'expired' }
   | { kind: 'error'; message: string }
 
+/**
+ * Every server value here (code, url, outcome text) arrives already checked and
+ * cleaned (untrusted.ts, applied in device.ts and auth.ts): the renderer adds
+ * only its own escapes.
+ */
 export interface LoginScreen {
   app: LoginApp
   /** The user code, already `XXXX-XXXX`. */
   code: string
-  /** verification_uri_complete. */
+  /** verification_uri_complete, cleaned. */
   url: string
   browser: BrowserState
   waiting: WaitingState
@@ -133,8 +143,14 @@ function browserSentence(browser: BrowserState): string {
   return browser.opened ? 'Opened in your browser.' : 'Open this link in your browser.'
 }
 
-/** Under the URL: what happened to the link, then the keys when they work. */
+/**
+ * Under the URL: what happened to the link, then the keys when they work.
+ * A link that isn't safe gets a warning instead, undimmed, and no keys.
+ */
 export function hintLine(browser: BrowserState, mode: OutputMode): Line {
+  if (browser.refusedFor !== undefined) {
+    return [seg(`${INDENT}${' '.repeat(LABEL_WIDTH)}Not opened: this link isn't on ${browser.refusedFor}.`)]
+  }
   const lead = INDENT + ' '.repeat(LABEL_WIDTH) + browserSentence(browser)
   if (!mode.keys) return [seg(lead, 'dim')]
   return [

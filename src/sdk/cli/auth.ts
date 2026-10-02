@@ -4,6 +4,7 @@
 
 import { CANONICAL_API_ORIGIN } from '../auth/index.js'
 import type { TokenStorage, StoredTokenData } from './storage.js'
+import { cleanText } from './untrusted.js'
 
 const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 const CLIENT_ID = process.env.ID_ORG_AI_CLIENT_ID || 'id_org_ai_cli'
@@ -46,13 +47,16 @@ export async function getUser(token: string, headers?: Record<string, string>): 
       throw new Error(`Authentication failed: ${response.statusText}`)
     }
 
+    // Every field is printed (login, whoami, status), and the server's text is
+    // not trusted: a workspace name is whatever its owner typed. Cleaned here,
+    // where it comes in (see untrusted.ts); a field that isn't a string is dropped.
     const data = (await response.json()) as Record<string, unknown>
     const user: User = {
-      id: (data.sub as string) || (data.id as string) || '',
-      email: data.email as string | undefined,
-      name: data.name as string | undefined,
-      organizationId: data.org_id as string | undefined,
-      organizationName: data.org_name as string | undefined,
+      id: cleanText(data.sub) || cleanText(data.id),
+      email: cleanText(data.email) || undefined,
+      name: cleanText(data.name) || undefined,
+      organizationId: cleanText(data.org_id) || undefined,
+      organizationName: cleanText(data.org_name) || undefined,
     }
     return { user, token }
   } catch {
