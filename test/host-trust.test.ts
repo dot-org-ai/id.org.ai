@@ -189,6 +189,11 @@ describe('B1: hosts are compared in canonical spelling everywhere', () => {
     expect(parseTrustedAccountDomains('Startup.Games.').has('startup.games')).toBe(true)
     expect(getRootDomain('id.org.ai.')).toBeNull()
     expect(getRootDomain('Api.Headless.LY.')).toBe('.headless.ly')
+    // An IP address has no parent domain: `127.0.0.1` used to give Domain=.0.1,
+    // which browsers reject, so local sign-in never kept its session cookie.
+    expect(getRootDomain('127.0.0.1')).toBeNull()
+    expect(getRootDomain('10.0.0.12')).toBeNull()
+    expect(getRootDomain('[::1]')).toBeNull()
     expect(canonicalizeResourceUri('https://ID.org.ai./mcp')).toBe('https://id.org.ai/mcp')
   })
 

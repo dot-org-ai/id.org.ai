@@ -82,6 +82,8 @@ export function buildClearAuthCookieHeaders(opts: { secure: boolean; domain: str
 export function getRootDomain(rawHostname: string): string | null {
   // Canonical spelling: `id.org.ai.` must not become Domain=.ai.
   const hostname = canonicalHostname(rawHostname)
+  // An IP address (127.0.0.1 in local development, [::1]) has no parent domain.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':') || hostname.startsWith('[')) return null
   // Known public suffixes that should not be used as cookie domains
   const publicSuffixes = ['org.ai', 'co.uk', 'com.au', 'co.jp']
   const parts = hostname.split('.')
