@@ -42,7 +42,7 @@ import {
   type SourceRowProps,
   type TileContent,
 } from '../components'
-import { firstName } from './Consent'
+import { clientTile, consentAppName, firstName, type ConsentClient } from './Consent'
 
 export type AdminApproveState = 'pending' | 'approved' | 'declined'
 export type ApprovalScope = 'everyone' | 'requester'
@@ -51,7 +51,11 @@ export interface AdminApproveProps {
   /** `pending` is the request; `approved` and `declined` are the results the server renders after a no-JS post. */
   state?: AdminApproveState
   requester: { name: string; firstName?: string }
-  client: { name: string; tile: TileContent }
+  /**
+   * The app, as consent takes it (screens.md#3a Data). Its name and tile are
+   * derived like consent's: the host when unverified, never the name it claims.
+   */
+  client: Pick<ConsentClient, 'displayName' | 'host' | 'verified' | 'logoUrl' | 'monogram'>
   workspace: { name: string; tile: TileContent }
   /** The requester's note, shown quoted. */
   note?: string
@@ -76,7 +80,7 @@ function scopeLabel(p: AdminApproveProps, scope: ApprovalScope): string {
 }
 
 function Head({ p, state, title, description }: { p: AdminApproveProps; state: ConnectorState; title: string; description: JSX.Element }): JSX.Element {
-  return <CardHead connector={<Connector left={p.client.tile} right={p.workspace.tile} state={state} />} title={title} description={description} />
+  return <CardHead connector={<Connector left={clientTile(p.client)} right={p.workspace.tile} state={state} />} title={title} description={description} />
 }
 
 function RequestBody({ p }: { p: AdminApproveProps }): JSX.Element {
@@ -86,11 +90,11 @@ function RequestBody({ p }: { p: AdminApproveProps }): JSX.Element {
       <Head
         p={p}
         state={p.busy ? 'connecting' : 'idle'}
-        title={`Approve ${p.client.name} for ${ws}?`}
+        title={`Approve ${consentAppName(p.client)} for ${ws}?`}
         description={
           <>
             <Em>{p.requester.name}</Em>
-            {` asked to use ${p.client.name} in the ${ws} workspace.`}
+            {` asked to use ${consentAppName(p.client)} in the ${ws} workspace.`}
           </>
         }
       />
@@ -105,7 +109,7 @@ function RequestBody({ p }: { p: AdminApproveProps }): JSX.Element {
           value="everyone"
           checked={p.scope === 'everyone'}
           title={`Everyone in ${ws}`}
-          description={`Anyone can connect ${p.client.name} with these permissions.`}
+          description={`Anyone can connect ${consentAppName(p.client)} with these permissions.`}
         />
         <RadioCard id="approve-requester" name="scope" value="requester" checked={p.scope === 'requester'} title={`${firstName(p.requester)} only`} description="Others still need to ask." />
       </RadioGroup>
@@ -123,7 +127,7 @@ function RequestBody({ p }: { p: AdminApproveProps }): JSX.Element {
 function ApprovedBody({ p, scope }: { p: AdminApproveProps; scope?: ApprovalScope }): JSX.Element {
   const ws = p.workspace.name
   const rows: KV[] = [
-    { k: 'App', v: p.client.name },
+    { k: 'App', v: consentAppName(p.client) },
     { k: 'Workspace', v: ws },
   ]
   if (scope) rows.push({ k: 'Approved for', v: scopeLabel(p, scope) })
@@ -132,7 +136,7 @@ function ApprovedBody({ p, scope }: { p: AdminApproveProps; scope?: ApprovalScop
       <Head
         p={p}
         state="ok"
-        title={`${p.client.name} is approved for ${ws}`}
+        title={`${consentAppName(p.client)} is approved for ${ws}`}
         description={
           <>
             {'We let '}
@@ -161,7 +165,7 @@ function DeclinedBody({ p }: { p: AdminApproveProps }): JSX.Element {
           <>
             {'We let '}
             <Em>{p.requester.name}</Em>
-            {` know. ${p.client.name} stays blocked in ${p.workspace.name}.`}
+            {` know. ${consentAppName(p.client)} stays blocked in ${p.workspace.name}.`}
           </>
         }
       />

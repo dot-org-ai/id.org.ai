@@ -423,7 +423,7 @@ describe('3d · Admin approves an app', () => {
 function approveProps(over: Partial<AdminApproveProps> = {}): AdminApproveProps {
   return {
     requester: { name: 'Alex Rivera' },
-    client: { name: 'Codex', tile: { kind: 'monogram', text: 'Cx' } },
+    client: { displayName: 'Codex', host: 'chatgpt.com', verified: true, monogram: 'Cx' },
     workspace: { name: 'Drivly', tile: { kind: 'monogram', text: 'Dr' } },
     permissions: [{ icon: 'search', title: 'Search and read Startups on api.sb', detail: 'Read-only.', scope: 'sb:read' }],
     scope: 'requester',
@@ -434,6 +434,27 @@ function approveProps(over: Partial<AdminApproveProps> = {}): AdminApproveProps 
     ...over,
   }
 }
+
+describe('3d derives the app’s name from client.verified (phase 3 re-review)', () => {
+  it('an unverified client is named by its host everywhere, in every state, never by the name it claims', async () => {
+    const client = { displayName: 'Codex', host: 'agent-tools.dev', verified: false, monogram: 'Cx' }
+    const source = { display: 'agent-tools.dev/oauth/client.json', copyValue: 'https://agent-tools.dev/oauth/client.json', details: [] }
+    for (const state of ['pending', 'approved', 'declined'] as const) {
+      const html = await renderHtml(<AdminApprove {...approveProps({ client, source, state })} />, { title: 't' })
+      expect(html, state).not.toMatch(/codex|>Cx</i)
+      expect(html, state).toContain('agent-tools.dev')
+    }
+    const d = await dom(<AdminApprove {...approveProps({ client })} />)
+    expect(d.querySelector('h1')!.textContent).toBe('Approve agent-tools.dev for Drivly?')
+    expect(d.querySelectorAll('.id-conn .id-tile')[0]!.textContent).toBe('a')
+  })
+
+  it('a verified client keeps its name and monogram', async () => {
+    const d = await dom(<AdminApprove {...approveProps()} />)
+    expect(d.querySelector('h1')!.textContent).toBe('Approve Codex for Drivly?')
+    expect(d.querySelectorAll('.id-conn .id-tile')[0]!.textContent).toBe('Cx')
+  })
+})
 
 describe('3d on lib/fetch-form.ts (motion.md#where-the-person-goes-next)', () => {
   type Post = FetchDeps['post']
@@ -594,7 +615,8 @@ describe('request data is escaped', () => {
   it('admin approve: requester, note and client, in the live page and its templates', async () => {
     const p = approveProps({
       requester: { name: evil },
-      client: { name: evil, tile: { kind: 'monogram', text: 'x' } },
+      // Verified, so the hostile display name is the one rendered.
+      client: { displayName: evil, host: 'x.example', verified: true, monogram: 'x' },
       workspace: { name: evil, tile: { kind: 'monogram', text: 'y' } },
       note: evil,
       permissions: [{ icon: 'search', title: evil, detail: evil, scope: evil }],

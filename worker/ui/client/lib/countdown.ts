@@ -8,8 +8,10 @@
  * template in for the card (5b's expired state), and a [data-countdown-done]
  * sibling is revealed (1b's "Resend code"). Once a decision has replaced the
  * expired template (fetch-form swapped 5b's body), the countdown stops and
- * hides: the request is answered, so its clock no longer matters. Frozen
- * pages never tick.
+ * hides: the request is answered, so its clock no longer matters. While a
+ * decision is in flight (fetch-form disabled every button) it waits at 0:
+ * the decision lands (hide) or fails and the buttons come back (expire then).
+ * Frozen pages never tick.
  */
 
 export function formatCountdown(seconds: number): string {
@@ -48,6 +50,8 @@ export function initCountdown(el: HTMLElement, now: () => number = () => perform
       if (status) status.textContent = 'One minute left.'
     }
     if (left <= 0) {
+      const form = tplName ? document.querySelector('[data-js="fetch-form"]') : null
+      if (form && ![...form.querySelectorAll('button')].some((b) => !b.disabled)) return
       stop()
       if (status) status.textContent = 'This request expired.'
       const done = el.parentElement?.querySelector<HTMLElement>('[data-countdown-done]')

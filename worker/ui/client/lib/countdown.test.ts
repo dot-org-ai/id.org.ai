@@ -95,6 +95,43 @@ describe('countdown.ts', () => {
     expect(document.querySelector('main h1')!.textContent).toBe('Sent')
   })
 
+  /** 5b's shape: the countdown in the header, a fetch-form card whose body region holds the expired template. */
+  function mountInFlight(secondsLeft: number) {
+    vi.useFakeTimers()
+    document.body.innerHTML = `<span data-status></span><header><span data-js="countdown" data-seconds-left="${secondsLeft}" data-announce data-expired-template="expired"><span data-countdown-text></span></span></header>
+      <main><form data-js="fetch-form"><div class="id-card"><div data-region="body"><h1>Approve</h1><template data-state="expired"><div class="id-card"><h1>This request expired</h1></div></template></div>
+      <div data-region="foot"><button>Deny</button><button>Approve and send</button></div></div></form></main>`
+    const el = document.querySelector<HTMLElement>('[data-js="countdown"]')!
+    initCountdown(el, () => Date.now())
+    // fetch-form disables every button while a decision is in flight.
+    for (const b of document.querySelectorAll('button')) b.disabled = true
+    return { el, h1: () => document.querySelector('main h1')!.textContent, status: () => document.querySelector('[data-status]')!.textContent }
+  }
+
+  it('reaching 0 while a decision is in flight doesn’t expire the page; the landed decision stands (5b)', () => {
+    const c = mountInFlight(2)
+    vi.advanceTimersByTime(2000)
+    expect(c.h1()).toBe('Approve')
+    expect(c.status()).not.toBe('This request expired.')
+    // The server said OK; 2150ms after it, fetch-form swaps "Sent" in.
+    document.querySelector('[data-region="body"]')!.innerHTML = '<h1>Sent</h1>'
+    vi.advanceTimersByTime(1000)
+    expect(c.h1()).toBe('Sent')
+    expect(c.el.hidden).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('…and if the decision fails (buttons come back), the page expires then', () => {
+    const c = mountInFlight(1)
+    vi.advanceTimersByTime(3000)
+    expect(c.h1()).toBe('Approve')
+    for (const b of document.querySelectorAll('button')) b.disabled = false
+    vi.advanceTimersByTime(1000)
+    expect(c.h1()).toBe('This request expired')
+    expect(c.status()).toBe('This request expired.')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('a countdown already at 0 expires once and never starts a timer', () => {
     vi.useFakeTimers()
     document.body.innerHTML = `<span data-status></span><span data-js="countdown" data-seconds-left="0" data-announce><span data-countdown-text></span></span>`

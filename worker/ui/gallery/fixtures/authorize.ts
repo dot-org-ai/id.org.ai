@@ -155,7 +155,7 @@ const unverified: ConsentProps = {
 
 const approve: AdminApproveProps = {
   requester: { name: 'Alex Rivera' },
-  client: { name: 'Codex', tile: { kind: 'monogram', text: 'Cx' } },
+  client: { displayName: 'Codex', host: 'chatgpt.com', verified: true, monogram: 'Cx' },
   workspace: { name: 'Drivly', tile: { kind: 'monogram', text: 'Dr' } },
   note: 'Need it to run the weekly pipeline cleanup on api.sb.',
   permissions: [
@@ -217,7 +217,7 @@ export const authorizeFixtures: FixtureGroup = {
   }),
   '3d-admin-approve': defineFixture({
     screen: AdminApprove,
-    title: (p) => `Approve ${p.client.name} · id.org.ai`,
+    title: (p) => `Approve ${consentAppName(p.client)} · id.org.ai`,
     // 3d stays on id.org.ai: fetch-form posts and swaps the approved / declined templates in place.
     scripts: ['copy.js', 'fetch-form.js', 'logo.js'],
     default: approve,

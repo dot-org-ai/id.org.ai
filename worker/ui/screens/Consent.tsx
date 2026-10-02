@@ -135,7 +135,7 @@ export function firstName(person: { name: string; firstName?: string }): string 
 }
 
 /** The name shown for a client: the host when unverified, never the self-asserted name (security.md, screens.md#3c). */
-export function consentAppName(client: ConsentClient): string {
+export function consentAppName(client: Pick<ConsentClient, 'displayName' | 'host' | 'verified'>): string {
   return client.verified ? client.displayName : client.host
 }
 
@@ -151,7 +151,7 @@ export function consentVariant(p: ConsentProps): ConsentVariant {
 }
 
 /** The app tile: its logo with the monogram fallback. An unverified client's monogram comes from its host. */
-function clientTile(c: ConsentClient): TileContent {
+export function clientTile(c: Pick<ConsentClient, 'displayName' | 'host' | 'verified' | 'logoUrl' | 'monogram'>): TileContent {
   const monogram = (c.verified ? c.monogram : undefined) ?? (consentAppName(c).trim().charAt(0) || '?')
   return c.logoUrl ? { kind: 'logo', src: c.logoUrl, monogram } : { kind: 'monogram', text: monogram }
 }
