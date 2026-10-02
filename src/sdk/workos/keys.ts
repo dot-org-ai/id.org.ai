@@ -8,6 +8,7 @@
  * can be called from the Hono routes in worker/index.ts without needing
  * to instantiate a WorkerEntrypoint.
  */
+import { workosUrl } from './base'
 
 // ============================================================================
 // Types
@@ -47,7 +48,7 @@ export async function createWorkOSApiKey(workosApiKey: string, options: CreateKe
   if (options.permissions) body.permissions = options.permissions
   if (options.expiresAt) body.expires_at = options.expiresAt
 
-  const resp = await fetch('https://api.workos.com/api_keys', {
+  const resp = await fetch(workosUrl('/api_keys'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -76,7 +77,7 @@ export async function createWorkOSApiKey(workosApiKey: string, options: CreateKe
  * @returns Array of API key metadata (does not include raw key strings)
  */
 export async function listWorkOSApiKeys(workosApiKey: string, organizationId?: string): Promise<WorkOSApiKey[]> {
-  const url = new URL('https://api.workos.com/api_keys')
+  const url = new URL(workosUrl('/api_keys'))
   if (organizationId) url.searchParams.set('organization_id', organizationId)
   url.searchParams.set('limit', '100')
 
@@ -104,7 +105,7 @@ export async function listWorkOSApiKeys(workosApiKey: string, organizationId?: s
  * @returns true if the key was revoked (or already didn't exist)
  */
 export async function revokeWorkOSApiKey(workosApiKey: string, keyId: string): Promise<boolean> {
-  const resp = await fetch(`https://api.workos.com/api_keys/${keyId}`, {
+  const resp = await fetch(workosUrl(`/api_keys/${keyId}`), {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${workosApiKey}` },
   })

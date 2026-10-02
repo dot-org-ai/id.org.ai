@@ -9,6 +9,7 @@
  *   2. User authenticates at WorkOS
  *   3. GET /callback?code=...&state=... → exchange code → set cookie → redirect
  */
+import { workosUrl } from './base'
 
 // ============================================================================
 // Types
@@ -38,6 +39,57 @@ export interface WorkOSAuthResult {
   expires_in?: number
   user: WorkOSUser
   organization_id?: string
+  /**
+   * How WorkOS authenticated the user: `GitHubOAuth`, `GoogleOAuth`,
+   * `MicrosoftOAuth`, `AppleOAuth`, `MagicAuth`, `Password`, `Passkey`, `SSO`,
+   * `Impersonation`, … Carried into the session as `amr` / `idp`
+   * (see `describeWorkOSSignIn`).
+   */
+  authentication_method?: string
+}
+
+// ============================================================================
+// Sign-in method (amr / idp)
+// ============================================================================
+
+/** The upstream `idp` for a WorkOS provider id (`GitHubOAuth` → `github`). */
+const OAUTH_IDP: Record<string, string> = {
+  GitHubOAuth: 'github',
+  GoogleOAuth: 'google',
+  MicrosoftOAuth: 'microsoft',
+  AppleOAuth: 'apple',
+}
+
+/**
+ * Describe how a person signed in, as OIDC `amr` and `idp`.
+ *
+ * `authenticationMethod` is WorkOS's `authentication_method` from the
+ * authenticate response and wins when present. `requestedProvider` is what
+ * id.org.ai asked WorkOS for (`GitHubOAuth`, `authkit`, …) or `magic_link` for
+ * id.org.ai's own magic-link flow; it is the fallback when WorkOS says nothing,
+ * and it tells a magic link apart from a code typed into AuthKit.
+ *
+ *   OAuth provider          → amr ["oauth"],       idp github | google | microsoft | apple
+ *   MagicAuth via /api/magic-link → amr ["magic_link"], idp magic_link
+ *   MagicAuth via AuthKit   → amr ["email_otp"],   idp authkit
+ *   Password / Passkey / SSO via AuthKit → amr ["pwd"] / ["passkey"] / ["sso"], idp authkit
+ */
+export function describeWorkOSSignIn(
+  authenticationMethod: string | undefined,
+  requestedProvider: string | undefined,
+): { amr?: string[]; idp?: string } {
+  const method = authenticationMethod || undefined
+  if (method && OAUTH_IDP[method]) return { amr: ['oauth'], idp: OAUTH_IDP[method] }
+  if (method === 'MagicAuth') {
+    return requestedProvider === 'magic_link' ? { amr: ['magic_link'], idp: 'magic_link' } : { amr: ['email_otp'], idp: 'authkit' }
+  }
+  const viaAuthKit: Record<string, string> = { Password: 'pwd', Passkey: 'passkey', SSO: 'sso', Impersonation: 'impersonation' }
+  if (method && viaAuthKit[method]) return { amr: [viaAuthKit[method]], idp: 'authkit' }
+  // WorkOS said nothing we recognise: fall back to what we asked for.
+  if (requestedProvider && OAUTH_IDP[requestedProvider]) return { amr: ['oauth'], idp: OAUTH_IDP[requestedProvider] }
+  if (requestedProvider === 'magic_link') return { amr: ['magic_link'], idp: 'magic_link' }
+  if (requestedProvider === 'authkit') return { idp: 'authkit' }
+  return {}
 }
 
 export interface OrgSelectionError extends Error {
@@ -59,13 +111,15 @@ export interface OrgSelectionError extends Error {
  * @param state - Opaque state parameter (CSRF + continue URL)
  * @param provider - WorkOS provider (e.g. 'GitHubOAuth', 'GoogleOAuth'). Defaults to 'authkit' (all methods)
  */
-export function buildWorkOSAuthUrl(clientId: string, redirectUri: string, state: string, provider?: string): string {
-  const url = new URL('https://api.workos.com/user_management/authorize')
+export function buildWorkOSAuthUrl(clientId: string, redirectUri: string, state: string, provider?: string, loginHint?: string): string {
+  const url = new URL(workosUrl('/user_management/authorize'))
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('redirect_uri', redirectUri)
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('state', state)
   url.searchParams.set('provider', provider || 'authkit')
+  // Prefills the email on AuthKit's page (ignored by direct OAuth providers).
+  if (loginHint) url.searchParams.set('login_hint', loginHint)
   return url.toString()
 }
 
@@ -95,7 +149,7 @@ export async function exchangeWorkOSCode(
   if (options?.userAgent) params.user_agent = options.userAgent
   if (options?.ipAddress) params.ip_address = options.ipAddress
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -186,7 +240,7 @@ export async function refreshWorkOSAccessToken(
   })
   if (organizationId) params.set('organization_id', organizationId)
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
@@ -221,7 +275,7 @@ export async function exchangeWorkOSOrgSelection(
   if (options?.userAgent) params.user_agent = options.userAgent
   if (options?.ipAddress) params.ip_address = options.ipAddress
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -251,7 +305,7 @@ export async function exchangeWorkOSOrgSelection(
  */
 export async function fetchWorkOSUser(apiKey: string, userId: string): Promise<WorkOSUser | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -321,7 +375,7 @@ export interface OrgInfo {
  */
 export async function fetchOrgInfo(apiKey: string, orgId: string): Promise<OrgInfo | null> {
   try {
-    const response = await fetch(`https://api.workos.com/organizations/${orgId}`, {
+    const response = await fetch(workosUrl(`/organizations/${orgId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -357,7 +411,7 @@ export async function createWorkOSOrganization(
     if (options?.external_id) body.external_id = options.external_id
     if (options?.metadata) body.metadata = options.metadata
 
-    const response = await fetch('https://api.workos.com/organizations', {
+    const response = await fetch(workosUrl('/organizations'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -393,7 +447,7 @@ export async function createWorkOSMembership(
   roleSlug = 'admin',
 ): Promise<boolean> {
   try {
-    const response = await fetch('https://api.workos.com/user_management/organization_memberships', {
+    const response = await fetch(workosUrl('/user_management/organization_memberships'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -434,7 +488,7 @@ export async function ensurePersonalOrg(
 ): Promise<{ orgId: string; created: boolean } | null> {
   // Check if user already has org memberships
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=1`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?user_id=${userId}&limit=1`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (response.ok) {
@@ -491,7 +545,7 @@ export async function updateWorkOSUser(
   updates: { external_id?: string; metadata?: Record<string, string> },
 ): Promise<boolean> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -531,7 +585,7 @@ export async function listUserOrgMemberships(
   userId: string,
 ): Promise<WorkOSOrganizationMembership[]> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=100`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?user_id=${userId}&limit=100`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return []
@@ -554,7 +608,7 @@ export async function listOrgMembers(
   organizationId: string,
 ): Promise<WorkOSOrganizationMembership[]> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?organization_id=${organizationId}&limit=100`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?organization_id=${organizationId}&limit=100`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return []
@@ -581,7 +635,7 @@ export async function sendOrgInvitation(
   roleSlug = 'member',
 ): Promise<boolean> {
   try {
-    const response = await fetch('https://api.workos.com/user_management/invitations', {
+    const response = await fetch(workosUrl('/user_management/invitations'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -622,6 +676,26 @@ export interface WorkOSInvitation {
 }
 
 /**
+ * Fetch one WorkOS organization membership.
+ * Wraps `GET /user_management/organization_memberships/:id`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param membershipId - WorkOS organization membership ID (`om_*`)
+ * @returns The membership, or null when it doesn't exist or the call fails
+ */
+export async function getOrgMembership(apiKey: string, membershipId: string): Promise<WorkOSOrganizationMembership | null> {
+  try {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSOrganizationMembership
+  } catch {
+    return null
+  }
+}
+
+/**
  * Update a member's role on a WorkOS organization membership.
  * Wraps `PUT /user_management/organization_memberships/:id` with `{ role_slug }`.
  *
@@ -637,7 +711,7 @@ export async function updateOrgMembership(
 ): Promise<WorkOSOrganizationMembership | null> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'PUT',
         headers: {
@@ -670,7 +744,7 @@ export async function updateOrgMembership(
 export async function deleteOrgMembership(apiKey: string, membershipId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -703,7 +777,7 @@ export interface WorkOSUserProfile {
 
 export async function fetchWorkOSUserProfile(apiKey: string, userId: string): Promise<WorkOSUserProfile | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -727,7 +801,7 @@ export async function fetchWorkOSUserProfile(apiKey: string, userId: string): Pr
 export async function listOrgInvitations(apiKey: string, organizationId: string): Promise<WorkOSInvitation[]> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/invitations?organization_id=${organizationId}&limit=100`,
+      workosUrl(`/user_management/invitations?organization_id=${organizationId}&limit=100`),
       { headers: { Authorization: `Bearer ${apiKey}` } },
     )
     if (!response.ok) return []
@@ -748,7 +822,7 @@ export async function listOrgInvitations(apiKey: string, organizationId: string)
  */
 export async function getInvitation(apiKey: string, invitationId: string): Promise<WorkOSInvitation | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/invitations/${invitationId}`, {
+    const response = await fetch(workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -769,7 +843,7 @@ export async function getInvitation(apiKey: string, invitationId: string): Promi
 export async function revokeInvitation(apiKey: string, invitationId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/invitations/${invitationId}/revoke`,
+      workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}/revoke`),
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -817,21 +891,109 @@ export async function findOwnedOrg(apiKey: string, ownerUserId: string): Promise
  * Encode a state parameter with a CSRF token and optional continue URL.
  * Format: base64url({ csrf, continue })
  */
-export function encodeLoginState(csrf: string, continueUrl?: string, origin?: string): string {
-  const payload = JSON.stringify({ csrf, continue: continueUrl, origin })
+export function encodeLoginState(csrf: string, continueUrl?: string, origin?: string, provider?: string): string {
+  // `provider` is what /login asked WorkOS for; the callback falls back to it
+  // when WorkOS's authentication_method is missing (see describeWorkOSSignIn).
+  const payload = JSON.stringify({ csrf, continue: continueUrl, origin, ...(provider ? { provider } : {}) })
   return btoa(payload).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
 /**
  * Decode a state parameter back to its components.
  */
-export function decodeLoginState(state: string): { csrf: string; continue?: string; origin?: string } | null {
+export function decodeLoginState(state: string): { csrf: string; continue?: string; origin?: string; provider?: string } | null {
   try {
     const padded = state.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - (state.length % 4)) % 4)
     const payload = JSON.parse(atob(padded))
-    if (!payload.csrf) return null
-    return { csrf: payload.csrf, continue: payload.continue, origin: payload.origin }
+    // Unsigned input: every field is checked for type. A non-string csrf is
+    // not a state (an array `[csrf]` would otherwise stringify to a real key).
+    if (!payload || typeof payload !== 'object' || typeof payload.csrf !== 'string' || !payload.csrf) return null
+    return {
+      csrf: payload.csrf,
+      ...(typeof payload.continue === 'string' ? { continue: payload.continue } : {}),
+      ...(typeof payload.origin === 'string' ? { origin: payload.origin } : {}),
+      ...(typeof payload.provider === 'string' ? { provider: payload.provider } : {}),
+    }
   } catch {
     return null
   }
+}
+
+// ============================================================================
+// Magic Auth (email one-time code) — used by POST /api/magic-link
+// ============================================================================
+
+/**
+ * Ask WorkOS to create a Magic Auth code for `email`. WorkOS creates the user
+ * when the address is new and emails the six-digit code itself, so the
+ * response is the same whether or not an account existed. The code in the
+ * WorkOS response is deliberately dropped here: it must reach the person only
+ * through their mailbox.
+ */
+export async function createWorkOSMagicAuth(
+  apiKey: string,
+  email: string,
+  options?: { userAgent?: string; ipAddress?: string },
+): Promise<{ ok: true; id?: string } | { ok: false; status: number }> {
+  const body: Record<string, string> = { email }
+  if (options?.userAgent) body.user_agent = options.userAgent
+  if (options?.ipAddress) body.ip_address = options.ipAddress
+  const response = await fetch(workosUrl('/user_management/magic_auth'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) return { ok: false, status: response.status }
+  const json = (await response.json().catch(() => ({}))) as { id?: string }
+  return { ok: true, id: json.id }
+}
+
+/**
+ * Authenticate with a Magic Auth code (grant
+ * `urn:workos:oauth:grant-type:magic-auth:code`). Throws on a wrong or expired
+ * code; an `organization_selection_required` answer is thrown as the same
+ * typed error `exchangeWorkOSCode` throws, so callers can show the org picker.
+ */
+export async function authenticateWorkOSMagicAuth(
+  clientId: string,
+  apiKey: string,
+  email: string,
+  code: string,
+  options?: { userAgent?: string; ipAddress?: string },
+): Promise<WorkOSAuthResult> {
+  const params: Record<string, string> = {
+    grant_type: 'urn:workos:oauth:grant-type:magic-auth:code',
+    client_id: clientId,
+    client_secret: apiKey,
+    email,
+    code,
+  }
+  if (options?.userAgent) params.user_agent = options.userAgent
+  if (options?.ipAddress) params.ip_address = options.ipAddress
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  })
+  if (!response.ok) {
+    const errorBody = await response.text()
+    try {
+      const parsed = JSON.parse(errorBody)
+      if (parsed.code === 'organization_selection_required' && parsed.pending_authentication_token && parsed.organizations?.length) {
+        const err = new Error('organization_selection_required') as OrgSelectionError
+        err.code = 'organization_selection_required'
+        err.pendingAuthenticationToken = parsed.pending_authentication_token
+        err.organizations = parsed.organizations
+        err.user = parsed.user
+        throw err
+      }
+    } catch (e) {
+      if (e instanceof Error && (e as { code?: unknown }).code === 'organization_selection_required') throw e
+    }
+    const err = new Error(`WorkOS magic auth failed: ${response.status}`) as Error & { status?: number }
+    err.status = response.status
+    throw err
+  }
+  const data = (await response.json()) as WorkOSAuthResult
+  return extractRolesFromToken({ ...data, authentication_method: data.authentication_method || 'MagicAuth' }, clientId, apiKey)
 }

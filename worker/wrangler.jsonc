@@ -3,7 +3,8 @@
   // Full identity + OAuth 2.1 server. Handles /login, /logout, /callback, /oauth/*, provisioning, etc.
   // Consumed via:
   //   AUTH_HTTP service binding (default fetch) by apps/api, apis.do — for /login, /callback, /oauth/*, etc.
-  //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser, etc.)
+  //   OAUTH service binding (RPC) for AuthService entrypoint (verifyToken, getUser,
+  //     sendMagicLink, etc.): "services": [{ "binding": "OAUTH", "service": "oauth", "entrypoint": "AuthService" }]
   //   AUTH service binding (RPC) for the AuthIdentity entrypoint — the stable
   //     token-verification seam for builder.domains custom-domain projection:
   //     `env.AUTH.verifyToken(token) -> { valid, identity? }`. Validates ONLY
@@ -44,6 +45,42 @@
     // shared client_id `cid_trusted_account_v1` without per-app DCR.
     // Trust comes from the domain being in the same Cloudflare account.
     "TRUSTED_ACCOUNT_DOMAINS": "startup.games",
+
+    // ── Sign-in / sign-out destinations (worker/utils/relying-parties.ts) ──
+    // /login?continue= and /logout?return_url= accept relative paths, this
+    // worker's own origins, TRUSTED_ACCOUNT_DOMAINS, registered OAuth clients'
+    // redirect origins, and these hosts (`*.` = any subdomain):
+    //   *.dotdo.workers.dev — this account's workers.dev subdomain (sdb signs
+    //                         in and out through id.org.ai from there)
+    //   management.studio   — /signin/oauth/:provider continues to its
+    //                         /api/auth/callback
+    "LOGIN_CONTINUE_HOSTS": "management.studio,*.dotdo.workers.dev",
+    // `report` follows a target outside that policy (the pre-policy
+    // behaviour) and logs login.continue.unlisted / logout.return.unlisted
+    // with its host. Estate callers that reach id.org.ai over the AUTH_HTTP
+    // service binding with an absolute continue on their own custom hostname
+    // (startup-builder's `site` worker on the workers.do zone) are not
+    // enumerable in advance. Switch to `enforce` once the unlisted log is
+    // empty or every host in it is listed above. POST /api/magic-link always
+    // enforces.
+    "LOGIN_CONTINUE_POLICY": "report",
+    // OAuth clients that may call POST /api/magic-link (comma-separated
+    // client ids). Registration is open, so any other registered client is
+    // refused (403). Workers in this account call the RPC method
+    // AuthService.sendMagicLink over an OAUTH binding instead (no listing).
+    //   cid_6024fce7… — api.sb's web client (confidential, client_secret_basic)
+    "MAGIC_LINK_CLIENTS": "cid_6024fce72d8ce25066e6e876361ea3d7e12d8f4dc23566a8",
+
+    // ── Auth UI redesign flags (docs/product-update/README.md#flags) ──
+    // Escape hatch: "1" restores the old unauthenticated /admin-portal,
+    // /fga/* and /pipes/* if an unknown estate caller breaks. "0" is secure.
+    "LEGACY_OPEN_WORKOS_ROUTES": "0",
+    // CIMD client hosts shown as verified on consent (D3), comma-separated.
+    // Empty: only the seeded first-party clients are verified (owner step).
+    "VERIFIED_CLIENT_HOSTS": "",
+    // "1": step up before granting act permissions (sb:do) on a sign-in older
+    // than 10 minutes. /step-up arrives in phase 9; keep "0" until then.
+    "FEATURE_STEP_UP": "0",
   },
 
   "routes": [

@@ -58,27 +58,80 @@ export const ALLOWED_ORIGIN_PATTERNS = [
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
 ]
 
+// ============================================================================
+// Hostname canonicalisation
+// ============================================================================
+
 /**
- * Check if an origin is in the allowlist.
+ * The canonical spelling of a hostname for trust and redirect decisions:
+ * lowercase, with any trailing dot removed. `id.org.ai.` (the fully-qualified
+ * spelling) and `ID.org.AI` name the same host as `id.org.ai`, and Cloudflare
+ * routes public traffic on the trailing-dot name to this worker with the dot
+ * still in `request.url`. Every comparison of a host against a list must go
+ * through this, so no spelling of a name is treated differently from another.
  */
-export function isAllowedOrigin(origin: string): boolean {
-  if (!origin) return false
-  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))
+export function canonicalHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, '')
 }
 
 /**
- * Check if a redirect URL is safe (prevents script injection via redirects).
- * Allows: relative paths, any https: URL (workers.do zone has thousands of custom hostnames).
- * Rejects: protocol-relative URLs (//evil.com), javascript: URIs, data: URIs.
+ * The canonical origin (`scheme://host[:port]`) of a URL or origin string,
+ * with the host through `canonicalHostname`; null when it does not parse or
+ * has no host.
+ */
+export function canonicalOrigin(urlOrOrigin: string): string | null {
+  let u: URL
+  try {
+    u = new URL(urlOrOrigin)
+  } catch {
+    return null
+  }
+  if (!u.hostname) return null
+  const host = canonicalHostname(u.hostname)
+  if (!host) return null
+  return `${u.protocol}//${host}${u.port ? `:${u.port}` : ''}`
+}
+
+/**
+ * The canonical origin of the request being served: what trust and redirect
+ * decisions (login state, cross-origin bounce, continue policy, audiences,
+ * advertised issuers) use in place of `new URL(request.url).origin`, which
+ * keeps a trailing dot.
+ */
+export function requestOriginOf(requestUrl: string): string {
+  return canonicalOrigin(requestUrl) ?? new URL(requestUrl).origin
+}
+
+/**
+ * Check if an origin is in the allowlist. The origin is compared in its
+ * canonical spelling (lowercase host, no trailing dot).
+ */
+export function isAllowedOrigin(origin: string): boolean {
+  // An Origin is scheme://host[:port] and nothing else: no path, query,
+  // fragment or userinfo may ride along into the comparison.
+  if (!origin || !/^[a-z][a-z0-9+.-]*:\/\/[^/?#@\s\\]+$/i.test(origin)) return false
+  const canonical = canonicalOrigin(origin)
+  if (!canonical) return false
+  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(canonical))
+}
+
+/**
+ * Syntactic redirect check (prevents script injection via redirects).
+ * Allows: relative paths and absolute http(s) URLs.
+ * Rejects: protocol-relative URLs (//evil.com, /\evil.com), javascript: and
+ * data: URIs, and anything carrying tab/CR/LF.
  *
- * Note: The login flow is CSRF-protected (state token in DO), and the auth cookie is
- * HttpOnly + scoped to .headless.ly, so absolute URL redirects cannot steal credentials.
- * We only block injection vectors, not open redirects to https: targets.
+ * This is NOT an allowlist: it does not stop an open redirect to an arbitrary
+ * https: host. `/login?continue=` goes through the destination policy in
+ * worker/utils/relying-parties.ts (`resolveContinue`) on top of this check.
  */
 export function isSafeRedirectUrl(url: string): boolean {
   if (!url) return false
-  // Relative paths are safe (but reject protocol-relative `//evil.com`)
-  if (url.startsWith('/') && !url.startsWith('//')) return true
+  // Browsers strip tab/CR/LF from URLs, so `/\t/evil.com` would become `//evil.com`.
+  if (/[\t\n\r]/.test(url)) return false
+  // Relative paths are safe, but not protocol-relative `//evil.com` or
+  // `/\evil.com` (which browsers normalise to `//evil.com`).
+  if (url.startsWith('/')) return url[1] !== '/' && url[1] !== '\\'
   // Absolute URLs: only allow http(s)
   try {
     const parsed = new URL(url)
@@ -303,6 +356,14 @@ export function validateOrigin(request: Request): Response | null {
   // Allow requests with no Origin header (same-origin, non-browser, curl, etc.)
   // The Referer header could also be checked but Origin is sufficient per OWASP
   if (!origin) {
+    return null
+  }
+
+  // Pages served with Referrer-Policy: no-referrer (every auth page,
+  // security.md) make the browser send `Origin: null` on their own form posts.
+  // Sec-Fetch-Site is set by the browser alone (no page can), so null is
+  // accepted only when it says the post came from this site.
+  if (origin === 'null' && request.headers.get('sec-fetch-site') === 'same-origin') {
     return null
   }
 

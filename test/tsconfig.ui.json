@@ -1,0 +1,9 @@
+{
+  // Typechecks the auth-UI redesign's workers-pool tests (test/ui-*.test.ts).
+  // The rest of test/ predates typechecking and isn't covered here.
+  "extends": "../worker/tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/vitest-pool-workers"]
+  },
+  "include": ["ui-*.test.ts", "../worker/worker-configuration.d.ts"]
+}

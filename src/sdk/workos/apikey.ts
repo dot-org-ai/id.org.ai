@@ -4,6 +4,7 @@
  * Validates WorkOS-issued API keys (sk_* prefix) against the
  * WorkOS API key validations endpoint.
  */
+import { workosUrl } from './base'
 
 // ============================================================================
 // Types
@@ -36,7 +37,7 @@ export async function validateWorkOSApiKey(
   }
 
   try {
-    const response = await fetch('https://api.workos.com/api_keys/validations', {
+    const response = await fetch(workosUrl('/api_keys/validations'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

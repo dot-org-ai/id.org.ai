@@ -297,6 +297,27 @@ describe('validateOrigin', () => {
     expect(validateOrigin(request)).toBeNull()
   })
 
+  // Auth pages send Referrer-Policy: no-referrer (security.md), so a browser's
+  // own form post from them carries `Origin: null`. Sec-Fetch-Site, which only
+  // the browser sets, says whether it came from this site.
+  it('allows `Origin: null` on a form post the browser marks same-origin', () => {
+    const request = new Request('https://id.org.ai/oauth/authorize', {
+      method: 'POST',
+      headers: { origin: 'null', 'sec-fetch-site': 'same-origin' },
+    })
+    expect(validateOrigin(request)).toBeNull()
+  })
+
+  it('rejects `Origin: null` from another site, or with no Sec-Fetch-Site to vouch for it', () => {
+    for (const site of ['cross-site', 'same-site', 'none', undefined]) {
+      const request = new Request('https://id.org.ai/oauth/authorize', {
+        method: 'POST',
+        headers: { origin: 'null', ...(site && { 'sec-fetch-site': site }) },
+      })
+      expect(validateOrigin(request)?.status, String(site)).toBe(403)
+    }
+  })
+
   it('rejects POST requests with invalid origin', () => {
     const request = new Request('https://example.com', {
       method: 'POST',

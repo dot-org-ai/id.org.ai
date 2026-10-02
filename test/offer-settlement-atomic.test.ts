@@ -81,7 +81,7 @@ interface AppOpts { store?: DlvpStore; settlement?: ReturnType<typeof mockSettle
 /** Open a session over INSTANCE_KEY, optionally carrying an OFFER in the signed request. */
 async function openSession(offer: DualLegOffer | undefined, opts: AppOpts = {}) {
   const store = opts.store ?? new DlvpStore()
-  const app = createDlvpApp({ registry: seededRegistry(), signer, trust, store, settlement: opts.settlement })
+  const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust, store, settlement: opts.settlement })
   const res = await app.request(`${ORIGIN}/dlvp/session`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ identifier: INSTANCE_KEY, consumerAsk: [{ claim: 'genuine' }], brandOffer: [{ claim: 'owns' }], ...(offer ? { offer } : {}) }),
@@ -312,7 +312,7 @@ describe('replay + backward-compat', () => {
     const { session, nonce } = await openSession(offerFor(3), { store, settlement: port })
     const p = await bothPresentations(nonce)
     // Settle against an app whose registry has NO record for the key.
-    const emptyApp = createDlvpApp({ registry: new MemoryRegistryPort(), signer, trust, store, settlement: port })
+    const emptyApp = createDlvpApp({ enabled: true, registry: new MemoryRegistryPort(), signer, trust, store, settlement: port })
     const res = await settleOffer(emptyApp, session, p)
     expect(res.status).toBe(402)
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('CONFIDENCE_NOT_COUNTERVERIFIED')
@@ -333,7 +333,7 @@ describe('replay + backward-compat', () => {
       sign: async () => { throw new Error('signer unavailable') },
       verify: (t: string) => signer.verify(t),
     }
-    const failApp = createDlvpApp({ registry: seededRegistry(), signer: failSigner, trust, store, settlement: port })
+    const failApp = createDlvpApp({ enabled: true, registry: seededRegistry(), signer: failSigner, trust, store, settlement: port })
     const res = await settleOffer(failApp, session, p)
     expect(res.status).toBe(402)
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('SETTLEMENT_FAILED')
@@ -346,7 +346,7 @@ describe('replay + backward-compat', () => {
   it('production default settlement port is FAIL-CLOSED (no rail wired -> SETTLEMENT_FAILED, no money)', async () => {
     // No settlement injected -> createDlvpApp defaults to noopSettlementPort.
     const store = new DlvpStore()
-    const app = createDlvpApp({ registry: seededRegistry(), signer, trust, store })
+    const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust, store })
     const open = await app.request(`${ORIGIN}/dlvp/session`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ identifier: INSTANCE_KEY, consumerAsk: [{ claim: 'genuine' }], brandOffer: [{ claim: 'owns' }], offer: offerFor(3) }),

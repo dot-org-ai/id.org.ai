@@ -11,14 +11,19 @@
  *   id.org.ai status    - Show authentication and storage status
  */
 
-import { authorizeDevice, pollForTokens } from './device.js'
+import { hostname } from 'node:os'
+import { deviceName } from './device.js'
 import { getUser, logout as logoutFn, ensureValidToken } from './auth.js'
+import { runLogin, parseLoginArgs, EXIT } from './login.js'
+import { outputMode } from './login-output.js'
+import { openInBrowser, copyToClipboard } from './desktop.js'
 import { createStorage, SecureFileTokenStorage } from './storage.js'
 import { provisionCommand } from './provision.js'
 import { claimCommand } from './claim.js'
 import { ProvisionStorage } from './provision-storage.js'
+import { cleanStack, cleanText } from './untrusted'
 
-const colors = {
+const ANSI = {
   reset: '\x1b[0m',
   bright: '\x1b[1m',
   dim: '\x1b[2m',
@@ -30,15 +35,23 @@ const colors = {
   blue: '\x1b[34m',
 }
 
+// Plain text under NO_COLOR or when stdout is not a terminal, as login's output (spec/cli-output.md).
+const colors: typeof ANSI = outputMode({ stdoutIsTTY: process.stdout.isTTY, env: process.env }).colour
+  ? ANSI
+  : (Object.fromEntries(Object.keys(ANSI).map((key) => [key, ''])) as typeof ANSI)
+
 const CLIENT_ID = process.env.ID_ORG_AI_CLIENT_ID || 'id_org_ai_cli'
+const APP = { name: 'id.org.ai', cli: 'id.org.ai' }
 const storage = createStorage(process.env.ID_ORG_AI_STORAGE_PATH)
 
 function printError(message: string, error?: Error) {
   console.error(`${colors.red}Error:${colors.reset} ${message}`)
-  if (error?.message) console.error(error.message)
+  // Error text can carry a server's words; never print it raw.
+  if (error?.message) console.error(cleanText(error.message))
   if (error?.stack && process.env.DEBUG) {
+    // The stack repeats the message: cleaned line by line, line breaks kept.
     console.error(`\n${colors.dim}Stack trace:${colors.reset}`)
-    console.error(`${colors.dim}${error.stack}${colors.reset}`)
+    console.error(`${colors.dim}${cleanStack(error.stack)}${colors.reset}`)
   }
 }
 
@@ -58,7 +71,8 @@ ${colors.cyan}Usage:${colors.reset}
   id.org.ai <command> [options]
 
 ${colors.cyan}Commands:${colors.reset}
-  login      Login using device authorization flow
+  login      Sign in with your browser (device flow)
+             --account  sign in as another account
   logout     Logout and remove stored credentials
   whoami     Show current authenticated user
   token      Display current authentication token
@@ -74,6 +88,9 @@ ${colors.cyan}Options:${colors.reset}
 ${colors.cyan}Examples:${colors.reset}
   ${colors.gray}# Login to your account${colors.reset}
   id.org.ai login
+
+  ${colors.gray}# Sign in as another account${colors.reset}
+  id.org.ai login --account
 
   ${colors.gray}# Check who is logged in${colors.reset}
   id.org.ai whoami
@@ -97,66 +114,45 @@ ${colors.cyan}Environment Variables:${colors.reset}
   ID_ORG_AI_URL            API base URL (default: https://id.org.ai)
   ID_ORG_AI_CLIENT_ID      Client ID for OAuth
   ID_ORG_AI_STORAGE_PATH   Custom token storage path
+  NO_COLOR                 Print login output without styles
   DEBUG                    Enable debug output
 `)
 }
 
-async function loginCommand() {
+/**
+ * Sign in with the device flow, printing the 4a screen
+ * (docs/product-update/spec/cli-output.md). Exit code: 0 signed in, 1 denied,
+ * expired or failed, 2 usage error, 130 interrupted.
+ */
+async function loginCommand(args: string[] = []) {
+  const parsed = parseLoginArgs(args)
+  if (!parsed.ok) {
+    printError(parsed.error)
+    console.error(`\nRun ${colors.cyan}id.org.ai --help${colors.reset} for usage information`)
+    process.exit(EXIT.usage)
+  }
+
+  // Raw mode turns Ctrl-C into a key, which runLogin handles; without it, SIGINT.
+  const interrupt = new AbortController()
+  const onSigint = () => interrupt.abort()
+  process.once('SIGINT', onSigint)
   try {
-    console.log(`${colors.bright}Starting login...${colors.reset}\n`)
-
-    printInfo('Requesting device authorization...')
-    const authResponse = await authorizeDevice(CLIENT_ID)
-
-    console.log(`\n${colors.bright}To complete login:${colors.reset}`)
-    console.log(`\n  1. Visit: ${colors.cyan}${authResponse.verification_uri}${colors.reset}`)
-    console.log(`  2. Enter code: ${colors.bright}${colors.yellow}${authResponse.user_code}${colors.reset}`)
-    console.log(`\n  ${colors.dim}Or open this URL directly:${colors.reset}`)
-    console.log(`  ${colors.blue}${authResponse.verification_uri_complete}${colors.reset}\n`)
-
-    const open = await import('open').catch(() => null)
-    if (open) {
-      try {
-        await open.default(authResponse.verification_uri_complete)
-        printSuccess('Opened browser for authentication')
-      } catch {
-        printInfo('Could not open browser. Please visit the URL above manually.')
-      }
-    } else {
-      printInfo('Could not open browser. Please visit the URL above manually.')
-    }
-
-    console.log(`\n${colors.dim}Waiting for authorization...${colors.reset}\n`)
-    const tokenResponse = await pollForTokens(
-      CLIENT_ID,
-      authResponse.device_code,
-      authResponse.interval,
-      authResponse.expires_in,
-    )
-
-    const expiresAt = tokenResponse.expires_in ? Date.now() + tokenResponse.expires_in * 1000 : undefined
-    await storage.setTokenData({
-      accessToken: tokenResponse.access_token,
-      refreshToken: tokenResponse.refresh_token,
-      expiresAt,
+    process.exitCode = await runLogin({
+      clientId: CLIENT_ID,
+      app: APP,
+      storage,
+      deviceName: deviceName(process.platform, hostname()),
+      signal: interrupt.signal,
+      io: {
+        stdout: process.stdout,
+        stdin: process.stdin,
+        env: process.env,
+        openUrl: (url) => openInBrowser(url),
+        copyText: (text) => copyToClipboard(text, { write: (chunk) => process.stdout.write(chunk) }),
+      },
     })
-
-    const authResult = await getUser(tokenResponse.access_token)
-
-    printSuccess('Login successful!')
-    if (authResult.user) {
-      console.log(`\n${colors.dim}Logged in as:${colors.reset}`)
-      if (authResult.user.name) console.log(`  ${colors.bright}${authResult.user.name}${colors.reset}`)
-      if (authResult.user.email) console.log(`  ${colors.gray}${authResult.user.email}${colors.reset}`)
-    }
-
-    const storagePath = await (storage as SecureFileTokenStorage).getStoragePath?.()
-    if (storagePath) {
-      console.log(`\n${colors.dim}Token stored in: ${colors.green}${storagePath}${colors.reset}`)
-    }
-  } catch (error) {
-    printError('Login failed', error instanceof Error ? error : undefined)
-    process.exit(1)
+  } finally {
+    process.off('SIGINT', onSigint)
   }
 }
 
@@ -217,7 +213,8 @@ async function tokenCommand() {
       return
     }
 
-    // Output raw token (for piping to other commands)
+    // The token as is, for piping. Only token characters are ever stored, and
+    // ensureValidToken hands back nothing else (untrusted.ts, parseToken).
     console.log(token)
   } catch (error) {
     printError('Failed to get token', error instanceof Error ? error : undefined)
@@ -311,7 +308,7 @@ async function main() {
 
   switch (command) {
     case 'login':
-      await loginCommand()
+      await loginCommand(args.filter((_, i) => i !== args.indexOf('login')))
       break
     case undefined:
       await autoLoginOrShowUser()
@@ -347,7 +344,7 @@ async function main() {
     default:
       printError(`Unknown command: ${command}`)
       console.log(`\nRun ${colors.cyan}id.org.ai --help${colors.reset} for usage information`)
-      process.exit(1)
+      process.exit(EXIT.usage)
   }
 }
 

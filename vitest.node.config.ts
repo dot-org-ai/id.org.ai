@@ -17,6 +17,7 @@ export default {
       'test/provision-storage.test.ts',
       'test/cli-provision.test.ts',
       'test/cli-claim.test.ts',
+      'test/cli-login.test.ts',
       'test/workos-refresh.test.ts',
       'test/foundation-result.test.ts',
       'test/foundation-errors.test.ts',

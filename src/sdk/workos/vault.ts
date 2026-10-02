@@ -14,8 +14,9 @@
  * can be called from the Hono routes in worker/index.ts without needing
  * to instantiate a WorkerEntrypoint.
  */
+import { workosUrl } from './base'
 
-const VAULT_BASE = 'https://api.workos.com/vault/v1'
+const vaultBase = () => workosUrl('/vault/v1')
 
 // ============================================================================
 // Types
@@ -59,7 +60,7 @@ export interface UpdateSecretOptions {
  * @returns The created secret metadata (value is NOT returned)
  */
 export async function createVaultSecret(apiKey: string, options: CreateSecretOptions): Promise<VaultSecret> {
-  const resp = await fetch(`${VAULT_BASE}/secrets`, {
+  const resp = await fetch(`${vaultBase()}/secrets`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -87,7 +88,7 @@ export async function createVaultSecret(apiKey: string, options: CreateSecretOpt
  * @returns Secret metadata (no decrypted value)
  */
 export async function getVaultSecret(apiKey: string, secretId: string): Promise<VaultSecret> {
-  const resp = await fetch(`${VAULT_BASE}/secrets/${secretId}`, {
+  const resp = await fetch(`${vaultBase()}/secrets/${secretId}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
   if (!resp.ok) {
@@ -105,7 +106,7 @@ export async function getVaultSecret(apiKey: string, secretId: string): Promise<
  * @returns Secret metadata with decrypted value
  */
 export async function readVaultSecretValue(apiKey: string, secretId: string): Promise<VaultSecretWithValue> {
-  const resp = await fetch(`${VAULT_BASE}/secrets/${secretId}/reveal`, {
+  const resp = await fetch(`${vaultBase()}/secrets/${secretId}/reveal`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
   if (!resp.ok) {
@@ -131,7 +132,7 @@ export async function listVaultSecrets(
   if (options?.limit) params.set('limit', String(options.limit))
   if (options?.after) params.set('after', options.after)
 
-  const url = `${VAULT_BASE}/secrets${params.toString() ? '?' + params.toString() : ''}`
+  const url = `${vaultBase()}/secrets${params.toString() ? '?' + params.toString() : ''}`
   const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
@@ -151,7 +152,7 @@ export async function listVaultSecrets(
  * @returns Updated secret metadata
  */
 export async function updateVaultSecret(apiKey: string, secretId: string, updates: UpdateSecretOptions): Promise<VaultSecret> {
-  const resp = await fetch(`${VAULT_BASE}/secrets/${secretId}`, {
+  const resp = await fetch(`${vaultBase()}/secrets/${secretId}`, {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -173,7 +174,7 @@ export async function updateVaultSecret(apiKey: string, secretId: string, update
  * @param secretId - The WorkOS secret ID to delete
  */
 export async function deleteVaultSecret(apiKey: string, secretId: string): Promise<void> {
-  const resp = await fetch(`${VAULT_BASE}/secrets/${secretId}`, {
+  const resp = await fetch(`${vaultBase()}/secrets/${secretId}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${apiKey}` },
   })

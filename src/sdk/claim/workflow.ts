@@ -1,6 +1,13 @@
+/**
+ * A claim token as id.org.ai issues it (`clm_` and hex). It is written into a
+ * YAML string the claim command commits and pushes, so anything else (a quote,
+ * a newline) could reshape the workflow: refuse it.
+ */
+const CLAIM_TOKEN = /^clm_[A-Za-z0-9_-]{1,128}$/
+
 export function buildClaimWorkflow(claimToken: string): string {
-  if (!claimToken || !claimToken.startsWith('clm_')) {
-    throw new Error('Invalid claim token: must start with clm_')
+  if (!claimToken || !CLAIM_TOKEN.test(claimToken)) {
+    throw new Error('Invalid claim token: expected clm_ followed by letters, digits, - or _')
   }
 
   return `name: Claim headless.ly tenant

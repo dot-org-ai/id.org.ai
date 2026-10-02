@@ -59,6 +59,14 @@ export interface Identity {
   scopes?: string[]
 
   /**
+   * How this identity authenticated, where authorisation depends on it.
+   * `workos-key`: a WorkOS-issued `sk_` key that WorkOS validated (a service
+   * caller; `tenantId` is the org it's scoped to). Set only by AuthBroker's
+   * WorkOS-key path, so it can't be claimed by presenting a header.
+   */
+  credential?: 'workos-key'
+
+  /**
    * Structured capability grant carried by the credential (an API key minted
    * with a scope-shaped grant). When present, AuthBroker.check()/gate()
    * evaluates a structured `need` against it via `scopeSatisfies`. Additive to
@@ -194,6 +202,15 @@ export interface IdentityStub {
   ensureOAuthDoClient(): Promise<void>
   ensureWebClients(): Promise<void>
   oauthStorageOp(op: { op: 'get' | 'put' | 'delete' | 'list'; key?: string; value?: unknown; options?: { expirationTtl?: number; prefix?: string; limit?: number } }): Promise<Record<string, unknown>>
+
+  // Atomic get-and-delete: answers the value to exactly one caller, however
+  // many race. See IdentityDO.takeOnce.
+  takeOnce(input: { key: string }): Promise<{ value: unknown }>
+
+  // Atomic fixed-window counter: increments `key` and reports whether the
+  // post-increment count is within `max` for the current `windowMs` window.
+  // A refused call does not increment. See IdentityDO.consumeBudget.
+  consumeBudget(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; count: number; retryAfterSec: number }>
 
   // AAP host-registration atomicity (ax-p18): atomically claims host_id ->
   // tenantId. Callers route this through a DO instance dedicated to the

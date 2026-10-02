@@ -41,7 +41,9 @@ export function canonicalizeResourceUri(uri: string): string {
   try {
     const u = new URL(uri)
     const path = u.pathname.length > 1 ? u.pathname.replace(/\/$/, '') : u.pathname
-    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${path}${u.search}`
+    // Host in its canonical spelling: lowercase, no trailing dot.
+    const host = u.hostname.toLowerCase().replace(/\.+$/, '') + (u.port ? `:${u.port}` : '')
+    return `${u.protocol.toLowerCase()}//${host}${path}${u.search}`
   } catch {
     return trimSlash(uri)
   }

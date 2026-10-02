@@ -24,6 +24,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { corsMiddleware, originValidationMiddleware } from './middleware/origin'
+import { requestOriginOf } from '../src/sdk/csrf'
 import * as jose from 'jose'
 import { IdentityDO } from '../src/server/do/Identity'
 import type { IdentityStub } from '../src/server/do/Identity'
@@ -36,16 +37,20 @@ import {
   getSigningKeyManager,
   identityStubMiddleware,
 } from './middleware/tenant'
-import { oauthRoutes, getOAuthProvider } from './routes/oauth'
+import { oauthRoutes, getOAuthProvider, createOAuthProvider } from './routes/oauth'
+import { grantRoutes } from './routes/grants'
+import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import type { VerifyTokenResult } from '../src/sdk/auth'
 import { authVerifyRoutes, verifyIdentityTokenWithEnv } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
+import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
+import { magicLinkRoutes, startMagicLink, type MagicLinkResult } from './routes/magic-link'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -54,6 +59,10 @@ import { aapRoutes } from './routes/aap'
 import { credentialRoutes } from './routes/credentials'
 import { resolveRoutes } from './routes/resolve'
 import { dlvpRoutes } from './routes/dlvp'
+import { requestIdMiddleware } from './middleware/request-id'
+import { htmlErrorsMiddleware } from './middleware/html-errors'
+import { staticUiRoutes } from './routes/static-ui'
+import { galleryRoutes } from './ui/gallery/routes'
 
 export { IdentityDO }
 
@@ -86,6 +95,11 @@ function getJwksVerifier(jwksUri: string): jose.JWTVerifyGetKey {
 //   4. JWTs → verified against id.org.ai JWKS, then WorkOS JWKS (also covers oauth.do-issued JWTs)
 
 export class AuthService extends WorkerEntrypoint<Env> {
+  constructor(ctx: ExecutionContext, env: Env) {
+    super(ctx, env)
+    configureWorkOSBase(env)
+  }
+
   // ── verifyToken ─────────────────────────────────────────────────────
   // Verify any token type (session, API key, or WorkOS JWT).
   // Results are cached for 5 minutes via Cache API.
@@ -287,6 +301,56 @@ export class AuthService extends WorkerEntrypoint<Env> {
     return true
   }
 
+  // ── sendMagicLink ───────────────────────────────────────────────────
+  // Magic-link sign-in for a worker in this account (worker/routes/magic-link.ts):
+  //   env.OAUTH.sendMagicLink({ email, continue, clientId?, origin? })
+  //     → { ok: true, sent, verify_url, expires_in }
+  //     | { ok: false, status, error, error_description, retryAfterSec? }
+  // An RPC method is reachable only through a service binding to this
+  // entrypoint, never from the public internet, so the binding is the
+  // credential (POST /api/magic-link, the public door, takes only listed
+  // confidential clients). `clientId` (optional) lends a registered client's
+  // redirect origins to `continue`; `origin` (optional) is the calling
+  // worker's own origin, on which `continue` may also land. The magic-link
+  // path's per-address send budget (`code-send:ml:<email>`, shared with HTTP)
+  // and the hourly caps apply as on HTTP.
+
+  async sendMagicLink(input: { email: string; continue?: string; clientId?: string; origin?: string }): Promise<MagicLinkResult> {
+    if (!this.env.WORKOS_API_KEY || !this.env.WORKOS_CLIENT_ID) {
+      return { ok: false, status: 503, error: 'temporarily_unavailable', error_description: 'WorkOS is not configured' }
+    }
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    return startMagicLink(
+      this.env,
+      { email: str(input?.email) ?? '', continue: str(input?.continue) },
+      { kind: 'binding', clientId: str(input?.clientId), origin: str(input?.origin) },
+    )
+  }
+
+  // ── exchangeToken (RFC 8693) ────────────────────────────────────────
+  // For api.sb's agents: a Person's access token for api.sb (the subject)
+  // plus the agent acting for them → a narrower api.sb access token (RFC 9068
+  // JWT) with sub = the Person and act = { sub: <agent> } (nested when the
+  // subject already names an actor). Reachable only through a service binding
+  // to this entrypoint, which authenticates the calling Worker; that Worker
+  // asserts the actor. See OAuthProvider.exchangeToken for the rules.
+  //   env.AUTH_SERVICE.exchangeToken({
+  //     subject_token, subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+  //     actor: { sub: 'workers/sextant' }, resource?: 'https://api.sb/mcp', scope?: 'sb:read',
+  //   }) → { ok: true, access_token, issued_token_type, token_type, expires_in, scope }
+  //      | { ok: false, error, error_description }
+
+  async exchangeToken(input: {
+    subject_token: string
+    subject_token_type: string
+    requested_token_type?: string
+    actor: { sub: string }
+    resource?: string
+    scope?: string
+  }) {
+    return createOAuthProvider(this.env).exchangeToken(input ?? {})
+  }
+
   // ── JWT Verification (private) ──────────────────────────────────────
   // Two-layer JWT verification:
   //   1. Own JWKS: JWTs issued by /callback (login flow) — signed by us
@@ -329,7 +393,7 @@ export class AuthService extends WorkerEntrypoint<Env> {
     const clientId = this.env.WORKOS_CLIENT_ID
     if (!clientId) return null
 
-    const jwksUri = `https://api.workos.com/sso/jwks/${clientId}`
+    const jwksUri = workosUrl(`/sso/jwks/${clientId}`)
 
     try {
       const jwks = getJwksVerifier(jwksUri)
@@ -431,6 +495,11 @@ export { AuthService as AuthRPC }
 // { identity }. It is a thin wrapper over the shipped `verifyToken` primitive
 // (src/sdk/auth/verify-token.ts → src/sdk/oauth/jwt-verify.ts).
 export class AuthIdentity extends WorkerEntrypoint<Env> {
+  constructor(ctx: ExecutionContext, env: Env) {
+    super(ctx, env)
+    configureWorkOSBase(env)
+  }
+
   /**
    * Verify an id.org.ai-issued JWT and return the projected identity.
    * Never throws — a malformed/expired/tampered/wrong-issuer token yields
@@ -442,6 +511,35 @@ export class AuthIdentity extends WorkerEntrypoint<Env> {
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+// ── Request IDs ─────────────────────────────────────────────────────────────
+// First, so every response (HTML and JSON) carries X-Request-Id.
+
+app.use('*', requestIdMiddleware)
+
+// ── Error pages for browsers ─────────────────────────────────────────────────
+// A JSON error answered to a browser navigation on a browser-facing route (or
+// the catch-all 404) becomes the error template; API callers keep the JSON
+// (worker/middleware/html-errors.ts).
+
+app.use('*', htmlErrorsMiddleware)
+
+// ── WorkOS base (test seam) ─────────────────────────────────────────────────
+// Production leaves WORKOS_API_BASE unset (https://api.workos.com). wrangler dev
+// points it at test-visual/workos-stub.mjs (src/sdk/workos/base.ts).
+
+app.use('*', async (c, next) => {
+  configureWorkOSBase(c.env)
+  await next()
+})
+
+// ── Auth UI assets and design gallery ────────────────────────────────────────
+// Hashed /auth/*.css|js and /fonts/geist/* get an immutable cache header
+// (worker/routes/static-ui.ts). /__design is dev only (DESIGN_GALLERY=1).
+// Both fall through when they have nothing to serve.
+
+app.route('', staticUiRoutes)
+app.route('', galleryRoutes)
 
 // ── CORS ──────────────────────────────────────────────────────────────────
 // Tightened CORS: only allow specific origins (*.headless.ly, *.org.ai, localhost for dev).
@@ -629,7 +727,7 @@ app.get('/me', async (c) => {
   const clientId = c.env.WORKOS_CLIENT_ID
   if (clientId) {
     try {
-      const jwks = getJwksVerifier(`https://api.workos.com/sso/jwks/${clientId}`)
+      const jwks = getJwksVerifier(workosUrl(`/sso/jwks/${clientId}`))
       const { payload } = await jose.jwtVerify(token, jwks)
       return c.json({
         id: payload.sub || '',
@@ -669,10 +767,14 @@ app.get('/.well-known/openid-configuration', (c) => {
     grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials', 'urn:ietf:params:oauth:grant-type:device_code'],
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256', 'ES256'],
-    scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+    scopes_supported: SCOPES_SUPPORTED,
     token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified'],
+    // RFC 9207: every authorization response (code or error) carries `iss`.
+    authorization_response_iss_parameter_supported: true,
+    // An https client_id is a Client ID Metadata Document (src/sdk/oauth/cimd.ts).
+    client_id_metadata_document_supported: true,
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time', 'org_id', 'org_name'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
 
@@ -693,7 +795,9 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       introspection_endpoint: `${issuer}/oauth/introspect`,
       userinfo_endpoint: `${issuer}/oauth/userinfo`,
       device_authorization_endpoint: `${issuer}/oauth/device`,
-      scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
+      // sb:read / sb:do delegate a Person's authority on api.sb; they are only
+      // granted for an api.sb resource (src/sdk/oauth/delegation.ts).
+      scopes_supported: SCOPES_SUPPORTED,
       response_types_supported: ['code'],
       grant_types_supported: [
         'authorization_code',
@@ -703,9 +807,19 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
       ],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
-      // ID-JAG (Identity Assertion JWT Authorization Grant) is accepted as a
-      // token-exchange subject token — advertised in the RFC 8693 field the
-      // auth.md agent-identity check reads.
+      // RFC 9207: every authorization response (code or error) carries `iss`.
+      authorization_response_iss_parameter_supported: true,
+      // An https client_id is a Client ID Metadata Document (src/sdk/oauth/cimd.ts).
+      // DCR (registration_endpoint) stays: OpenCode and Cursor need it.
+      client_id_metadata_document_supported: true,
+      // NOT standard RFC 8414 metadata, and NOT about this token endpoint: the
+      // token endpoint does not accept grant_type token-exchange over HTTP.
+      // It describes the agent_auth identity_endpoint (POST /agent/identity),
+      // which resolves an ID-JAG assertion; the auth.md agent-identity check
+      // reads it here, so it stays. RFC 8693 token exchange for agents is the
+      // AuthService.exchangeToken RPC (service binding only), whose
+      // subject_token_type is the standard
+      // urn:ietf:params:oauth:token-type:access_token.
       subject_token_types_supported: ['urn:ietf:params:oauth:token-type:id-jag'],
       // auth.md agent-identity provider block. These are REAL, resolvable
       // endpoints (worker/routes/aap.ts): identity verifies an ID-JAG, events
@@ -736,7 +850,7 @@ function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
   const xIssuer = c.req.header('X-Issuer')
   const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   return c.json({
     resource: mcpResourceUri(origin),
     authorization_servers: [issuer],
@@ -775,6 +889,10 @@ app.route('', authVerifyRoutes)
 // ── Auth Routes (login, callback, logout, session, widget-token) ─────────────
 // Mounted before authenticateRequest — these routes handle their own auth.
 app.route('', authRoutes)
+// Magic-link sign-in for relying parties (POST /api/magic-link, /magic-link/:flow).
+// Mounted before the /api/* authenticateRequest middleware: the caller
+// authenticates as an OAuth client (client_secret) or a service binding.
+app.route('', magicLinkRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
 
@@ -823,7 +941,17 @@ app.use('/agent/*', authenticateRequest)
 // /vault/* ONLY so the other workosRoutes (org/portal/FGA/pipes) that authenticate
 // themselves on bare paths are unaffected.
 app.use('/vault/*', authenticateRequest)
+// /admin-portal, /fga/* and /pipes/* authenticate like every other protected
+// route (B13.2); each handler then authorises against the organization or user
+// (worker/utils/org-authz.ts). LEGACY_OPEN_WORKOS_ROUTES=1 restores the old
+// open routes if an unknown estate caller breaks.
+const authenticateWorkOSRoutes: typeof authenticateRequest = async (c, next) =>
+  c.env.LEGACY_OPEN_WORKOS_ROUTES === '1' ? next() : authenticateRequest(c, next)
+app.use('/admin-portal', authenticateWorkOSRoutes)
+app.use('/fga/*', authenticateWorkOSRoutes)
+app.use('/pipes/*', authenticateWorkOSRoutes)
 app.route('', auditRoutes)
+app.route('', grantRoutes)
 app.route('', mcpRoutes)
 app.route('', apiKeyRoutes)
 app.route('', workosRoutes)
@@ -903,6 +1031,7 @@ async function runSyntheticAuthCheck(env: Env, ctx: ExecutionContext): Promise<v
 export default {
   fetch: app.fetch.bind(app),
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    configureWorkOSBase(env)
     // Every-5-minutes cron: synthetic auth self-check only.
     if (event.cron === AUTH_SYNTHETIC_CRON) {
       ctx.waitUntil(runSyntheticAuthCheck(env, ctx))

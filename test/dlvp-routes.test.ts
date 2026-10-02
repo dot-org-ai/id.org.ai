@@ -69,7 +69,7 @@ beforeAll(async () => {
 /** Open a session over INSTANCE_KEY and return { app, store, nonce }. */
 async function openSession(overrides: { store?: DlvpStore } = {}) {
   const store = overrides.store ?? new DlvpStore()
-  const app = createDlvpApp({ registry: seededRegistry(), signer, trust, store })
+  const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust, store })
   const res = await app.request(`${ORIGIN}/dlvp/session`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -113,7 +113,7 @@ describe('POST /dlvp/session', () => {
   })
 
   it('400s a malformed body', async () => {
-    const app = createDlvpApp({ registry: seededRegistry(), signer, trust })
+    const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust })
     const res = await app.request(`${ORIGIN}/dlvp/session`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nope: 1 }),
     })
@@ -232,7 +232,7 @@ describe('POST /dlvp/settle — the atomic symmetric co-settle', () => {
 
   it('rejects an untrusted issuer (empty trust map) — honest fail-closed, records nothing', async () => {
     const store = new DlvpStore()
-    const app = createDlvpApp({ registry: seededRegistry(), signer, trust: {}, store })
+    const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust: {}, store })
     const open = await app.request(`${ORIGIN}/dlvp/session`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ identifier: INSTANCE_KEY, consumerAsk: [{ claim: 'genuine' }] }),
@@ -250,7 +250,7 @@ describe('POST /dlvp/settle — the atomic symmetric co-settle', () => {
 
   it('400s an expired session', async () => {
     const store = new DlvpStore()
-    const app = createDlvpApp({ registry: seededRegistry(), signer, trust, store })
+    const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust, store })
     // Sign a session that is already expired.
     const expired = await signer.sign({ sub: INSTANCE_KEY, nonce: 'r', epcisEventId: 'e' }, { expiresIn: -300 })
     const p = await bothPresentations('r')
@@ -265,7 +265,7 @@ describe('POST /dlvp/settle — the atomic symmetric co-settle', () => {
 
 describe('GET/POST /dlvp/receipt/:grai', () => {
   it('404s an unknown GRAI on fetch and revoke', async () => {
-    const app = createDlvpApp({ registry: seededRegistry(), signer, trust, store: new DlvpStore() })
+    const app = createDlvpApp({ enabled: true, registry: seededRegistry(), signer, trust, store: new DlvpStore() })
     expect((await app.request(`${ORIGIN}/dlvp/receipt/unknown`)).status).toBe(404)
     expect((await app.request(`${ORIGIN}/dlvp/receipt/unknown/revoke`, { method: 'POST' })).status).toBe(404)
   })
