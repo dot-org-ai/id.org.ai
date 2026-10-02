@@ -85,8 +85,9 @@ export function consentProps(vm: ConsentViewModel, ctx: ConsentPageContext): Con
       ...(vm.client.termsUrl && { termsUrl: vm.client.termsUrl }),
     },
     resource: resourceHost,
-    // 3c words a read-only sb request by what it does (mock 3c).
+    // 3c words a read-only sb request (mock 3c), and an identity-only one, by what it does.
     ...(!vm.client.verified && readOnly && { intent: 'read your Startups' }),
+    ...(!vm.client.verified && vm.request === 'basic' && { intent: 'sign you in' }),
     ...(vm.request === 'basic' && { scopesSummary: scopesSummary(vm.scopes) }),
     account: ctx.account,
     switchHref: ctx.switchHref,

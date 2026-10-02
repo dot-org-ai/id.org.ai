@@ -82,7 +82,8 @@ function hostOf(uri: string): string {
   }
 }
 
-const https = (u: string | undefined) => (u && u.startsWith('https://') ? u : undefined)
+// DCR doesn't type-check logo_uri, so a stored value may not even be a string.
+const https = (u: unknown) => (typeof u === 'string' && u.startsWith('https://') ? u : undefined)
 
 export function buildConsentViewModel(i: ConsentViewInput): ConsentViewModel {
   const cimd = looksLikeCimdClientId(i.client.id)

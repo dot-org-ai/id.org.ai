@@ -210,7 +210,7 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
       return SELF.fetch(`${BASE}/oauth/authorize`, {
         method: 'POST',
         redirect: 'manual',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: csrf }), ...(accept && { accept }) },
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: csrf }), ...(accept && { accept, 'sec-fetch-site': 'same-origin' }) },
         body: new URLSearchParams({ ...hiddenFields(await page.text()), approved: 'true', org_id: '' }).toString(),
       })
     }
@@ -222,6 +222,49 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     const form = await post()
     expect(form.status).toBe(302)
     expect(new URL(form.headers.get('location')!).searchParams.get('code')).toMatch(/^ac_/)
+  })
+
+  it('only a same-origin page can read the code: JSON only for Sec-Fetch-Site same-origin, and no CORS on /oauth/authorize', async () => {
+    const cookies = await signIn('user_01CONSENT_E')
+    const attempt = async (site?: string) => {
+      const clientId = await register('Cross-site reader')
+      const page = await SELF.fetch(authorizeUrl(clientId, DCR_REDIRECT, await challenge()), { redirect: 'manual', headers: { cookie: cookieHeader(cookies), origin: 'https://evil.headless.ly' } })
+      expect(page.headers.get('access-control-allow-origin')).toBeNull()
+      expect(page.headers.get('access-control-allow-credentials')).toBeNull()
+      const csrf = setCookies(page).__csrf!
+      return SELF.fetch(`${BASE}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+          origin: 'https://evil.headless.ly',
+          cookie: cookieHeader({ ...cookies, __csrf: csrf }),
+          ...(site && { 'sec-fetch-site': site }),
+        },
+        body: new URLSearchParams({ ...hiddenFields(await page.text()), approved: 'true' }).toString(),
+      })
+    }
+    for (const site of ['same-site', 'cross-site', undefined]) {
+      const res = await attempt(site)
+      expect(res.status, String(site)).toBe(302) // a navigation, never a readable body
+      expect(res.headers.get('access-control-allow-origin'), String(site)).toBeNull()
+    }
+  })
+
+  it('"Switch" (/login?prompt=login) shows sign-in to a signed-in person instead of bouncing back (phase 5 review S4)', async () => {
+    const cookies = await signIn('user_01CONSENT_F')
+    const back = '/oauth/authorize?client_id=x'
+    const plain = await SELF.fetch(`${BASE}/login?continue=${encodeURIComponent(back)}`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(plain.status).toBe(302) // signed in, no prompt: straight back, as before
+    const page = await SELF.fetch(`${BASE}/login?prompt=login&continue=${encodeURIComponent(back)}`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(page.status).toBe(200)
+    const html = await page.text()
+    // Each provider keeps prompt=login, so choosing one signs in again rather than bouncing.
+    expect(html).toMatch(/href="\/login\?provider=GitHubOAuth[^"]*prompt=login/)
+    const provider = await SELF.fetch(`${BASE}/login?provider=GitHubOAuth&prompt=login&continue=${encodeURIComponent(back)}`, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(provider.status).toBe(302)
+    expect(new URL(provider.headers.get('location')!).pathname).toBe('/user_management/authorize')
   })
 
   it('a verified CIMD client gets 3a for sb scopes and 3b for identity scopes, under its own (escaped) name', async () => {

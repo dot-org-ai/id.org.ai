@@ -180,8 +180,11 @@ function heading(p: ConsentProps, { v, app }: View): { title: string; descriptio
       return { title: `Sign in to ${app}`, description: `${app} will get your ${p.scopesSummary ?? 'name and email address'}.` }
     case 'unverified': {
       const where = p.client.runsOnThisComputer ? 'It runs on your computer and asked' : 'It asked'
-      const level = p.access?.value === 'act' ? 'read and act' : 'read'
-      return { title: `${app} wants to ${p.intent ?? `use ${p.resource} as you`}`, description: `${where} for ${level} access to ${p.resource}.` }
+      const title = `${app} wants to ${p.intent ?? `use ${p.resource} as you`}`
+      // Without an access level the request is for identity only (no API access to name).
+      if (!p.access) return { title, description: `${where} to see your name, email and photo.` }
+      const level = p.access.value === 'act' ? 'read and act' : 'read'
+      return { title, description: `${where} for ${level} access to ${p.resource}.` }
     }
     default:
       return { title: `${app} wants to ${p.intent ?? `use ${p.resource} as you`}`, description: 'Choose what it can do. You can change this or revoke it anytime.' }

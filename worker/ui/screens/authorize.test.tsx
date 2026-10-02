@@ -667,3 +667,26 @@ describe('3a on lib/leave.ts (Task 4: consent leaves id.org.ai)', () => {
     expect(form.querySelector<HTMLInputElement>('input[type=hidden][name=approved]')!.value).toBe('false')
   })
 })
+
+describe('3c for an identity-only request (phase 5 review N3)', () => {
+  it('says what it asked for, not "read access to id.org.ai"', async () => {
+    const p = authorizeFixtures['3c-consent-unverified']!.default
+    const html = await renderHtml(p.render(), { title: 't' })
+    expect(html).toContain('read access to api.sb') // the sb request, unchanged
+    const props: ConsentProps = {
+      variant: 'basic',
+      client: { displayName: 'Codex', host: 'agent-tools.dev', verified: false, runsOnThisComputer: true, redirectHost: '127.0.0.1:61022' },
+      resource: 'id.org.ai',
+      intent: 'sign you in',
+      account: { name: 'Bryant Skarda', email: 'bryant@driv.ly' },
+      switchHref: '/login',
+      sourceDetails: [],
+      hidden: { client_id: 'c', scope: 'openid profile email' },
+      action: '/oauth/authorize',
+      csrf: 't',
+    }
+    const d = await dom(<Consent {...props} />)
+    expect(d.querySelector('h1')!.textContent).toBe('agent-tools.dev wants to sign you in')
+    expect(d.querySelector('.id-desc')!.textContent).toBe('It runs on your computer and asked to see your name, email and photo.')
+  })
+})

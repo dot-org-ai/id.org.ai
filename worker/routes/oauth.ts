@@ -366,12 +366,15 @@ app.post('/oauth/authorize', async (c) => {
 
 /**
  * Fetch submit (backend.md#b2): a consent POST with `Accept: application/json`
- * gets `{ redirect }` instead of the 302, so the page can run its connector and
- * then leave. A form post keeps the 302.
+ * from id.org.ai's own page gets `{ redirect }` instead of the 302, so the page
+ * can run its connector and then leave. The redirect carries the code, so only
+ * a same-origin page (Sec-Fetch-Site, which only the browser sets) gets it as
+ * a readable body; anything else keeps the 302, as does a form post.
  */
 function asFetchSubmit(c: { req: { header(name: string): string | undefined } }, res: Response): Response {
   const location = res.headers.get('location')
-  if (!(c.req.header('accept') ?? '').includes('application/json') || res.status < 300 || res.status >= 400 || !location) return res
+  const ownPage = c.req.header('sec-fetch-site') === 'same-origin'
+  if (!ownPage || !(c.req.header('accept') ?? '').includes('application/json') || res.status < 300 || res.status >= 400 || !location) return res
   return new Response(JSON.stringify({ redirect: location }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
 }
 

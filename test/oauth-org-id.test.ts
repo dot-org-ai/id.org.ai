@@ -194,6 +194,34 @@ function recordsWithPrefix(storage: ReturnType<typeof createStorage>, prefix: st
   return [...storage.store].filter(([k]) => k.startsWith(prefix)).map(([, v]) => v as Record<string, unknown>)
 }
 
+describe('provider: org_id only while the person is still in the workspace (phase 5 review S1)', () => {
+  it('a refresh after leaving the workspace is refused, without spending the token; back in, it works', async () => {
+    let member = true
+    const provider = makeProvider({ hook: async (id, org) => member && id === PERSON && org === ORG })
+    const clientId = await register(provider)
+    const back = await consent(provider, clientId, { org_id: ORG, scope: 'openid offline_access' })
+    const t = await redeem(provider, clientId, back.searchParams.get('code')!)
+    member = false
+    const res = await provider.handleToken(form('https://id.org.ai/oauth/token', { grant_type: 'refresh_token', refresh_token: t.refresh_token, client_id: clientId }))
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_grant')
+    member = true // e.g. a WorkOS blip, or re-added: the same refresh token still works
+    expect((await refresh(provider, clientId, t.refresh_token)).access_token).toBeTruthy()
+  })
+
+  it('a token exchange after leaving the workspace is refused', async () => {
+    let member = true
+    const provider = makeProvider({ hook: async (id, org) => member && id === PERSON && org === ORG })
+    const clientId = await register(provider)
+    const back = await consent(provider, clientId, { org_id: ORG, scope: 'sb:read', resource: 'https://api.sb/mcp' })
+    const t = await redeem(provider, clientId, back.searchParams.get('code')!)
+    member = false
+    const ex = await provider.exchangeToken({ subject_token: t.access_token, subject_token_type: ACCESS, actor: { sub: 'w' } })
+    expect(ex.ok).toBe(false)
+    expect(!ex.ok && ex.error).toBe('invalid_grant')
+  })
+})
+
 describe('provider: org_id chosen on consent', () => {
   let storage: ReturnType<typeof createStorage>
   let keys: SigningKeyManager

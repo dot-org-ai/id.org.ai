@@ -252,9 +252,9 @@ interface DeviceCode {
 // Internal storage type — see OAuthConsent in ./types.ts for canonical API type
 interface ConsentRecord {
   /**
-   * Consent for any workspace: records from before per-workspace consent, and
-   * consents given with no workspace. Emptied once the client is re-consented
-   * for a workspace (backend.md#b2).
+   * Consent for any workspace: only records from before per-workspace consent
+   * (backend.md#b2: "any org" until next re-consented). Every consent since
+   * writes it empty, so a non-empty value is always such a legacy record.
    */
   scopes: string[]
   createdAt: number
@@ -265,6 +265,12 @@ interface ConsentRecord {
    * apart from the client id when the records are listed.
    */
   orgs?: Record<string, { scopes: string[]; createdAt: number }>
+  /**
+   * Consent given with no workspace (none listed, e.g. the person has none or
+   * the list failed to load). It covers only requests that name no workspace,
+   * never one the person didn't choose (phase 5 review S2).
+   */
+  noOrg?: { scopes: string[]; createdAt: number }
 }
 
 /** A consent parked while the Person steps up (backend.md#b2, B5): single use, 10 minutes. */
@@ -1249,17 +1255,19 @@ export class OAuthProvider {
   }
 
   /**
-   * Record a consent (backend.md#b2). With a workspace it is that workspace's,
-   * and the client's any-workspace consent (a legacy record) ends: it meant
-   * "any org" only until re-consented. Without one it is for any workspace.
+   * Record a consent (backend.md#b2): that workspace's, or the no-workspace
+   * one. Either way a legacy record's any-workspace consent ends: it meant
+   * "any org" only until re-consented.
    */
   private async recordConsent(identityId: string, clientId: string, scopes: string[], orgId?: string): Promise<void> {
     const key = `consent:${identityId}:${clientId}`
     const prev = await this.storage.get<ConsentRecord>(key)
     const now = Date.now()
-    const record: ConsentRecord = orgId
-      ? { scopes: [], createdAt: now, orgs: { ...prev?.orgs, [orgId]: { scopes, createdAt: now } } }
-      : { scopes, createdAt: now, ...(prev?.orgs && { orgs: prev.orgs }) }
+    // Any consent ends a legacy record's any-workspace meaning (scopes: []).
+    const entry = { scopes, createdAt: now }
+    const orgs = orgId ? { ...prev?.orgs, [orgId]: entry } : prev?.orgs
+    const noOrg = orgId ? prev?.noOrg : entry
+    const record: ConsentRecord = { scopes: [], createdAt: now, ...(orgs && { orgs }), ...(noOrg && { noOrg }) }
     await this.storage.put(key, record)
   }
 
@@ -1849,6 +1857,14 @@ export class OAuthProvider {
     // ── RFC 8707: a resource sent with the refresh must be the grant's ───
     const target = this.tokenRequestResource(body, tokenData.resource)
     if (!target.ok) return target.response
+
+    // A grant made for a workspace (org_id, backend.md#b6) refreshes only while
+    // the Person is still in it (phase 5 review S1). Refused before the token
+    // is spent: the membership check can't tell leaving from a WorkOS outage,
+    // so the same token works again once the answer is yes.
+    if (tokenData.orgId !== undefined && !(await this.isOrgMember(tokenData.identityId, tokenData.orgId))) {
+      return oauthError('invalid_grant', 'No longer a member of the workspace this grant was made for')
+    }
 
     // ── Rotate once: of parallel refreshes with this token, one wins ─────
     if (this.storage.claimOnce && !(await this.storage.claimOnce(`rt-rotation:${refreshTokenId}`, REFRESH_TOKEN_TTL * 1000 + 60_000))) {
@@ -2518,7 +2534,7 @@ export class OAuthProvider {
     const out = new Map<string, { client_id: string; scopes: string[]; created_at: number }>()
     for (const [key, rec] of consents) {
       // Everything granted to the client: any workspace, and each workspace's (backend.md#b2).
-      const scopes = [...new Set([...rec.scopes, ...Object.values(rec.orgs ?? {}).flatMap((o) => o.scopes)])]
+      const scopes = [...new Set([...rec.scopes, ...(rec.noOrg?.scopes ?? []), ...Object.values(rec.orgs ?? {}).flatMap((o) => o.scopes)])]
       out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes, created_at: rec.createdAt })
     }
     // Clients holding tokens without a consent record (device flow, first-party
@@ -2614,6 +2630,10 @@ export class OAuthProvider {
       if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt, orgId: rec.orgId }
     }
     if (!subject) return fail('invalid_grant', 'subject_token is not an active id.org.ai access token')
+    // As at refresh: a workspace's token is exchanged only while the Person is still in it.
+    if (subject.orgId !== undefined && !(await this.isOrgMember(subject.identityId, subject.orgId))) {
+      return fail('invalid_grant', 'No longer a member of the workspace this token was granted for')
+    }
     if (subject.resource === undefined || !isSbResource(subject.resource)) {
       return fail('invalid_target', `only an access token for api.sb (${SB_RESOURCES.join(' or ')}) can be exchanged`)
     }
@@ -2664,30 +2684,32 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Is `orgId` one of the Person's workspaces? Fails closed: with no
-   * `validateOrgMembership` hook, or when it throws, the answer is no.
-   */
-  /**
    * The consent on record for this request (backend.md#b2): a string is the
-   * workspace whose consent covers it, undefined is consent for any workspace
-   * (a legacy record, or one given with no workspace), null is none. A
-   * workspace is reused only while the Person is still a member. Without a
-   * membership validator, workspaces don't apply and only the any-workspace
-   * consent counts, as before per-workspace consent.
+   * workspace whose consent covers it, undefined is consent without a
+   * workspace (a legacy record, which covers any, or one given with none, which
+   * covers only requests naming none), null is none. A workspace is reused
+   * only while the Person is still a member. Without a membership validator,
+   * workspaces don't apply and only consent without one counts.
    */
   private async consentOnRecord(identityId: string, rec: ConsentRecord | undefined, scopes: string[], orgHint?: string): Promise<string | undefined | null> {
     if (!rec) return null
-    const anyOrg = scopes.every((s) => rec.scopes.includes(s))
-    if (!this.validateOrgMembership) return anyOrg ? undefined : null
+    const covers = (granted: string[] | undefined) => !!granted && scopes.every((s) => granted.includes(s))
+    const anyOrg = covers(rec.scopes)
+    const withoutOrg = anyOrg || covers(rec.noOrg?.scopes)
+    if (!this.validateOrgMembership) return withoutOrg ? undefined : null
     if (orgHint) {
       const named = consentOrgsCovering(rec, scopes).includes(orgHint)
       return (named || anyOrg) && (await this.isOrgMember(identityId, orgHint)) ? orgHint : null
     }
-    if (anyOrg) return undefined
+    if (withoutOrg) return undefined
     for (const org of consentOrgsCovering(rec, scopes)) if (await this.isOrgMember(identityId, org)) return org
     return null
   }
 
+  /**
+   * Is `orgId` one of the Person's workspaces? Fails closed: with no
+   * `validateOrgMembership` hook, or when it throws, the answer is no.
+   */
   private async isOrgMember(identityId: string, orgId: string): Promise<boolean> {
     if (!this.validateOrgMembership) return false
     try {

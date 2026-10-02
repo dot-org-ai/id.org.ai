@@ -113,7 +113,9 @@ app.get('/login', async (c) => {
   // If the user already has a valid session, skip WorkOS and redirect to continue URL.
   // This prevents conflicts when e.g. CLI device flow redirects here while user is logged in,
   // or when WorkOS has its own active session that conflicts with a new auth request.
-  const identityId = await resolveIdentityId(c.req.raw, c.env)
+  // OIDC prompt=login (consent's "Switch"): sign in again even with a session.
+  const promptLogin = c.req.query('prompt') === 'login'
+  const identityId = promptLogin ? null : await resolveIdentityId(c.req.raw, c.env)
   if (identityId) {
     const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${requestOriginOf(c.req.url)}${continueUrl}`
     return c.redirect(redirectTo, 302)
@@ -129,7 +131,7 @@ app.get('/login', async (c) => {
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    return renderProviderPicker(continueUrl, loginHint)
+    return renderProviderPicker(continueUrl, loginHint, promptLogin)
   }
 
   const csrf = crypto.randomUUID()

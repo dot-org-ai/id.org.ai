@@ -25,9 +25,18 @@ describe('the OAuth issuer in local development', () => {
 
   it('an unauthenticated authorize request is sent to the local sign-in, not production', async () => {
     const provider = createOAuthProvider(withEnv(STUB), new Request('http://127.0.0.1:8797/oauth/authorize'))
-    const res = await provider.handleAuthorize(new Request('http://127.0.0.1:8797/oauth/authorize?response_type=code&client_id=nope&redirect_uri=x'), null)
-    // An unknown client is a 400 before any redirect; with a known one the login redirect would use the issuer.
-    expect(res.headers.get('location') ?? '').not.toContain('https://id.org.ai')
-    expect(provider.issuer.startsWith('http://127.0.0.1')).toBe(true)
+    const reg = await provider.handleRegister(
+      new Request('http://127.0.0.1:8797/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Local', redirect_uris: ['http://127.0.0.1:9999/cb'], token_endpoint_auth_method: 'none' }),
+      }),
+    )
+    const clientId = ((await reg.json()) as { client_id: string }).client_id
+    const u = new URL('http://127.0.0.1:8797/oauth/authorize')
+    for (const [k, v] of Object.entries({ response_type: 'code', client_id: clientId, redirect_uri: 'http://127.0.0.1:9999/cb', code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256' })) u.searchParams.set(k, v)
+    const res = await provider.handleAuthorize(new Request(u.toString()), null)
+    expect(res.status).toBe(302)
+    expect(new URL(res.headers.get('location')!).origin).toBe('http://127.0.0.1:8797')
   })
 })

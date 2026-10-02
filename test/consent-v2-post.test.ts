@@ -126,6 +126,22 @@ async function introspect(provider: OAuthProvider, token: string): Promise<Recor
 }
 const SB = { scope: 'openid sb:read sb:do', resource: 'https://api.sb/mcp' }
 
+describe('robustness', () => {
+  it('a DCR client registered with a non-string logo_uri still gets its consent page (no logo)', async () => {
+    const { provider, seen } = makeProvider()
+    const res = await provider.handleRegister(
+      new Request('https://id.org.ai/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Odd', redirect_uris: [REDIRECT], token_endpoint_auth_method: 'none', logo_uri: 123 }),
+      }),
+    )
+    const clientId = ((await res.json()) as { client_id: string }).client_id
+    expect((await authorize(provider, clientId)).status).toBe(200)
+    expect(seen.at(-1)!.client.logoUrl).toBeUndefined()
+  })
+})
+
 describe('access=read|act', () => {
   it('access=read downgrades sb:do to sb:read; access=act keeps it', async () => {
     const { provider } = makeProvider()
@@ -173,6 +189,25 @@ describe('consent remembered per client per workspace', () => {
     members.delete('org_A')
     expect((await authorize(provider, clientId, { organization_id: 'org_A' })).status).toBe(200)
     expect((await authorize(provider, clientId)).status).toBe(200)
+  })
+
+  it('a consent given with no workspace covers only requests that name none (phase 5 review S2)', async () => {
+    const { provider } = makeProvider()
+    const clientId = await register(provider)
+    await consent(provider, clientId, {}, {}) // no org_id: e.g. the workspace list failed to load
+    const plain = await authorize(provider, clientId)
+    expect(plain.status).toBe(302)
+    expect((await introspect(provider, (await redeem(provider, clientId, codeOf(plain))).access_token)).org_id).toBeUndefined()
+    // Naming a workspace the person never chose for this client asks.
+    expect((await authorize(provider, clientId, { organization_id: 'org_B' })).status).toBe(200)
+  })
+
+  it('re-consenting without a workspace also ends a legacy record’s any-org meaning', async () => {
+    const { provider, storage } = makeProvider()
+    const clientId = await register(provider)
+    await storage.put(`consent:${PERSON}:${clientId}`, { scopes: ['openid', 'profile', 'email'], createdAt: 1 })
+    await consent(provider, clientId, { scope: 'openid profile email offline_access' }, {})
+    expect((await authorize(provider, clientId, { organization_id: 'org_B' })).status).toBe(200)
   })
 
   it('a legacy consent means any org until re-consented with a workspace', async () => {
