@@ -359,6 +359,14 @@ export function validateOrigin(request: Request): Response | null {
     return null
   }
 
+  // Pages served with Referrer-Policy: no-referrer (every auth page,
+  // security.md) make the browser send `Origin: null` on their own form posts.
+  // Sec-Fetch-Site is set by the browser alone (no page can), so null is
+  // accepted only when it says the post came from this site.
+  if (origin === 'null' && request.headers.get('sec-fetch-site') === 'same-origin') {
+    return null
+  }
+
   if (!isAllowedOrigin(origin)) {
     return new Response(JSON.stringify({
       error: 'forbidden',
