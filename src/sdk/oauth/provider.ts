@@ -22,6 +22,10 @@
  *   device:{dc_xxx}          → DeviceCode
  *   device-user:{USERCODE}   → device code id (index for user code lookup)
  *   consent:{identityId}:{clientId} → ConsentRecord
+ *
+ * A grant made for a chosen workspace carries `orgId` on its code, tokens and
+ * grant index record, and emits it as the `org_id` claim (see
+ * OAuthProvider's `validateOrgMembership`).
  */
 
 
@@ -148,6 +152,7 @@ interface AuthorizationCode {
   resource?: string
   effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
   signIn?: SignInContext       // how the person signed in (amr / idp / auth_time)
+  orgId?: string               // the workspace the Person chose on consent (validated)
   expiresAt: number
   createdAt: number
 }
@@ -167,6 +172,7 @@ interface AccessToken {
   signIn?: SignInContext       // how the person signed in, for userinfo amr / idp
   family?: string              // the grant's refresh-token family: revoking it deletes this token
   grantedAt?: number           // when the Person's grant was made (see isTokenRevoked)
+  orgId?: string               // the grant's workspace → `org_id` at userinfo and introspection
 }
 
 /**
@@ -184,6 +190,7 @@ interface AccessTokenJwtRecord {
   resource: string
   family?: string
   act?: ActorClaim
+  orgId?: string               // the grant's workspace; the JWT's `org_id` must match it
   issuer: string
   expiresAt: number
   createdAt: number
@@ -220,6 +227,7 @@ interface RefreshToken {
    * time is dead, whatever rotation raced the revocation.
    */
   grantedAt?: number
+  orgId?: string               // the grant's workspace, carried through every rotation
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
@@ -308,7 +316,7 @@ export function buildOpenIDConfiguration(config: OAuthConfig, features: { cimd?:
     authorization_response_iss_parameter_supported: true,
     // Client ID Metadata Documents: an https client_id is fetched and validated.
     ...(features.cimd && { client_id_metadata_document_supported: true }),
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time', 'org_id'],
   }
 }
 
@@ -515,6 +523,13 @@ export type ClientMetadataFetcher = (
   | { ok: false; error: string; transient?: boolean }
 >
 
+/**
+ * Is `orgId` one of the workspaces of the Person `identityId`? The worker asks
+ * WorkOS for an active membership (worker/utils/org-membership.ts). A consent
+ * POST naming an `org_id` is refused unless this answers true.
+ */
+export type OrgMembershipValidator = (identityId: string, orgId: string) => Promise<boolean>
+
 /** A cached CIMD fetch: the document, or the error, until `expiresAt`. */
 interface CimdCacheEntry {
   doc?: unknown
@@ -530,6 +545,7 @@ export class OAuthProvider {
   private trustedAccount?: TrustedAccountConfig
   private auditEmit?: OAuthAuditEmit
   private fetchClientMetadata?: ClientMetadataFetcher
+  private validateOrgMembership?: OrgMembershipValidator
 
   get issuer(): string {
     return this.config.issuer
@@ -570,6 +586,12 @@ export class OAuthProvider {
      * such a client_id is simply unknown.
      */
     fetchClientMetadata?: ClientMetadataFetcher
+    /**
+     * Validates the workspace (`org_id`) a Person chose on the consent screen
+     * against their memberships. Without it, a consent naming an `org_id` is
+     * refused; a consent without one is unaffected.
+     */
+    validateOrgMembership?: OrgMembershipValidator
   }) {
     this.storage = options.storage
     this.config = options.config
@@ -578,6 +600,7 @@ export class OAuthProvider {
     this.trustedAccount = options.trustedAccount
     this.auditEmit = options.auditEmit
     this.fetchClientMetadata = options.fetchClientMetadata
+    this.validateOrgMembership = options.validateOrgMembership
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1035,6 +1058,12 @@ export class OAuthProvider {
     if (!checked.ok) return checked.response
     const { client, redirectUri, resource } = checked
 
+    // The workspace the Person chose (B2/B6): it must be one of theirs.
+    const orgId = body.org_id || undefined
+    if (orgId !== undefined && !(await this.isOrgMember(identityId, orgId))) {
+      return this.redirectError(redirectUri, 'invalid_request', 'org_id is not one of your workspaces', state, iss)
+    }
+
     // The sb scopes are delegated only by the Person in their browser.
     if (checked.scopes.some(isSbScope) && !context.interactive) {
       return jsonResponse(
@@ -1068,6 +1097,7 @@ export class OAuthProvider {
       resource,
       effectiveIssuer: iss,
       signIn,
+      orgId,
     })
   }
 
@@ -1311,6 +1341,9 @@ export class OAuthProvider {
       claims.email_verified = identity.emailVerified ?? false
     }
 
+    // The workspace chosen for this grant, only when there is one.
+    if (tokenData.orgId !== undefined) claims.org_id = tokenData.orgId
+
     applySignInClaims(claims, tokenData.signIn)
 
     return jsonResponse(claims)
@@ -1350,6 +1383,8 @@ export class OAuthProvider {
           // A resource server MUST check it is itself before honouring the token.
           ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
+          // The workspace the grant was made for (B6), only when there is one.
+          ...(tokenData.orgId !== undefined && { org_id: tokenData.orgId }),
         })
       }
     }
@@ -1373,6 +1408,7 @@ export class OAuthProvider {
           jti: rec.jti,
           ...(rec.act && { act: rec.act }),
           ...(tier && { tier }),
+          ...(rec.orgId !== undefined && { org_id: rec.orgId }),
         })
       }
     }
@@ -1393,6 +1429,7 @@ export class OAuthProvider {
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
+          ...(tokenData.orgId !== undefined && { org_id: tokenData.orgId }),
         })
       }
     }
@@ -1582,6 +1619,7 @@ export class OAuthProvider {
       consumerHost,
       signIn: codeData.signIn,
       grantedAt: codeData.createdAt,
+      orgId: codeData.orgId,
     })
   }
 
@@ -1683,6 +1721,8 @@ export class OAuthProvider {
       consumerHost: tokenData.consumerHost,
       signIn: tokenData.signIn,
       grantedAt,
+      // The grant's workspace stays with every rotation.
+      orgId: tokenData.orgId,
     })
   }
 
@@ -1869,6 +1909,8 @@ export class OAuthProvider {
       resource?: string
       effectiveIssuer?: string
       signIn?: SignInContext
+      /** The workspace the Person chose, already validated as one of theirs. */
+      orgId?: string
     },
   ): Promise<Response> {
     const codeId = generateId('ac_')
@@ -1887,6 +1929,7 @@ export class OAuthProvider {
       resource: params.resource,
       effectiveIssuer: params.effectiveIssuer,
       ...(params.signIn && { signIn: params.signIn }),
+      ...(params.orgId !== undefined && { orgId: params.orgId }),
       expiresAt: now + AUTH_CODE_TTL * 1000,
       createdAt: now,
     }
@@ -1987,8 +2030,14 @@ export class OAuthProvider {
     accessResource?: string
     /** When the Person's grant was made (the code, or the device approval); carried through rotation. */
     grantedAt?: number
+    /**
+     * The workspace the grant was made for (B6). Stored on the access token,
+     * the refresh token and the grant index record; emitted as `org_id` in the
+     * id_token and the JWT access token. Absent: nothing changes.
+     */
+    orgId?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn } = options
+    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn, orgId } = options
     const grantedAt = options.grantedAt ?? Date.now()
     const resource = options.resource
     const tokenAudience = options.accessResource ?? resource
@@ -2006,7 +2055,7 @@ export class OAuthProvider {
     let accessExpiresIn = ACCESS_TOKEN_TTL
     const jwt =
       tokenAudience !== undefined && isSbResource(tokenAudience) && this.signingKeyManager
-        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt }).catch(() => null)
+        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt, orgId }).catch(() => null)
         : null
     if (jwt) {
       accessTokenValue = jwt.token
@@ -2027,6 +2076,7 @@ export class OAuthProvider {
       ...(signIn && { signIn }),
       family: tokenFamily,
       grantedAt,
+      ...(orgId !== undefined && { orgId }),
     }
 
     const refreshToken: RefreshToken = {
@@ -2043,6 +2093,7 @@ export class OAuthProvider {
       ...(consumerHost !== undefined && { consumerHost }),
       ...(signIn && { signIn }),
       grantedAt,
+      ...(orgId !== undefined && { orgId }),
     }
 
     if (!jwt) {
@@ -2057,7 +2108,7 @@ export class OAuthProvider {
     })
     // Indexes for revocation: the family's tokens, and the grant's families.
     await this.storage.put(`fam:${tokenFamily}:rt:${refreshTokenId}`, 1)
-    await this.storage.put(grantIndexKey(identityId, clientId, tokenFamily), { createdAt: now })
+    await this.storage.put(grantIndexKey(identityId, clientId, tokenFamily), { createdAt: now, ...(orgId !== undefined && { orgId }) })
 
     // ADR-0007 (BLOCKER 2): emit token-issuance audit for trusted-account
     // flows. Trace points: access token id, refresh token id, consumer host.
@@ -2096,6 +2147,7 @@ export class OAuthProvider {
         }
         const tier = tierFromLevel(identity?.level)
         if (tier) claims.tier = tier
+        if (orgId !== undefined) claims.org_id = orgId
         applySignInClaims(claims, signIn)
 
         // Compute at_hash (OIDC Core Section 3.1.3.6) over the access token issued
@@ -2140,6 +2192,7 @@ export class OAuthProvider {
     act?: ActorClaim
     notAfter?: number
     grantedAt?: number
+    orgId?: string
   }): Promise<{ token: string; expiresIn: number; jti: string }> {
     if (!this.signingKeyManager) throw new Error('no signing key')
     const key = await this.signingKeyManager.getCurrentKey()
@@ -2158,6 +2211,7 @@ export class OAuthProvider {
       iat,
       exp,
       jti,
+      ...(params.orgId !== undefined && { org_id: params.orgId }),
       ...(params.act && { act: params.act }),
     })
     const record: AccessTokenJwtRecord = {
@@ -2168,6 +2222,7 @@ export class OAuthProvider {
       resource: params.resource,
       ...(params.family !== undefined && { family: params.family }),
       ...(params.act && { act: params.act }),
+      ...(params.orgId !== undefined && { orgId: params.orgId }),
       issuer: params.issuer,
       expiresAt: exp * 1000,
       createdAt: nowMs,
@@ -2197,6 +2252,7 @@ export class OAuthProvider {
     if (await this.isTokenRevoked(record)) return null
     // The record is the authority; the claims must agree with it.
     if (claims.sub !== record.identityId || claims.client_id !== record.clientId || claims.aud !== record.resource || claims.iss !== record.issuer) return null
+    if ((claims as Record<string, unknown>).org_id !== record.orgId) return null
     return { ...record, claims }
   }
 
@@ -2381,15 +2437,15 @@ export class OAuthProvider {
     const subjectToken = input.subject_token
 
     // ── The subject: a live access token of a Person, for api.sb ─────────
-    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number } | null = null
+    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number; orgId?: string } | null = null
     if (subjectToken.startsWith('at_')) {
       const rec = await this.storage.get<AccessToken>(`access:${subjectToken}`)
       if (rec && rec.identityId && rec.expiresAt > Date.now() && !(await this.isTokenRevoked(rec))) {
-        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt, orgId: rec.orgId }
       }
     } else {
       const rec = await this.verifyAccessTokenJwt(subjectToken)
-      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt, orgId: rec.orgId }
     }
     if (!subject) return fail('invalid_grant', 'subject_token is not an active id.org.ai access token')
     if (subject.resource === undefined || !isSbResource(subject.resource)) {
@@ -2428,11 +2484,30 @@ export class OAuthProvider {
         act,
         notAfter: subject.expiresAt,
         grantedAt: subject.grantedAt,
+        // The subject's workspace: an exchange narrows, it never changes the org.
+        orgId: subject.orgId,
       })
     } catch (err) {
       return fail('invalid_grant', err instanceof Error ? err.message : 'could not issue the token')
     }
     return { ok: true, access_token: minted.token, issued_token_type: ACCESS, token_type: 'Bearer', expires_in: minted.expiresIn, scope: scopes.join(' ') }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRIVATE: Workspace (org_id) validation
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Is `orgId` one of the Person's workspaces? Fails closed: with no
+   * `validateOrgMembership` hook, or when it throws, the answer is no.
+   */
+  private async isOrgMember(identityId: string, orgId: string): Promise<boolean> {
+    if (!this.validateOrgMembership) return false
+    try {
+      return (await this.validateOrgMembership(identityId, orgId)) === true
+    } catch {
+      return false
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
