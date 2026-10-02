@@ -774,7 +774,7 @@ app.get('/.well-known/openid-configuration', (c) => {
     authorization_response_iss_parameter_supported: true,
     // An https client_id is a Client ID Metadata Document (src/sdk/oauth/cimd.ts).
     client_id_metadata_document_supported: true,
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time', 'org_id'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time', 'org_id', 'org_name'],
   }, 200, { 'Cache-Control': 'public, max-age=3600' })
 })
 

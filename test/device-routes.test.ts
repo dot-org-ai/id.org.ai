@@ -116,6 +116,9 @@ describe('device flow v2 through the worker', () => {
       await SELF.fetch(`${BASE}/oauth/introspect`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: t.access_token }).toString() })
     ).json()) as Record<string, any>
     expect(intro).toMatchObject({ active: true, org_id: 'org_ACME' })
+    // The CLI's "Workspace" line reads org_name (next to org_id) from userinfo.
+    const me = (await (await SELF.fetch(`${BASE}/oauth/userinfo`, { headers: { authorization: `Bearer ${t.access_token}` } })).json()) as Record<string, unknown>
+    expect(me).toMatchObject({ org_id: 'org_ACME', org_name: 'Acme' })
   })
 
   it('a decision without the CSRF token is refused and the code stays pending', async () => {

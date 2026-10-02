@@ -23,6 +23,7 @@ import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
 import { renderConsentScreen } from './consent-screen'
 import { deviceRoutes } from './device'
+import { fetchOrgInfo } from '../../src/sdk/workos/upstream'
 import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 import { validateOrgMembershipFor } from '../utils/org-membership'
 
@@ -501,6 +502,11 @@ app.get('/oauth/userinfo', async (c) => {
     email_verified: identity.verified ?? false,
     // The workspace chosen for this grant (B6); else, as before, the identity's.
     org_id: tokenData.orgId ?? identity.organizationId,
+  }
+  // Its name too, for a grant made for a workspace (the CLI's "Workspace" line).
+  if (tokenData.orgId && c.env.WORKOS_API_KEY) {
+    const org = await fetchOrgInfo(c.env.WORKOS_API_KEY, tokenData.orgId).catch(() => null)
+    if (org?.name) claims.org_name = org.name
   }
   // How the person signed in (amr / idp / auth_time), when the token carries it
   applySignInClaims(claims, tokenData.signIn)
