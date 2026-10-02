@@ -22,6 +22,7 @@ import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
 import { renderConsentScreen } from './consent-screen'
+import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -74,7 +75,11 @@ export function createOAuthProvider(env: Env, request?: Request, extra: { render
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(env, 'oauth')
   const signingKeyManager = getSigningKeyManager(env)
-  const base = 'https://id.org.ai'
+  // Local development against the WorkOS stub: the issuer is this server, so the
+  // provider's sign-in and consent redirects stay local and never reach
+  // production. WORKOS_API_BASE is unset in production, so this is always id.org.ai there.
+  const reqOrigin = request ? new URL(request.url).origin : undefined
+  const base = reqOrigin && isLocalStubOrigin(env, reqOrigin) ? reqOrigin : 'https://id.org.ai'
   const allowedDomains = parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS)
   // ADR-0007 (BLOCKER 2): wire audit emission through the existing
   // IdentityDO RPC. The DO routes to AuditService which writes immutable

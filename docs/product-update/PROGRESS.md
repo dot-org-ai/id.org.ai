@@ -92,6 +92,8 @@ Resolved: pushing to origin was blocked in phase 0 (`bryant22` had pull-only acc
 ## Incidents
 - Phase 1, 2026-10-01: while proving the WorkOS stub by hand, one GET with a fake stub code reached production `https://id.org.ai/api/callback`. At that point the worker still sent WorkOS the production callback URL, and the hand-run curl followed the stub's redirect. Production refused it (403: the login state wasn't bound), and nothing changed. Since then the stub refuses non-loopback `redirect_uri`s, `pnpm dev:worker` keeps the local origin, and `test-visual/stub-smoke.mjs` refuses any non-loopback hop.
 
+- Phase 5, 2026-10-01: during a manual browser check of `/oauth/authorize` on `wrangler dev`, an unauthenticated request was redirected to the production sign-in page (`https://id.org.ai/login?continue=…`): the OAuth provider's issuer was hard-coded to production. One GET of the public sign-in page; nothing was submitted. Since `edd17b1`'s follow-up, the provider's issuer is the local server whenever the WorkOS stub is configured and the request is loopback (`createOAuthProvider`, tested in `test/oauth-local-issuer.test.ts`), so local redirects stay local.
+
 ## Follow-ups
 - auto.dev and headless.ly CLIs: adopt `spec/cli-output.md` (other repos).
 - `worker/routes/mcp.ts` `nullStub` lacks 17 newer `IdentityStub` methods (L0 never calls them). It carries a `@ts-expect-error` so the worker typechecks; give it the full interface (phase 1).
