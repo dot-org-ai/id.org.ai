@@ -18,6 +18,7 @@ import {
   extractGitHubId,
   fetchGitHubUsername,
   updateWorkOSUser,
+  getOrgMembership,
   updateOrgMembership,
   deleteOrgMembership,
   fetchWorkOSUserProfile,
@@ -336,6 +337,28 @@ app.get('/api/orgs/:id/members', async (c) => {
   return c.json({ members: [...activeRows, ...pendingRows] })
 })
 
+// A membership or invitation id from the path. WorkOS ids are letters, digits
+// and underscores; anything else (dots, slashes, `?`, `#`, after decoding)
+// could steer the WorkOS URL, so it is a 404 before any call.
+const WORKOS_ID = /^[A-Za-z0-9_]{1,128}$/
+
+function memberNotFound(c: any): Response {
+  return errorResponse(c, 404, ErrorCode.NotFound, 'No such member or invitation in this organization')
+}
+
+// Resolve `id` to a membership or invitation of `orgId`, or null. The role on
+// :id was checked by requireOrgAccess; this checks the thing being changed
+// belongs to :id too, so an admin of one org can't act on another's members
+// by putting their own org in the path (phase 4 review B1).
+async function memberOf(apiKey: string, orgId: string, id: string): Promise<{ kind: 'membership' | 'invitation' } | null> {
+  if (!WORKOS_ID.test(id)) return null
+  const asInvitation = async () => ((await getInvitation(apiKey, id))?.organization_id === orgId ? { kind: 'invitation' as const } : null)
+  const asMembership = async () => ((await getOrgMembership(apiKey, id))?.organization_id === orgId ? { kind: 'membership' as const } : null)
+  if (id.startsWith('invitation_')) return asInvitation()
+  if (id.startsWith('om_') || id.startsWith('member_')) return asMembership()
+  return (await asInvitation()) ?? (await asMembership())
+}
+
 // PATCH /api/orgs/:id/members/:membershipId — Change a member's role.
 // Wraps WorkOS PUT /user_management/organization_memberships/:id { role_slug }.
 app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
@@ -357,6 +380,8 @@ app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
   if (!body.role) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'role is required')
   }
+
+  if ((await memberOf(c.env.WORKOS_API_KEY, c.req.param('id'), membershipId))?.kind !== 'membership') return memberNotFound(c)
 
   const roleSlug = accountRoleToWorkosSlug(body.role)
   const updated = await updateOrgMembership(c.env.WORKOS_API_KEY, membershipId, roleSlug)
@@ -388,19 +413,12 @@ app.delete('/api/orgs/:id/members/:membershipId', async (c) => {
   const id = c.req.param('membershipId')
   const apiKey = c.env.WORKOS_API_KEY
 
-  // Invitation id → rescind. Membership id → delete. We branch on the WorkOS
-  // id prefix; for ambiguous ids we look the invitation up first.
-  const looksLikeInvitation = id.startsWith('invitation_')
-  let ok: boolean
-  if (looksLikeInvitation) {
-    ok = await revokeInvitation(apiKey, id)
-  } else if (id.startsWith('om_') || id.startsWith('member_')) {
-    ok = await deleteOrgMembership(apiKey, id)
-  } else {
-    // Unknown prefix: probe the invitation API, else treat as a membership.
-    const inv = await getInvitation(apiKey, id)
-    ok = inv ? await revokeInvitation(apiKey, id) : await deleteOrgMembership(apiKey, id)
-  }
+  // Invitation id → rescind. Membership id → delete. memberOf branches on the
+  // WorkOS id prefix (an unknown prefix tries the invitation first) and only
+  // answers for one that belongs to :id.
+  const found = await memberOf(apiKey, c.req.param('id'), id)
+  if (!found) return memberNotFound(c)
+  const ok = found.kind === 'invitation' ? await revokeInvitation(apiKey, id) : await deleteOrgMembership(apiKey, id)
 
   if (!ok) {
     return errorResponse(c, 502, ErrorCode.ServerError, 'Failed to remove member')

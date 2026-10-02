@@ -59,6 +59,14 @@ export interface Identity {
   scopes?: string[]
 
   /**
+   * How this identity authenticated, where authorisation depends on it.
+   * `workos-key`: a WorkOS-issued `sk_` key that WorkOS validated (a service
+   * caller; `tenantId` is the org it's scoped to). Set only by AuthBroker's
+   * WorkOS-key path, so it can't be claimed by presenting a header.
+   */
+  credential?: 'workos-key'
+
+  /**
    * Structured capability grant carried by the credential (an API key minted
    * with a scope-shaped grant). When present, AuthBroker.check()/gate()
    * evaluates a structured `need` against it via `scopeSatisfies`. Additive to

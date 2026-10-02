@@ -24,6 +24,8 @@ type Who =
   | { kind: 'anon' }
   | { kind: 'key'; scope?: string }
   | { kind: 'user'; workosUserId: string }
+  /** A person's own id.org.ai key (oai_/hly_sk_) in X-API-Key, plus an unvalidated `Bearer sk_…`. */
+  | { kind: 'native-with-junk-bearer'; workosUserId: string }
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return { WORKOS_API_KEY: 'sk_platform_secret', PLATFORM_ORG_ID: PLATFORM, ...overrides } as Env
@@ -33,7 +35,15 @@ function makeApp(who: Who, envOverrides: Partial<Env> = {}) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
   app.use('*', async (c, next) => {
     if (who.kind === 'key') {
-      c.set('auth', { authenticated: true, identityId: 'key_1', tenantId: who.scope, level: 2, scopes: [], capabilities: [] } as never)
+      // What the auth middleware sets for a key WorkOS validated (src/sdk/auth/broker-impl.ts).
+      c.set('auth', { authenticated: true, identityId: 'apik_1', tenantId: who.scope, level: 2, scopes: [], capabilities: [] } as never)
+      c.set('identity', { id: 'apik_1', type: 'service', name: 'k', verified: true, level: 2, claimStatus: 'claimed', tenantId: who.scope, credential: 'workos-key' } as never)
+    } else if (who.kind === 'native-with-junk-bearer') {
+      c.set('auth', { authenticated: true, identityId: `id_${who.workosUserId}`, level: 2, scopes: [], capabilities: [] } as never)
+      c.set('identity', { id: `id_${who.workosUserId}`, type: 'human', name: 'p', verified: true, level: 2, claimStatus: 'claimed' } as never)
+      c.set('identityStub', {
+        oauthStorageOp: async () => ({ value: { workosUserId: who.workosUserId } }),
+      } as never)
     } else if (who.kind === 'user') {
       c.set('auth', { authenticated: true, identityId: `id_${who.workosUserId}`, level: 2, scopes: [], capabilities: [] } as never)
       c.set('identityStub', {
@@ -49,7 +59,12 @@ function makeApp(who: Who, envOverrides: Partial<Env> = {}) {
     app.fetch(
       new Request(`https://id.org.ai${path}`, {
         ...init,
-        headers: { ...(who.kind === 'key' ? { authorization: 'Bearer sk_test_server_token' } : {}), 'content-type': 'application/json', ...(init.headers ?? {}) },
+        headers: {
+          ...(who.kind === 'key' ? { authorization: 'Bearer sk_test_server_token' } : {}),
+          ...(who.kind === 'native-with-junk-bearer' ? { 'x-api-key': 'hly_sk_persons_own_key', authorization: 'Bearer sk_anything_at_all' } : {}),
+          'content-type': 'application/json',
+          ...(init.headers ?? {}),
+        },
       }),
       makeEnv(envOverrides),
     )
@@ -78,7 +93,9 @@ function stubWorkOS() {
     }
     if (url.pathname === '/user_management/organization_memberships') return json({ data: [] })
     if (url.pathname === '/user_management/invitations') return json({ data: [] })
+    // Every membership and invitation id the tests use lives in ORG_A.
     if (url.pathname.startsWith('/user_management/organization_memberships/')) return json({ id: 'om_9', user_id: 'u', organization_id: ORG_A, role: { slug: 'viewer' }, status: 'active', created_at: 't', updated_at: 't' })
+    if (url.pathname.startsWith('/user_management/invitations/')) return json({ id: 'invitation_9', email: 'x@y.z', state: 'pending', organization_id: ORG_A, created_at: 't' })
     if (url.pathname === '/portal/generate_link') return json({ link: 'https://setup.workos.com/portal/x' })
     if (url.pathname.startsWith('/fga/')) return json({ result: 'authorized', warrant_token: 'w', data: [] })
     if (url.pathname.startsWith('/pipes/')) return json({ access_token: 'tok', expires_at: null, data: [] })
@@ -237,5 +254,75 @@ describe('B13.3: org member and invite routes check membership of :id', () => {
     stubWorkOS()
     expect((await makeApp({ kind: 'key', scope: ORG_A })(`/api/orgs/${ORG_B}/members`)).status).toBe(403)
     expect((await makeApp({ kind: 'key', scope: ORG_A })(`/api/orgs/${ORG_A}/members`)).status).toBe(200)
+  })
+})
+
+describe('B13.3: a membership or invitation must belong to :id (phase 4 review B1)', () => {
+  // user_B owns ORG_B. om_9 and invitation_9 belong to ORG_A.
+  const writes = (calls: string[]) => calls.filter((c) => !c.startsWith('GET '))
+
+  it('an owner of another org cannot change a membership of ORG_A through their own org', async () => {
+    const { calls } = stubWorkOS()
+    const res = await makeApp({ kind: 'user', workosUserId: 'user_B' })(`/api/orgs/${ORG_B}/members/om_9`, { method: 'PATCH', body: JSON.stringify({ role: 'owner' }) })
+    expect(res.status).toBe(404)
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('…nor remove an ORG_A member or rescind an ORG_A invitation', async () => {
+    const { calls } = stubWorkOS()
+    const b = makeApp({ kind: 'user', workosUserId: 'user_B' })
+    expect((await b(`/api/orgs/${ORG_B}/members/om_9`, { method: 'DELETE' })).status).toBe(404)
+    expect((await b(`/api/orgs/${ORG_B}/members/invitation_9`, { method: 'DELETE' })).status).toBe(404)
+    expect((await b(`/api/orgs/${ORG_B}/members/inv_9`, { method: 'DELETE' })).status).toBe(404) // unknown prefix
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('an org-scoped key cannot reach another org’s membership either', async () => {
+    const { calls } = stubWorkOS()
+    const res = await makeApp({ kind: 'key', scope: ORG_B })(`/api/orgs/${ORG_B}/members/om_9`, { method: 'PATCH', body: JSON.stringify({ role: 'owner' }) })
+    expect(res.status).toBe(404)
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('the owner of ORG_A still manages ORG_A’s members and invitations', async () => {
+    const { calls } = stubWorkOS()
+    const a = makeApp({ kind: 'user', workosUserId: 'user_owner_A' })
+    expect((await a(`/api/orgs/${ORG_A}/members/om_9`, { method: 'PATCH', body: JSON.stringify({ role: 'viewer' }) })).status).toBe(200)
+    expect((await a(`/api/orgs/${ORG_A}/members/om_9`, { method: 'DELETE' })).status).toBe(200)
+    expect((await a(`/api/orgs/${ORG_A}/members/invitation_9`, { method: 'DELETE' })).status).toBe(200)
+    expect(writes(calls)).toEqual([
+      'PUT /user_management/organization_memberships/om_9',
+      'DELETE /user_management/organization_memberships/om_9',
+      'POST /user_management/invitations/invitation_9/revoke',
+    ])
+  })
+
+  it('an id that isn’t a plain WorkOS id is refused before any WorkOS call', async () => {
+    const { calls } = stubWorkOS()
+    const a = makeApp({ kind: 'user', workosUserId: 'user_owner_A' })
+    for (const id of ['..%2F..%2Forganizations%2Forg_B', 'om_9%3Fx%3D1', 'om_9%23', '%2E%2E']) {
+      expect((await a(`/api/orgs/${ORG_A}/members/${id}`, { method: 'PATCH', body: JSON.stringify({ role: 'viewer' }) })).status, id).toBe(404)
+      expect((await a(`/api/orgs/${ORG_A}/members/${id}`, { method: 'DELETE' })).status, id).toBe(404)
+    }
+    // Only the caller's own membership list (the role check) is fetched; nothing per member.
+    expect(calls.filter((c) => c !== 'GET /user_management/organization_memberships')).toEqual([])
+  })
+})
+
+describe('B13.2/3: only a key WorkOS validated is a key caller (phase 4 review B2)', () => {
+  // The person behind the native key has no memberships at all.
+  it('a native key in X-API-Key plus a junk `Bearer sk_` is the person, not the platform', async () => {
+    stubWorkOS()
+    const junk = makeApp({ kind: 'native-with-junk-bearer', workosUserId: 'user_nobody' })
+    expect((await junk(`/admin-portal?organization_id=${ORG_A}`)).status).toBe(403)
+    expect((await junk('/fga/setup', { method: 'POST' })).status).toBe(403)
+    expect((await junk('/pipes/token', { method: 'POST', body: JSON.stringify({ userId: 'user_victim', provider: 'github' }) })).status).toBe(403)
+    expect((await junk(`/api/orgs/${ORG_A}/members/om_9`, { method: 'PATCH', body: JSON.stringify({ role: 'owner' }) })).status).toBe(403)
+  })
+
+  it('a WorkOS-validated key is a key caller whichever header carried it', async () => {
+    stubWorkOS()
+    const viaXApiKey = makeApp({ kind: 'key', scope: ORG_A })
+    expect((await viaXApiKey(`/api/orgs/${ORG_A}/members`, { headers: { authorization: '', 'x-api-key': 'sk_test_server_token' } })).status).toBe(200)
   })
 })

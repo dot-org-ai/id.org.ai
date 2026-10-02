@@ -10,9 +10,11 @@
  *   - user: a person, resolved to their WorkOS user id. They must be a member
  *     of the organization to read it, and an owner or admin to change it.
  *
- * The `sk_` key is validated against WorkOS by authenticateRequest before any
- * route runs (an invalid one is a 401 there), so here a presented `sk_` bearer
- * on an authenticated request is a validated WorkOS key.
+ * A key caller is recognised by the identity authenticateRequest built, never
+ * by the request's headers: only AuthBroker's WorkOS-key path marks an identity
+ * `credential: 'workos-key'`, after WorkOS validated the key. (Reading the
+ * Authorization header instead let a person's own key in X-API-Key, plus an
+ * unvalidated `Bearer sk_…`, pass as the platform.)
  */
 import type { Context } from 'hono'
 import type { Env, Variables } from '../types'
@@ -31,11 +33,6 @@ export type Caller =
 
 const WRITE_ROLES: ReadonlySet<AccountRole> = new Set(['owner', 'admin'])
 
-function bearer(c: C): string | null {
-  const h = c.req.header('authorization')
-  return h?.startsWith('Bearer ') ? h.slice(7) : null
-}
-
 async function workosUserIdOf(c: C): Promise<string | null> {
   const auth = c.get('auth')
   if (auth?.authenticated && auth.identityId) {
@@ -52,10 +49,9 @@ async function workosUserIdOf(c: C): Promise<string | null> {
 
 /** Resolve the caller, or null when the request isn't authenticated as anyone usable. */
 export async function resolveCaller(c: C): Promise<Caller | null> {
-  const auth = c.get('auth')
-  const token = bearer(c)
-  if (auth?.authenticated && token?.startsWith('sk_')) {
-    const scope = auth.tenantId
+  const identity = c.get('identity')
+  if (identity?.credential === 'workos-key') {
+    const scope = identity.tenantId
     if (!scope || scope === c.env.PLATFORM_ORG_ID) return { kind: 'platform' }
     return { kind: 'service', orgId: scope }
   }

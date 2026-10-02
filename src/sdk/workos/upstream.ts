@@ -676,6 +676,26 @@ export interface WorkOSInvitation {
 }
 
 /**
+ * Fetch one WorkOS organization membership.
+ * Wraps `GET /user_management/organization_memberships/:id`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param membershipId - WorkOS organization membership ID (`om_*`)
+ * @returns The membership, or null when it doesn't exist or the call fails
+ */
+export async function getOrgMembership(apiKey: string, membershipId: string): Promise<WorkOSOrganizationMembership | null> {
+  try {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSOrganizationMembership
+  } catch {
+    return null
+  }
+}
+
+/**
  * Update a member's role on a WorkOS organization membership.
  * Wraps `PUT /user_management/organization_memberships/:id` with `{ role_slug }`.
  *
@@ -691,7 +711,7 @@ export async function updateOrgMembership(
 ): Promise<WorkOSOrganizationMembership | null> {
   try {
     const response = await fetch(
-      workosUrl(`/user_management/organization_memberships/${membershipId}`),
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'PUT',
         headers: {
@@ -724,7 +744,7 @@ export async function updateOrgMembership(
 export async function deleteOrgMembership(apiKey: string, membershipId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      workosUrl(`/user_management/organization_memberships/${membershipId}`),
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -802,7 +822,7 @@ export async function listOrgInvitations(apiKey: string, organizationId: string)
  */
 export async function getInvitation(apiKey: string, invitationId: string): Promise<WorkOSInvitation | null> {
   try {
-    const response = await fetch(workosUrl(`/user_management/invitations/${invitationId}`), {
+    const response = await fetch(workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -823,7 +843,7 @@ export async function getInvitation(apiKey: string, invitationId: string): Promi
 export async function revokeInvitation(apiKey: string, invitationId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      workosUrl(`/user_management/invitations/${invitationId}/revoke`),
+      workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}/revoke`),
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}` },
