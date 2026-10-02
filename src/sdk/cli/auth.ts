@@ -16,6 +16,8 @@ export interface User {
   email?: string
   name?: string
   organizationId?: string
+  /** The workspace's name, when userinfo carries `org_name`. */
+  organizationName?: string
   roles?: string[]
   permissions?: string[]
 }
@@ -50,6 +52,7 @@ export async function getUser(token: string, headers?: Record<string, string>): 
       email: data.email as string | undefined,
       name: data.name as string | undefined,
       organizationId: data.org_id as string | undefined,
+      organizationName: data.org_name as string | undefined,
     }
     return { user, token }
   } catch {

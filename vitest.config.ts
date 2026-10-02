@@ -26,7 +26,7 @@ export default defineWorkersConfig({
   esbuild: { jsx: 'automatic', jsxImportSource: 'hono/jsx' },
   test: {
     include: ['test/**/*.test.ts'],
-    exclude: ['test/cli.test.ts', 'test/provision-storage.test.ts', 'test/cli-claim.test.ts'],
+    exclude: ['test/cli.test.ts', 'test/provision-storage.test.ts', 'test/cli-claim.test.ts', 'test/cli-login.test.ts'],
     globals: true,
     poolOptions: {
       workers: {
