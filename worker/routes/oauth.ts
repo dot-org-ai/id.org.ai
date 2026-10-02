@@ -23,6 +23,7 @@ import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
 import { renderConsentScreen } from './consent-screen'
 import { isLocalStubOrigin } from '../../src/sdk/workos/base'
+import { validateOrgMembershipFor } from '../utils/org-membership'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -147,6 +148,7 @@ export function createOAuthProvider(env: Env, request?: Request, extra: { render
     // Consent v2 (backend.md#b2): the worker renders 3a/3b/3c; verified CIMD hosts per D3.
     ...(extra.renderConsent && { renderConsent: extra.renderConsent }),
     verifiedClientHosts: (env.VERIFIED_CLIENT_HOSTS ?? '').split(','),
+    validateOrgMembership: validateOrgMembershipFor(env), // consent org_id must be an active WorkOS membership
     // Client ID Metadata Documents: an https client_id is fetched (SSRF-guarded),
     // at most CIMD_FETCHES_PER_IP uncached documents per caller IP per window,
     // so the unauthenticated authorize endpoint is not an open fetch relay.
@@ -441,7 +443,7 @@ app.get('/oauth/userinfo', async (c) => {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const tokenResult = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${tokenId}` })
   const tokenData = tokenResult.value as
-    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
+    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number }; orgId?: string }
     | undefined
 
   if (!tokenData) {
@@ -480,7 +482,8 @@ app.get('/oauth/userinfo', async (c) => {
     name: identity.name,
     email: identity.email,
     email_verified: identity.verified ?? false,
-    org_id: identity.organizationId,
+    // The workspace chosen for this grant (B6); else, as before, the identity's.
+    org_id: tokenData.orgId ?? identity.organizationId,
   }
   // How the person signed in (amr / idp / auth_time), when the token carries it
   applySignInClaims(claims, tokenData.signIn)
