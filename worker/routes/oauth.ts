@@ -8,13 +8,8 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { getStubForIdentity, getSigningKeyManager, readSessionSignIn } from '../middleware/tenant'
 import { authenticateRequest } from '../middleware/auth'
-import { parseCookieValue } from '../utils/cookies'
-import { extractApiKey, extractSessionToken } from '../utils/extract'
 import { OAuthProvider, applySignInClaims } from '../../src/sdk/oauth/provider'
 import {
-  generateCSRFToken,
-  buildCSRFCookie,
-  encodeStateWithCSRF,
   decodeStateWithCSRF,
   extractCSRFFromCookie,
   canonicalHostname,
@@ -23,6 +18,13 @@ import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { indexClientOrigins } from '../utils/relying-parties'
 import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 import { fetchClientMetadataDocument } from '../utils/client-metadata'
+import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
+import { renderConsentScreen } from './consent-screen'
+import { deviceRoutes } from './device'
+import { isBrowserSession } from '../utils/browser-session'
+import { fetchOrgInfo } from '../../src/sdk/workos/upstream'
+import { isLocalStubOrigin } from '../../src/sdk/workos/base'
+import { validateOrgMembershipFor } from '../utils/org-membership'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -61,8 +63,8 @@ export function parseTrustedAccountDomains(value: string | undefined): Set<strin
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
-export function getOAuthProvider(c: any): OAuthProvider {
-  return createOAuthProvider(c.env, c.req.raw)
+export function getOAuthProvider(c: any, extra: { renderConsent?: ConsentRenderer } = {}): OAuthProvider {
+  return createOAuthProvider(c.env, c.req.raw, extra)
 }
 
 /**
@@ -70,12 +72,16 @@ export function getOAuthProvider(c: any): OAuthProvider {
  * (optional) supplies the IP and user agent for audit events; RPC callers
  * (AuthService.exchangeToken) have none.
  */
-export function createOAuthProvider(env: Env, request?: Request): OAuthProvider {
+export function createOAuthProvider(env: Env, request?: Request, extra: { renderConsent?: ConsentRenderer } = {}): OAuthProvider {
   // OAuth state (clients, tokens, consent) lives in a dedicated 'oauth' shard.
   // This is separate from identity sharding — OAuth is a system-level concern.
   const stub = getStubForIdentity(env, 'oauth')
   const signingKeyManager = getSigningKeyManager(env)
-  const base = 'https://id.org.ai'
+  // Local development against the WorkOS stub: the issuer is this server, so the
+  // provider's sign-in and consent redirects stay local and never reach
+  // production. WORKOS_API_BASE is unset in production, so this is always id.org.ai there.
+  const reqOrigin = request ? new URL(request.url).origin : undefined
+  const base = reqOrigin && isLocalStubOrigin(env, reqOrigin) ? reqOrigin : 'https://id.org.ai'
   const allowedDomains = parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS)
   // ADR-0007 (BLOCKER 2): wire audit emission through the existing
   // IdentityDO RPC. The DO routes to AuditService which writes immutable
@@ -140,6 +146,12 @@ export function createOAuthProvider(env: Env, request?: Request): OAuthProvider 
       }
     },
     signingKeyManager,
+    // Consent v2 (backend.md#b2): the worker renders 3a/3b/3c; verified CIMD hosts per D3.
+    ...(extra.renderConsent && { renderConsent: extra.renderConsent }),
+    verifiedClientHosts: (env.VERIFIED_CLIENT_HOSTS ?? '').split(','),
+    // FEATURE_STEP_UP: a consent granting sb:do from a sign-in older than 10 minutes steps up first.
+    ...(env.FEATURE_STEP_UP === '1' && { stepUpMaxAgeSeconds: 600 }),
+    validateOrgMembership: validateOrgMembershipFor(env), // consent org_id must be an active WorkOS membership
     // Client ID Metadata Documents: an https client_id is fetched (SSRF-guarded),
     // at most CIMD_FETCHES_PER_IP uncached documents per caller IP per window,
     // so the unauthenticated authorize endpoint is not an open fetch relay.
@@ -178,6 +190,7 @@ export function createOAuthProvider(env: Env, request?: Request): OAuthProvider 
 // ── Auth Middleware for OAuth routes ─────────────────────────────────────────
 app.use('/oauth/authorize', authenticateRequest)
 app.use('/device', authenticateRequest)
+app.use('/device/*', authenticateRequest)
 
 // ── Dynamic Client Registration (RFC 7591) ──────────────────────────────────
 app.post('/oauth/register', async (c) => {
@@ -234,52 +247,13 @@ app.get('/oauth/authorize', async (c) => {
   // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
   // CSRF binding like any browser consent (and the POST checks it).
   const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.getAll('scope').join(' '))
-  if ((isServiceBinding && !asksSb) || isTrustedAccount) {
-    const provider = getOAuthProvider(c)
-    return provider.handleAuthorize(c.req.raw, identityId, signIn)
-  }
-
-  // Resolve the request with the client's state untouched first. Only a consent
-  // page needs the CSRF-bound state; a login redirect, an error redirect or an
-  // issued code (consent already on record) must carry the client's own state.
-  // Wrapping before this point leaked `base64url({csrf, s})` to every
-  // registered client that had already consented, and double-wrapped the state
-  // across the /login round-trip.
-  const direct = await getOAuthProvider(c).handleAuthorize(c.req.raw, identityId, signIn)
-  const isConsentPage = direct.status === 200 && (direct.headers.get('content-type') || '').includes('text/html')
-  if (!isConsentPage) {
-    return direct
-  }
-
-  // Consent page: generate a CSRF token for the consent form (browser-direct requests only)
-  const csrfToken = generateCSRFToken()
-  // Store the CSRF token in the oauth DO's storage via RPC
-  await oauthStub.oauthStorageOp({
-    op: 'put',
-    key: `csrf:${csrfToken}`,
-    value: { token: csrfToken, createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 },
-  })
-
-  // Inject the CSRF token into the state parameter
-  const url = new URL(c.req.url)
-  const originalState = url.searchParams.get('state') ?? undefined
-  const stateWithCSRF = encodeStateWithCSRF(csrfToken, originalState)
-  url.searchParams.set('state', stateWithCSRF)
-
-  // Create a modified request with the CSRF-enhanced state
-  const modifiedRequest = new Request(url.toString(), {
-    method: c.req.raw.method,
-    headers: c.req.raw.headers,
-  })
-
-  const provider = getOAuthProvider(c)
-  const response = await provider.handleAuthorize(modifiedRequest, identityId, signIn)
-
-  // Set the CSRF cookie on the response
-  const isSecure = new URL(c.req.url).protocol === 'https:'
-  const newResponse = new Response(response.body, response)
-  newResponse.headers.append('Set-Cookie', buildCSRFCookie(csrfToken, isSecure))
-  return newResponse
+  // The consent screen binds its form to a CSRF token (the renderer stores it,
+  // sets the cookie and folds it into the form's state). Only a rendered
+  // consent screen carries it: a login redirect, an error redirect or an issued
+  // code (consent on record) keeps the client's own state untouched.
+  const csrf = !((isServiceBinding && !asksSb) || isTrustedAccount)
+  const provider = getOAuthProvider(c, { renderConsent: (vm) => renderConsentScreen(c, vm, { csrf }) })
+  return provider.handleAuthorize(c.req.raw, identityId, signIn)
 })
 
 // Authorization Consent Submission — CSRF validated (skipped for service binding)
@@ -317,13 +291,7 @@ app.post('/oauth/authorize', async (c) => {
   // Tenant resolution takes an API key (header, X-API-Key, ?api_key=) or a
   // session token before the cookie, so any of those present means the
   // identity did not come from the browser session.
-  const authCookie = parseCookieValue(c.req.header('cookie') ?? '', 'auth')
-  const viaBrowserSession =
-    !extractApiKey(c.req.raw) &&
-    !extractSessionToken(c.req.raw) &&
-    !c.req.header('authorization') &&
-    !!authCookie &&
-    isSessionCookieJwt(authCookie)
+  const viaBrowserSession = isBrowserSession(c.req.raw)
   if (asksSb && !viaBrowserSession) {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'api.sb access can only be granted from a signed-in browser session')
   }
@@ -334,7 +302,7 @@ app.post('/oauth/authorize', async (c) => {
   if (isServiceBinding && !asksSb) {
     const provider = getOAuthProvider(c)
     // No CSRF check on this path, so never interactive: no sb scopes.
-    return provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false })
+    return asFetchSubmit(c, await provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false }))
   }
 
   // Extract CSRF token from cookie
@@ -384,35 +352,28 @@ app.post('/oauth/authorize', async (c) => {
   // client carries exactly the state it sent (not the CSRF wrapper).
   const provider = getOAuthProvider(c)
   // CSRF verified above; interactive when the identity is the browser session.
-  return provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn, {
-    interactive: viaBrowserSession,
-  })
+  return asFetchSubmit(
+    c,
+    await provider.handleAuthorizeConsent(await withOriginalState(c.req.raw, contentType, originalState), auth.identityId, signIn, {
+      interactive: viaBrowserSession,
+    }),
+  )
 })
 
 /**
- * Is the `auth` cookie shaped like an id.org.ai browser-session JWT (what
- * /api/callback and magic link sign), rather than some other
- * id.org.ai-signed JWT placed there? Tenant resolution has already verified
- * its signature and issuer; this looks at its shape. A session JWT carries no
- * `aud`, `nonce` or `at_hash`; an id_token (issued to a relying party) always
- * carries `aud` and `at_hash`; an access token is typ at+jwt. So an RP that
- * holds a Person's id_token cannot pose as that Person's browser to grant
- * sb scopes.
+ * Fetch submit (backend.md#b2): a consent POST with `Accept: application/json`
+ * from id.org.ai's own page gets `{ redirect }` instead of the 302, so the page
+ * can run its connector and then leave. The redirect carries the code, so only
+ * a same-origin page (Sec-Fetch-Site, which only the browser sets) gets it as
+ * a readable body; anything else keeps the 302, as does a form post.
  */
-function isSessionCookieJwt(jwt: string): boolean {
-  const parts = jwt.split('.')
-  if (parts.length !== 3) return false
-  try {
-    const dec = (s: string) => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)))
-    const header = dec(parts[0]!) as Record<string, unknown>
-    const payload = dec(parts[1]!) as Record<string, unknown>
-    if (typeof header.typ === 'string' && header.typ.toLowerCase().replace(/^application\//, '') !== 'jwt') return false
-    if ('crit' in header) return false
-    return !('aud' in payload) && !('nonce' in payload) && !('at_hash' in payload)
-  } catch {
-    return false
-  }
+function asFetchSubmit(c: { req: { header(name: string): string | undefined } }, res: Response): Response {
+  const location = res.headers.get('location')
+  const ownPage = c.req.header('sec-fetch-site') === 'same-origin'
+  if (!ownPage || !(c.req.header('accept') ?? '').includes('application/json') || res.status < 300 || res.status >= 400 || !location) return res
+  return new Response(JSON.stringify({ redirect: location }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
 }
+
 
 /** Rebuild a consent POST with `state` replaced by the client's original state. */
 async function withOriginalState(request: Request, contentType: string, originalState: string | undefined): Promise<Request> {
@@ -451,12 +412,8 @@ app.post('/oauth/device', async (c) => {
 })
 
 // Device Verification (browser-side)
-app.all('/device', async (c) => {
-  const auth = c.get('auth')
-  const identityId = auth?.authenticated ? (auth.identityId ?? null) : null
-  const provider = getOAuthProvider(c)
-  return provider.handleDeviceVerification(c.req.raw, identityId)
-})
+// The device pages (4b–4d, backend.md#b3): worker/routes/device.ts.
+app.route('', deviceRoutes)
 
 // UserInfo Endpoint (OIDC Core)
 // Handled at the worker level (not delegated to OAuthProvider) because
@@ -473,7 +430,7 @@ app.get('/oauth/userinfo', async (c) => {
   const oauthStub = getStubForIdentity(c.env, 'oauth')
   const tokenResult = await oauthStub.oauthStorageOp({ op: 'get', key: `access:${tokenId}` })
   const tokenData = tokenResult.value as
-    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number } }
+    | { identityId?: string; clientId?: string; expiresAt?: number; createdAt?: number; grantedAt?: number; family?: string; scopes?: string[]; signIn?: { amr?: string[]; idp?: string; authTime?: number }; orgId?: string }
     | undefined
 
   if (!tokenData) {
@@ -512,7 +469,13 @@ app.get('/oauth/userinfo', async (c) => {
     name: identity.name,
     email: identity.email,
     email_verified: identity.verified ?? false,
-    org_id: identity.organizationId,
+    // The workspace chosen for this grant (B6); else, as before, the identity's.
+    org_id: tokenData.orgId ?? identity.organizationId,
+  }
+  // Its name too, for a grant made for a workspace (the CLI's "Workspace" line).
+  if (tokenData.orgId && c.env.WORKOS_API_KEY) {
+    const org = await fetchOrgInfo(c.env.WORKOS_API_KEY, tokenData.orgId).catch(() => null)
+    if (org?.name) claims.org_name = org.name
   }
   // How the person signed in (amr / idp / auth_time), when the token carries it
   applySignInClaims(claims, tokenData.signIn)

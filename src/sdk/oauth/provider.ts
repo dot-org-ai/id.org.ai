@@ -22,6 +22,10 @@
  *   device:{dc_xxx}          → DeviceCode
  *   device-user:{USERCODE}   → device code id (index for user code lookup)
  *   consent:{identityId}:{clientId} → ConsentRecord
+ *
+ * A grant made for a chosen workspace carries `orgId` on its code, tokens and
+ * grant index record, and emits it as the `org_id` claim (see
+ * OAuthProvider's `validateOrgMembership`).
  */
 
 
@@ -83,6 +87,8 @@ import {
   scopeProblem,
   splitScopes,
 } from './delegation'
+import { checkClientSecret, clientHasSecret, hashClientSecret, withHashedSecret } from './client-secret'
+import { buildConsentViewModel, renderConsentFallback, type ConsentViewModel } from './consent-view'
 
 export interface OAuthConfig {
   issuer: string
@@ -120,7 +126,8 @@ export interface TrustedAccountConfig {
 export interface OAuthProviderClient {
   id: string                   // cid_xxx
   name: string
-  secret?: string              // hashed for confidential clients; absent for public
+  secret?: string              // legacy plaintext secret (pre-B13.5); rewritten as secretHash on next use
+  secretHash?: string          // SHA-256 (hex) of the client secret; absent for public clients
   redirectUris: string[]
   grantTypes: string[]
   responseTypes: string[]
@@ -129,6 +136,10 @@ export interface OAuthProviderClient {
   tokenEndpointAuthMethod: 'client_secret_basic' | 'client_secret_post' | 'none'
   logo?: string
   website?: string
+  /** The client's privacy policy (CIMD `policy_uri`, https only), linked on consent. */
+  policyUri?: string
+  /** The client's terms of service (CIMD `tos_uri`, https only), linked on consent. */
+  tosUri?: string
   createdAt: number
 }
 
@@ -146,6 +157,7 @@ interface AuthorizationCode {
   resource?: string
   effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
   signIn?: SignInContext       // how the person signed in (amr / idp / auth_time)
+  orgId?: string               // the workspace the Person chose on consent (validated)
   expiresAt: number
   createdAt: number
 }
@@ -165,6 +177,7 @@ interface AccessToken {
   signIn?: SignInContext       // how the person signed in, for userinfo amr / idp
   family?: string              // the grant's refresh-token family: revoking it deletes this token
   grantedAt?: number           // when the Person's grant was made (see isTokenRevoked)
+  orgId?: string               // the grant's workspace → `org_id` at userinfo and introspection
 }
 
 /**
@@ -182,6 +195,7 @@ interface AccessTokenJwtRecord {
   resource: string
   family?: string
   act?: ActorClaim
+  orgId?: string               // the grant's workspace; the JWT's `org_id` must match it
   issuer: string
   expiresAt: number
   createdAt: number
@@ -218,26 +232,133 @@ interface RefreshToken {
    * time is dead, whatever rotation raced the revocation.
    */
   grantedAt?: number
+  orgId?: string               // the grant's workspace, carried through every rotation
 }
 
 // Internal storage type — see OAuthDeviceCode in ./types.ts for canonical API type
 interface DeviceCode {
   id: string                   // dc_xxx
   clientId: string
-  userCode: string             // 8-char alphanumeric
+  userCode: string             // 8-char alphanumeric, stored without the hyphen
   scopes: string[]
-  status: 'pending' | 'approved' | 'denied' | 'expired'
+  // collected: approved and its tokens issued (one use); kept until expiry so
+  // the person's result page still finds it after the device has polled.
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'collected'
   identityId?: string          // set when user approves
   approvedAt?: number          // when the Person approved (the grant's time, see isTokenRevoked)
-  interval: number             // polling interval in seconds
+  interval: number             // polling interval in seconds (grows on slow_down)
   expiresAt: number
   createdAt: number
+  /** The grant's refresh family, fixed at the request, so the device can be signed out before it collects tokens. */
+  family?: string
+  /** The workspace chosen on the confirm page (B6). */
+  orgId?: string
+  /** What asked for the code (backend.md#b3). */
+  meta?: DeviceMeta
 }
+
+/** How a device code is being polled (slow_down), kept apart from the device record. */
+interface DevicePoll {
+  lastPollAt: number
+  interval: number
+}
+
+/** The device behind a device authorization request (backend.md#b3). `ip` is stored, never shown. */
+export interface DeviceMeta {
+  os?: string
+  city?: string
+  region?: string
+  country?: string
+  ip?: string
+  requestedAt: number
+}
+
+/** Who approved a device grant, and for which device (its sign-out page). */
+interface DeviceGrantRecord {
+  identityId: string
+  clientId: string
+  createdAt: number
+  meta?: DeviceMeta
+}
+
+/** A device request as the confirm page needs it. */
+export interface DeviceRequestView {
+  /** XXXX-XXXX */
+  userCode: string
+  status: DeviceCode['status']
+  clientId: string
+  scopes: string[]
+  interval: number
+  expiresAt: number
+  family: string
+  orgId?: string
+  identityId?: string
+  meta?: DeviceMeta
+  /** The client as registered: its own name, whether it's first-party (D3), and its first redirect host if any. */
+  client: { name: string; trusted: boolean; host?: string }
+}
+
+export type DeviceDecision =
+  | { ok: true; state: 'approved' | 'denied' }
+  | { ok: false; error: 'expired' | 'already_used' | 'invalid_org' }
 
 // Internal storage type — see OAuthConsent in ./types.ts for canonical API type
 interface ConsentRecord {
+  /**
+   * Consent for any workspace: only records from before per-workspace consent
+   * (backend.md#b2: "any org" until next re-consented). Every consent since
+   * writes it empty, so a non-empty value is always such a legacy record.
+   */
   scopes: string[]
   createdAt: number
+  /**
+   * Per-workspace consent, by org id (backend.md#b2). Kept inside the one
+   * record per client rather than as `consent:{identityId}:{clientId}:{orgId}`:
+   * CIMD client ids are URLs full of colons, so an org suffix couldn't be told
+   * apart from the client id when the records are listed.
+   */
+  orgs?: Record<string, { scopes: string[]; createdAt: number }>
+  /**
+   * Consent given with no workspace (none listed, e.g. the person has none or
+   * the list failed to load). It covers only requests that name no workspace,
+   * never one the person didn't choose (phase 5 review S2).
+   */
+  noOrg?: { scopes: string[]; createdAt: number }
+}
+
+/** A consent parked while the Person steps up (backend.md#b2, B5): single use, 10 minutes. */
+interface ConsentResumeRecord {
+  identityId: string
+  clientId: string
+  redirectUri: string
+  scopes: string[]
+  state?: string
+  codeChallenge: string
+  nonce?: string
+  resource?: string
+  orgId?: string
+  effectiveIssuer: string
+  createdAt: number
+}
+
+const CONSENT_RESUME_TTL_S = 600
+
+/** The workspaces in a consent record whose scopes cover `scopes`, most recent first. */
+function consentOrgsCovering(rec: ConsentRecord | undefined, scopes: string[]): string[] {
+  return Object.entries(rec?.orgs ?? {})
+    .filter(([, o]) => scopes.every((s) => o.scopes.includes(s)))
+    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+    .map(([id]) => id)
+}
+
+/** Did the Person sign in within `maxAgeSeconds` (the session's auth_time)? */
+function signedInWithin(signIn: SignInContext | undefined, maxAgeSeconds: number): boolean {
+  return !!signIn?.authTime && Math.floor(Date.now() / 1000) - signIn.authTime <= maxAgeSeconds
+}
+
+/** The most recently consented workspace in a record, whatever its scopes. */
+function rememberedOrg(rec: ConsentRecord | undefined): string | undefined {
+  return Object.entries(rec?.orgs ?? {}).sort((a, b) => b[1].createdAt - a[1].createdAt)[0]?.[0]
 }
 
 // Internal display type — see OAuthUser in ./types.ts for canonical API type
@@ -306,7 +427,7 @@ export function buildOpenIDConfiguration(config: OAuthConfig, features: { cimd?:
     authorization_response_iss_parameter_supported: true,
     // Client ID Metadata Documents: an https client_id is fetched and validated.
     ...(features.cimd && { client_id_metadata_document_supported: true }),
-    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time'],
+    claims_supported: ['sub', 'name', 'preferred_username', 'picture', 'email', 'email_verified', 'tier', 'amr', 'idp', 'auth_time', 'org_id'],
   }
 }
 
@@ -373,6 +494,47 @@ function generateId(prefix: string): string {
   crypto.getRandomValues(bytes)
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   return `${prefix}${hex}`
+}
+
+/** A user code for display: XXXX-XXXX (backend.md#b3). */
+export function formatUserCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
+}
+
+/** What a person typed (any case, with or without the hyphen or spaces) as the stored code. */
+export function normalizeUserCode(input: string): string {
+  return input.toUpperCase().replace(/[\s-]/g, '')
+}
+
+/** The OS from a User-Agent, or undefined. */
+function osFromUserAgent(ua: string | null): string | undefined {
+  if (!ua) return undefined
+  if (/iPhone|iPad|iOS/.test(ua)) return 'iOS'
+  if (/Android/.test(ua)) return 'Android'
+  if (/CrOS/.test(ua)) return 'ChromeOS'
+  if (/Mac OS X|Macintosh|darwin/i.test(ua)) return 'macOS'
+  if (/Windows|win32/i.test(ua)) return 'Windows'
+  if (/Linux|linux/.test(ua)) return 'Linux'
+  return undefined
+}
+
+/**
+ * A client-supplied device name: ASCII letters, digits, spaces and `._()'-`
+ * only, single-spaced, at most 64 characters. No separators (`·`, `,`), no
+ * letters that look like them, and no bidi or zero-width characters, so it
+ * can't imitate or reorder the place line the confirm page builds around it
+ * (phase 6 review S5 and re-review).
+ */
+function cleanDeviceName(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const clean = raw
+    .replace(/\x1b\[[\d;]*[A-Za-z]/g, ' ')
+    .replace(/[^A-Za-z0-9 ._()'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64)
+    .trim()
+  return clean || undefined
 }
 
 function generateUserCode(): string {
@@ -475,6 +637,7 @@ const REFRESH_TOKEN_TTL = 30 * 24 * 3600   // 30 days
 const AUTH_CODE_TTL = 600                   // 10 minutes
 const DEVICE_CODE_TTL = 1800               // 30 minutes
 const DEVICE_POLL_INTERVAL = 5             // 5 seconds
+const DEVICE_POLL_INTERVAL_MAX = 60        // slow_down never asks for more than this
 
 // ============================================================================
 // OAuthProvider
@@ -513,12 +676,22 @@ export type ClientMetadataFetcher = (
   | { ok: false; error: string; transient?: boolean }
 >
 
+/**
+ * Is `orgId` one of the workspaces of the Person `identityId`? The worker asks
+ * WorkOS for an active membership (worker/utils/org-membership.ts). A consent
+ * POST naming an `org_id` is refused unless this answers true.
+ */
+export type OrgMembershipValidator = (identityId: string, orgId: string) => Promise<boolean>
+
 /** A cached CIMD fetch: the document, or the error, until `expiresAt`. */
 interface CimdCacheEntry {
   doc?: unknown
   error?: string
   expiresAt: number
 }
+
+/** Renders the consent screen for a view model (see ./consent-view.ts). */
+export type ConsentRenderer = (vm: ConsentViewModel, request: Request) => Response | Promise<Response>
 
 export class OAuthProvider {
   private storage: StorageLike
@@ -528,6 +701,10 @@ export class OAuthProvider {
   private trustedAccount?: TrustedAccountConfig
   private auditEmit?: OAuthAuditEmit
   private fetchClientMetadata?: ClientMetadataFetcher
+  private renderConsent?: ConsentRenderer
+  private verifiedClientHosts: ReadonlySet<string>
+  private stepUpMaxAgeSeconds?: number
+  private validateOrgMembership?: OrgMembershipValidator
 
   get issuer(): string {
     return this.config.issuer
@@ -568,6 +745,26 @@ export class OAuthProvider {
      * such a client_id is simply unknown.
      */
     fetchClientMetadata?: ClientMetadataFetcher
+    /**
+     * Renders the consent screen from the view model (backend.md#b2). The
+     * id.org.ai worker renders 3a/3b/3c with the person and their workspaces;
+     * without it the provider serves a minimal fallback form.
+     */
+    renderConsent?: ConsentRenderer
+    /** CIMD client hosts that count as verified (D3, the VERIFIED_CLIENT_HOSTS env list). */
+    verifiedClientHosts?: Iterable<string>
+    /**
+     * Step-up before act permissions (FEATURE_STEP_UP, backend.md#b2): a consent
+     * granting `sb:do` from a sign-in older than this many seconds is parked and
+     * sent to /step-up first. Off when absent.
+     */
+    stepUpMaxAgeSeconds?: number
+    /**
+     * Validates the workspace (`org_id`) a Person chose on the consent screen
+     * against their memberships. Without it, a consent naming an `org_id` is
+     * refused; a consent without one is unaffected.
+     */
+    validateOrgMembership?: OrgMembershipValidator
   }) {
     this.storage = options.storage
     this.config = options.config
@@ -576,6 +773,10 @@ export class OAuthProvider {
     this.trustedAccount = options.trustedAccount
     this.auditEmit = options.auditEmit
     this.fetchClientMetadata = options.fetchClientMetadata
+    this.renderConsent = options.renderConsent
+    this.stepUpMaxAgeSeconds = options.stepUpMaxAgeSeconds
+    this.verifiedClientHosts = new Set([...(options.verifiedClientHosts ?? [])].map((h) => h.trim().toLowerCase()).filter(Boolean))
+    this.validateOrgMembership = options.validateOrgMembership
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -714,7 +915,8 @@ export class OAuthProvider {
     const client: OAuthProviderClient = {
       id: clientId,
       name: clientName,
-      secret: clientSecret,
+      // Only the hash is stored (B13.5); the secret is returned once, below.
+      ...(clientSecret ? { secretHash: await hashClientSecret(clientSecret) } : {}),
       redirectUris,
       grantTypes,
       responseTypes,
@@ -795,7 +997,10 @@ export class OAuthProvider {
     // Person once per client (and again on a step-up to more scopes).
     const consentKey = `consent:${identityId}:${clientId}`
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
-    const hasFullConsent = !!existingConsent && requestedScopes.every((s) => existingConsent.scopes.includes(s))
+    const orgHint = params.get('organization_id') || undefined
+    // undefined: consent for any workspace; a string: that workspace's consent; null: none.
+    const consentOrg = await this.consentOnRecord(identityId, existingConsent, requestedScopes, orgHint)
+    const hasFullConsent = consentOrg !== null
     const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
     // A CIMD client with a loopback redirect is a public native client whose
     // client_id is public and whose port is free: anyone can start its flow
@@ -804,28 +1009,41 @@ export class OAuthProvider {
     const alwaysAsk = looksLikeCimdClientId(clientId) && isLoopbackUri(redirectUri)
 
     if ((consentRequired && !hasFullConsent) || alwaysAsk) {
-      return this.renderConsentPage(client, {
-        clientId,
+      const vm = buildConsentViewModel({
+        client,
+        verifiedHosts: this.verifiedClientHosts,
         redirectUri,
-        scope: requestedScopes.join(' '),
+        scopes: requestedScopes,
         state,
         codeChallenge,
         codeChallengeMethod: codeChallenge ? 'S256' : undefined,
         nonce,
         resource,
+        identityId,
+        orgHint,
+        rememberedOrgId: rememberedOrg(existingConsent),
       })
+      return this.renderConsent ? await this.renderConsent(vm, request) : renderConsentFallback(vm)
     }
 
-    // ── Generate authorization code ─────────────────────────────────────
-    return this.issueAuthorizationCode(client, identityId, {
+    const grant = {
       redirectUri,
       scopes: requestedScopes,
       codeChallenge: codeChallenge || '',
-      codeChallengeMethod: 'S256',
       state,
       nonce,
       resource,
+      orgId: consentOrg || undefined,
       effectiveIssuer: iss,
+    }
+    const stepUp = await this.requireFreshConsent(
+      { ...grant, identityId, clientId }, signIn, params.get('prompt') === 'none',
+    )
+    if (stepUp) return stepUp
+
+    return this.issueAuthorizationCode(client, identityId, {
+      ...grant,
+      codeChallengeMethod: 'S256',
       signIn,
     })
   }
@@ -1032,6 +1250,19 @@ export class OAuthProvider {
     if (!checked.ok) return checked.response
     const { client, redirectUri, resource } = checked
 
+    // The workspace the Person chose (B2/B6): it must be one of theirs.
+    const orgId = body.org_id || undefined
+    if (orgId !== undefined && !(await this.isOrgMember(identityId, orgId))) {
+      return this.redirectError(redirectUri, 'invalid_request', 'org_id is not one of your workspaces', state, iss)
+    }
+
+    // The access level (B2): `access=read|act`. `approved=read` is the older
+    // form of read (the "Allow read only" button).
+    if (body.access !== undefined && body.access !== 'read' && body.access !== 'act') {
+      return this.redirectError(redirectUri, 'invalid_request', 'access must be read or act', state, iss)
+    }
+    const readOnly = body.approved === 'read' || body.access === 'read'
+
     // The sb scopes are delegated only by the Person in their browser.
     if (checked.scopes.some(isSbScope) && !context.interactive) {
       return jsonResponse(
@@ -1040,19 +1271,28 @@ export class OAuthProvider {
       )
     }
 
-    // "Allow read only": sb:do becomes sb:read (never an empty grant).
+    // Read only: sb:do becomes sb:read (never an empty grant).
     let scopes = checked.scopes
-    if (body.approved === 'read' && scopes.includes(SB_SCOPE_DO)) {
+    if (readOnly && scopes.includes(SB_SCOPE_DO)) {
       scopes = scopes.filter((s) => s !== SB_SCOPE_DO)
       if (!scopes.includes(SB_SCOPE_READ)) scopes.push(SB_SCOPE_READ)
     }
 
-    // Store consent
-    const consentKey = `consent:${identityId}:${client.id}`
-    await this.storage.put(consentKey, {
+    const stepUp = await this.requireFreshConsent({
+      identityId,
+      clientId: client.id,
+      redirectUri,
       scopes,
-      createdAt: Date.now(),
-    } satisfies ConsentRecord)
+      state,
+      codeChallenge: codeChallenge || '',
+      nonce,
+      resource,
+      orgId,
+      effectiveIssuer: iss,
+    }, signIn)
+    if (stepUp) return stepUp
+
+    await this.recordConsent(identityId, client.id, scopes, orgId)
 
     // Issue authorization code
     return this.issueAuthorizationCode(client, identityId, {
@@ -1065,7 +1305,83 @@ export class OAuthProvider {
       resource,
       effectiveIssuer: iss,
       signIn,
+      orgId,
     })
+  }
+
+  /** Both remembered consent and an approval need a fresh sign-in before granting sb:do. */
+  private async requireFreshConsent(
+    grant: Omit<ConsentResumeRecord, 'createdAt'>,
+    signIn?: SignInContext,
+    noInteraction = false,
+  ): Promise<Response | null> {
+    if (this.stepUpMaxAgeSeconds === undefined || !grant.scopes.includes(SB_SCOPE_DO) || signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
+      return null
+    }
+    // OIDC prompt=none cannot start an interactive step-up or park a resume record.
+    if (noInteraction) {
+      return this.redirectError(grant.redirectUri, 'login_required', 'Sign in again to continue.', grant.state, grant.effectiveIssuer)
+    }
+    const resumeId = generateId('rsm_')
+    await this.storage.put(
+      `consent-resume:${resumeId}`,
+      { ...grant, createdAt: Date.now() } satisfies ConsentResumeRecord,
+      { expirationTtl: CONSENT_RESUME_TTL_S },
+    )
+    const to = new URL('/step-up', this.config.issuer)
+    to.searchParams.set('resume', resumeId)
+    to.searchParams.set('reason', 'act_permissions')
+    return Response.redirect(to.toString(), 302)
+  }
+
+  /**
+   * Finish a consent parked for step-up (backend.md#b2, B5), once the Person
+   * has signed in again: single use, 10 minutes, the same Person, a fresh
+   * sign-in. Records the consent and issues the code, as the POST would have.
+   */
+  async resumeAuthorizeConsent(resumeId: string, identityId: string, signIn?: SignInContext): Promise<Response> {
+    const key = `consent-resume:${resumeId}`
+    const gone = () => oauthError('invalid_request', 'This request expired or was already used. Start again from the app.')
+    // Look before taking, so someone else's attempt can't spend the Person's record.
+    const peek = await this.storage.get<ConsentResumeRecord>(key)
+    if (!peek || peek.identityId !== identityId) return gone()
+    if (this.stepUpMaxAgeSeconds !== undefined && !signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
+      return oauthError('invalid_request', 'Sign in again to continue.')
+    }
+    const rec = this.storage.take ? await this.storage.take<ConsentResumeRecord>(key) : ((await this.storage.delete(key)) ? peek : undefined)
+    if (!rec || Date.now() - rec.createdAt > CONSENT_RESUME_TTL_S * 1000) return gone()
+    const resolved = await this.resolveClientRedirect(rec.clientId, rec.redirectUri)
+    if (!resolved.ok) return resolved.response
+    await this.recordConsent(identityId, rec.clientId, rec.scopes, rec.orgId)
+    return this.issueAuthorizationCode(resolved.client, identityId, {
+      redirectUri: rec.redirectUri,
+      scopes: rec.scopes,
+      codeChallenge: rec.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: rec.state,
+      nonce: rec.nonce,
+      resource: rec.resource,
+      effectiveIssuer: rec.effectiveIssuer,
+      signIn,
+      orgId: rec.orgId,
+    })
+  }
+
+  /**
+   * Record a consent (backend.md#b2): that workspace's, or the no-workspace
+   * one. Either way a legacy record's any-workspace consent ends: it meant
+   * "any org" only until re-consented.
+   */
+  private async recordConsent(identityId: string, clientId: string, scopes: string[], orgId?: string): Promise<void> {
+    const key = `consent:${identityId}:${clientId}`
+    const prev = await this.storage.get<ConsentRecord>(key)
+    const now = Date.now()
+    // Any consent ends a legacy record's any-workspace meaning (scopes: []).
+    const entry = { scopes, createdAt: now }
+    const orgs = orgId ? { ...prev?.orgs, [orgId]: entry } : prev?.orgs
+    const noOrg = orgId ? prev?.noOrg : entry
+    const record: ConsentRecord = { scopes: [], createdAt: now, ...(orgs && { orgs }), ...(noOrg && { noOrg }) }
+    await this.storage.put(key, record)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1157,6 +1473,21 @@ export class OAuthProvider {
     const now = Date.now()
     const expiresAt = now + DEVICE_CODE_TTL * 1000
 
+    // What asked for the code (backend.md#b3): shown on the confirm page so the
+    // person can tell their own device's request from someone else's.
+    const cf = (request as Request & { cf?: { city?: unknown; regionCode?: unknown; region?: unknown; country?: unknown } }).cf
+    const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 64) : undefined)
+    const meta: DeviceMeta = {
+      requestedAt: now,
+      ...((cleanDeviceName(body.device_name) ?? osFromUserAgent(request.headers.get('user-agent'))) && {
+        os: cleanDeviceName(body.device_name) ?? osFromUserAgent(request.headers.get('user-agent')),
+      }),
+      ...(str(cf?.city) && { city: str(cf?.city) }),
+      ...(str(cf?.regionCode ?? cf?.region) && { region: str(cf?.regionCode ?? cf?.region) }),
+      ...(str(cf?.country) && { country: str(cf?.country) }),
+      ...(request.headers.get('cf-connecting-ip') && { ip: request.headers.get('cf-connecting-ip')! }),
+    }
+
     const deviceCode: DeviceCode = {
       id: deviceCodeId,
       clientId,
@@ -1166,6 +1497,8 @@ export class OAuthProvider {
       interval: DEVICE_POLL_INTERVAL,
       expiresAt,
       createdAt: now,
+      family: crypto.randomUUID(),
+      meta,
     }
 
     await this.storage.put(`device:${deviceCodeId}`, deviceCode, {
@@ -1177,11 +1510,12 @@ export class OAuthProvider {
       expirationTtl: DEVICE_CODE_TTL + 60,
     })
 
+    const display = formatUserCode(userCode)
     return jsonResponse({
       device_code: deviceCodeId,
-      user_code: userCode,
+      user_code: display,
       verification_uri: `${this.config.issuer}/device`,
-      verification_uri_complete: `${this.config.issuer}/device?user_code=${userCode}`,
+      verification_uri_complete: `${this.config.issuer}/device?code=${display}`,
       expires_in: DEVICE_CODE_TTL,
       interval: DEVICE_POLL_INTERVAL,
     })
@@ -1195,6 +1529,14 @@ export class OAuthProvider {
    * Called when the user visits /device and enters the user code.
    * Returns an HTML page or handles the POST approval.
    */
+  /**
+   * GET only: the minimal device page for hosts without their own.
+   *
+   * Breaking (phase 6, backend.md#b3): the decision is no longer a POST here,
+   * which had no CSRF token. A host renders its own confirm page and calls
+   * `decideDevice` behind its own session and CSRF checks, as id.org.ai's worker
+   * does (worker/routes/device.ts); a POST here answers 405.
+   */
   async handleDeviceVerification(request: Request, identityId: string | null): Promise<Response> {
     if (!identityId) {
       const loginUrl = new URL('/login', this.config.issuer)
@@ -1204,56 +1546,127 @@ export class OAuthProvider {
 
     if (request.method === 'GET') {
       const url = new URL(request.url)
-      const userCode = url.searchParams.get('user_code') || ''
+      const userCode = url.searchParams.get('code') || url.searchParams.get('user_code') || ''
       return this.renderDeviceVerificationPage(userCode)
     }
 
-    if (request.method === 'POST') {
-      const body = await parseBody(request)
-      const userCode = (body.user_code || '').toUpperCase().replace(/[\s-]/g, '')
-      const approved = body.approved === 'true'
-
-      if (!userCode || userCode.length !== 8) {
-        return this.renderDeviceVerificationPage('', 'Please enter a valid 8-character code')
-      }
-
-      const deviceCodeId = await this.storage.get<string>(`device-user:${userCode}`)
-      if (!deviceCodeId) {
-        return this.renderDeviceVerificationPage(userCode, 'Invalid or expired code. Please try again.')
-      }
-
-      const deviceCode = await this.storage.get<DeviceCode>(`device:${deviceCodeId}`)
-      if (!deviceCode || deviceCode.expiresAt < Date.now()) {
-        return this.renderDeviceVerificationPage(userCode, 'This code has expired. Please request a new one.')
-      }
-
-      if (deviceCode.status !== 'pending') {
-        return this.renderDeviceVerificationPage(userCode, 'This code has already been used.')
-      }
-
-      // Update device code status
-      await this.storage.put(`device:${deviceCodeId}`, {
-        ...deviceCode,
-        status: approved ? 'approved' : 'denied',
-        identityId: approved ? identityId : undefined,
-        ...(approved && { approvedAt: Date.now() }),
-      } satisfies DeviceCode)
-
-      if (approved) {
-        return new Response(this.deviceApprovedHtml(), {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        })
-      }
-
-      return this.renderDeviceVerificationPage('', 'Authorization denied.')
-    }
-
+    // The decision is decideDevice, behind a CSRF-checked endpoint (the
+    // worker's POST /device/decision). The old POST here took one with no
+    // CSRF token at all (backend.md#b3), so it is gone.
     return oauthError('invalid_request', 'Method not allowed', 405)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // UserInfo Endpoint (OIDC Core)
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /** The device request behind a code someone typed, for the confirm page; null when there is none. */
+  async getDeviceRequest(input: string): Promise<DeviceRequestView | null> {
+    const userCode = normalizeUserCode(input)
+    if (!/^[A-Z2-9]{8}$/.test(userCode)) return null
+    const id = await this.storage.get<string>(`device-user:${userCode}`)
+    const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
+    if (!rec) return null
+    const pacing = await this.storage.get<DevicePoll>(`device-poll:${rec.id}`)
+    const client = await this.getClient(rec.clientId)
+    let host: string | undefined
+    try {
+      host = client?.redirectUris[0] ? new URL(client.redirectUris[0]).host : undefined
+    } catch {
+      host = undefined
+    }
+    return {
+      client: { name: client?.name ?? rec.clientId, trusted: !!client?.trusted, ...(host && { host }) },
+      userCode: formatUserCode(rec.userCode),
+      status: rec.expiresAt < Date.now() && rec.status === 'pending' ? 'expired' : rec.status,
+      clientId: rec.clientId,
+      scopes: rec.scopes,
+      interval: pacing?.interval ?? rec.interval,
+      expiresAt: rec.expiresAt,
+      family: rec.family ?? '',
+      ...(rec.orgId && { orgId: rec.orgId }),
+      ...(rec.identityId && { identityId: rec.identityId }),
+      ...(rec.meta && { meta: rec.meta }),
+    }
+  }
+
+  /**
+   * A person's decision on a device request (backend.md#b3). Repeating the
+   * same decision answers the same; a different one after a decision is
+   * already_used. A workspace must be one of theirs, and travels into the
+   * device's tokens as org_id. The caller checks the session and CSRF.
+   */
+  async decideDevice(input: { code: string; identityId: string; decision: 'approve' | 'deny'; orgId?: string }): Promise<DeviceDecision> {
+    const userCode = normalizeUserCode(input.code)
+    const id = /^[A-Z2-9]{8}$/.test(userCode) ? await this.storage.get<string>(`device-user:${userCode}`) : undefined
+    const rec = id ? await this.storage.get<DeviceCode>(`device:${id}`) : undefined
+    if (!rec || rec.expiresAt < Date.now()) return { ok: false, error: 'expired' }
+    const want = input.decision === 'approve' ? 'approved' : 'denied'
+    // The same decision again is fine; an approval by someone else, or for another workspace, is not.
+    const decided = (r: DeviceCode): DeviceDecision =>
+      r.status === want && (want === 'denied' || (r.identityId === input.identityId && r.orgId === (input.orgId || undefined)))
+        ? { ok: true, state: want }
+        : { ok: false, error: 'already_used' }
+    if (rec.status !== 'pending') return decided(rec)
+    const orgId = input.orgId || undefined
+    if (want === 'approved' && orgId !== undefined && !(await this.isOrgMember(input.identityId, orgId))) return { ok: false, error: 'invalid_org' }
+    // One decision per code, even when two arrive at once (an atomic first
+    // claim where the storage has one; phase 6 re-review SF-3). The other waits
+    // briefly for the winner's write and answers from it.
+    if (this.storage.claimOnce && !(await this.storage.claimOnce(`device-decide:${rec.id}`, DEVICE_CODE_TTL * 1000 + 60_000))) {
+      for (let i = 0; i < 10; i++) {
+        const current = await this.storage.get<DeviceCode>(`device:${rec.id}`)
+        if (current && current.status !== 'pending') return decided(current)
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return { ok: false, error: 'already_used' }
+    }
+    const now = Date.now()
+    const next: DeviceCode =
+      want === 'approved'
+        ? { ...rec, status: 'approved', identityId: input.identityId, approvedAt: now, ...(orgId && { orgId }) }
+        : { ...rec, status: 'denied' }
+    await this.storage.put(`device:${rec.id}`, next, { expirationTtl: Math.max(60, Math.ceil((rec.expiresAt - now) / 1000) + 60) })
+    // Who may sign this device out later (revokeDeviceGrant).
+    if (want === 'approved' && rec.family) {
+      await this.storage.put(`device-grant:${rec.family}`, {
+        identityId: input.identityId,
+        clientId: rec.clientId,
+        createdAt: now,
+        // Without the IP: this copy outlives the device code (phase 6 review S4).
+        ...(rec.meta && { meta: { ...rec.meta, ip: undefined } }),
+      } satisfies DeviceGrantRecord)
+    }
+    return { ok: true, state: want }
+  }
+
+  /**
+   * "Sign this device out" (backend.md#b3): revoke the device grant's refresh
+   * family, if `identityId` approved it. Works before the device has collected
+   * its tokens too: the family's tombstone refuses them at the poll.
+   */
+  /** A device grant `identityId` made, for its "sign this device out" page; null otherwise. */
+  async getDeviceGrant(family: string, identityId: string): Promise<{ client: DeviceRequestView['client']; meta?: DeviceMeta } | null> {
+    if (!family) return null
+    const grant = await this.storage.get<DeviceGrantRecord>(`device-grant:${family}`)
+    if (!grant || grant.identityId !== identityId) return null
+    const client = await this.getClient(grant.clientId)
+    let host: string | undefined
+    try {
+      host = client?.redirectUris[0] ? new URL(client.redirectUris[0]).host : undefined
+    } catch {
+      host = undefined
+    }
+    return { client: { name: client?.name ?? grant.clientId, trusted: !!client?.trusted, ...(host && { host }) }, ...(grant.meta && { meta: grant.meta }) }
+  }
+
+  async revokeDeviceGrant(family: string, identityId: string): Promise<boolean> {
+    if (!family) return false
+    const grant = await this.storage.get<{ identityId: string }>(`device-grant:${family}`)
+    if (!grant || grant.identityId !== identityId) return false
+    await this.revokeRefreshTokenFamily(family)
+    return true
+  }
 
   async handleUserinfo(request: Request): Promise<Response> {
     const authHeader = request.headers.get('authorization')
@@ -1308,6 +1721,9 @@ export class OAuthProvider {
       claims.email_verified = identity.emailVerified ?? false
     }
 
+    // The workspace chosen for this grant, only when there is one.
+    if (tokenData.orgId !== undefined) claims.org_id = tokenData.orgId
+
     applySignInClaims(claims, tokenData.signIn)
 
     return jsonResponse(claims)
@@ -1347,6 +1763,8 @@ export class OAuthProvider {
           // A resource server MUST check it is itself before honouring the token.
           ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
+          // The workspace the grant was made for (B6), only when there is one.
+          ...(tokenData.orgId !== undefined && { org_id: tokenData.orgId }),
         })
       }
     }
@@ -1370,6 +1788,7 @@ export class OAuthProvider {
           jti: rec.jti,
           ...(rec.act && { act: rec.act }),
           ...(tier && { tier }),
+          ...(rec.orgId !== undefined && { org_id: rec.orgId }),
         })
       }
     }
@@ -1390,6 +1809,7 @@ export class OAuthProvider {
           iat: Math.floor(tokenData.createdAt / 1000),
           ...(tokenData.resource !== undefined && { aud: tokenData.resource }),
           ...(tier && { tier }),
+          ...(tokenData.orgId !== undefined && { org_id: tokenData.orgId }),
         })
       }
     }
@@ -1535,12 +1955,12 @@ export class OAuthProvider {
       // No PKCE — confidential client must present valid secret.
       // (Trusted-account clients always have PKCE per /authorize enforcement.)
       const client = await this.getClient(clientId)
-      if (client?.secret && client.secret !== clientSecret) {
+      if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
       }
       // A code without PKCE is only ever issued to a confidential client;
       // a public one (no secret, or a CIMD client) must never redeem one.
-      if (!client?.secret) {
+      if (!clientHasSecret(client)) {
         return oauthError('invalid_grant', 'code_verifier is required')
       }
     }
@@ -1579,6 +1999,7 @@ export class OAuthProvider {
       consumerHost,
       signIn: codeData.signIn,
       grantedAt: codeData.createdAt,
+      orgId: codeData.orgId,
     })
   }
 
@@ -1609,7 +2030,7 @@ export class OAuthProvider {
     // CIMD clients are public (no secret), so there is nothing to look up.
     if (!this.isTrustedAccountClient(clientId) && !looksLikeCimdClientId(clientId)) {
       const client = await this.getClient(clientId)
-      if (client?.secret && client.secret !== clientSecret) {
+      if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
         return oauthError('invalid_client', 'Invalid client credentials', 401)
       }
     }
@@ -1647,6 +2068,14 @@ export class OAuthProvider {
     const target = this.tokenRequestResource(body, tokenData.resource)
     if (!target.ok) return target.response
 
+    // A grant made for a workspace (org_id, backend.md#b6) refreshes only while
+    // the Person is still in it (phase 5 review S1). Refused before the token
+    // is spent: the membership check can't tell leaving from a WorkOS outage,
+    // so the same token works again once the answer is yes.
+    if (tokenData.orgId !== undefined && !(await this.isOrgMember(tokenData.identityId, tokenData.orgId))) {
+      return oauthError('invalid_grant', 'No longer a member of the workspace this grant was made for')
+    }
+
     // ── Rotate once: of parallel refreshes with this token, one wins ─────
     if (this.storage.claimOnce && !(await this.storage.claimOnce(`rt-rotation:${refreshTokenId}`, REFRESH_TOKEN_TTL * 1000 + 60_000))) {
       return oauthError('invalid_grant', 'Refresh token has already been used')
@@ -1680,6 +2109,8 @@ export class OAuthProvider {
       consumerHost: tokenData.consumerHost,
       signIn: tokenData.signIn,
       grantedAt,
+      // The grant's workspace stays with every rotation.
+      orgId: tokenData.orgId,
     })
   }
 
@@ -1732,7 +2163,7 @@ export class OAuthProvider {
       return oauthError('unauthorized_client', 'Client is not authorized for client_credentials grant')
     }
 
-    if (!client.secret || client.secret !== clientSecret) {
+    if (!(await this.verifyClientSecret(client, clientSecret))) {
       return oauthError('invalid_client', 'Invalid client credentials', 401)
     }
 
@@ -1810,37 +2241,61 @@ export class OAuthProvider {
     }
 
     switch (deviceCode.status) {
-      case 'pending':
-        return oauthError('authorization_pending', 'The user has not yet authorized this device')
+      case 'pending': {
+        // RFC 8628 §3.5: polling faster than the interval gets slow_down, and
+        // the interval grows by 5 seconds (capped at 60) that the client must
+        // follow; a second's jitter is allowed. The pacing lives in its own
+        // record: rewriting the device record here could undo a decision made
+        // while this poll was in flight (phase 6 review B1).
+        const now = Date.now()
+        const pollKey = `device-poll:${deviceCodeId}`
+        const last = await this.storage.get<DevicePoll>(pollKey)
+        const interval = last?.interval ?? deviceCode.interval
+        const tooSoon = last !== undefined && now - last.lastPollAt < interval * 1000 - 1000
+        const next: DevicePoll = { lastPollAt: now, interval: tooSoon ? Math.min(interval + 5, DEVICE_POLL_INTERVAL_MAX) : interval }
+        await this.storage.put(pollKey, next, { expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - now) / 1000) + 60) })
+        return tooSoon
+          ? oauthError('slow_down', `Polling too fast; wait ${next.interval} seconds between requests`)
+          : oauthError('authorization_pending', 'The user has not yet authorized this device')
+      }
 
       case 'denied':
-        // Clean up
-        await this.storage.delete(`device:${deviceCodeId}`)
-        await this.storage.delete(`device-user:${deviceCode.userCode}`)
+        // Kept until it expires: the person's "cancelled" page reads it.
         return oauthError('access_denied', 'The user denied the authorization request')
+
+      case 'collected':
+        return oauthError('invalid_grant', 'The device code has already been used')
 
       case 'approved': {
         if (!deviceCode.identityId) {
           return oauthError('server_error', 'Device code approved but missing identity')
         }
 
-        // Clean up device code (one-time use)
-        await this.storage.delete(`device:${deviceCodeId}`)
-        await this.storage.delete(`device-user:${deviceCode.userCode}`)
+        // One use, even for two polls at once (an atomic first claim where the storage has one).
+        if (this.storage.claimOnce && !(await this.storage.claimOnce(`device-collect:${deviceCodeId}`, DEVICE_CODE_TTL * 1000 + 60_000))) {
+          return oauthError('invalid_grant', 'The device code has already been used')
+        }
+        // Collected from here on, but kept until it expires so the person's
+        // result page (GET /device/done) still finds it.
+        await this.storage.put(`device:${deviceCodeId}`, { ...deviceCode, status: 'collected' } satisfies DeviceCode, {
+          expirationTtl: Math.max(60, Math.ceil((deviceCode.expiresAt - Date.now()) / 1000) + 60),
+        })
 
         // The grant is the approval: if the Person revoked this client since
         // approving, the approval is dead too.
         const grantedAt = deviceCode.approvedAt ?? deviceCode.createdAt
-        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt })) {
+        if (await this.isTokenRevoked({ identityId: deviceCode.identityId, clientId, createdAt: deviceCode.createdAt, grantedAt, family: deviceCode.family })) {
           return oauthError('invalid_grant', 'The grant for this device code has been revoked')
         }
 
-        // Issue tokens
+        // Issue tokens in the family fixed at the request, with the chosen workspace.
         return this.issueTokenPair({
           clientId,
           identityId: deviceCode.identityId,
           scopes: deviceCode.scopes,
           grantedAt,
+          ...(deviceCode.family && { family: deviceCode.family }),
+          ...(deviceCode.orgId && { orgId: deviceCode.orgId }),
         })
       }
 
@@ -1866,6 +2321,8 @@ export class OAuthProvider {
       resource?: string
       effectiveIssuer?: string
       signIn?: SignInContext
+      /** The workspace the Person chose, already validated as one of theirs. */
+      orgId?: string
     },
   ): Promise<Response> {
     const codeId = generateId('ac_')
@@ -1884,6 +2341,7 @@ export class OAuthProvider {
       resource: params.resource,
       effectiveIssuer: params.effectiveIssuer,
       ...(params.signIn && { signIn: params.signIn }),
+      ...(params.orgId !== undefined && { orgId: params.orgId }),
       expiresAt: now + AUTH_CODE_TTL * 1000,
       createdAt: now,
     }
@@ -1984,8 +2442,14 @@ export class OAuthProvider {
     accessResource?: string
     /** When the Person's grant was made (the code, or the device approval); carried through rotation. */
     grantedAt?: number
+    /**
+     * The workspace the grant was made for (B6). Stored on the access token,
+     * the refresh token and the grant index record; emitted as `org_id` in the
+     * id_token and the JWT access token. Absent: nothing changes.
+     */
+    orgId?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn } = options
+    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn, orgId } = options
     const grantedAt = options.grantedAt ?? Date.now()
     const resource = options.resource
     const tokenAudience = options.accessResource ?? resource
@@ -2003,7 +2467,7 @@ export class OAuthProvider {
     let accessExpiresIn = ACCESS_TOKEN_TTL
     const jwt =
       tokenAudience !== undefined && isSbResource(tokenAudience) && this.signingKeyManager
-        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt }).catch(() => null)
+        ? await this.mintAccessTokenJwt({ clientId, identityId, scopes, resource: tokenAudience, family: tokenFamily, issuer, grantedAt, orgId }).catch(() => null)
         : null
     if (jwt) {
       accessTokenValue = jwt.token
@@ -2024,6 +2488,7 @@ export class OAuthProvider {
       ...(signIn && { signIn }),
       family: tokenFamily,
       grantedAt,
+      ...(orgId !== undefined && { orgId }),
     }
 
     const refreshToken: RefreshToken = {
@@ -2040,6 +2505,7 @@ export class OAuthProvider {
       ...(consumerHost !== undefined && { consumerHost }),
       ...(signIn && { signIn }),
       grantedAt,
+      ...(orgId !== undefined && { orgId }),
     }
 
     if (!jwt) {
@@ -2054,7 +2520,7 @@ export class OAuthProvider {
     })
     // Indexes for revocation: the family's tokens, and the grant's families.
     await this.storage.put(`fam:${tokenFamily}:rt:${refreshTokenId}`, 1)
-    await this.storage.put(grantIndexKey(identityId, clientId, tokenFamily), { createdAt: now })
+    await this.storage.put(grantIndexKey(identityId, clientId, tokenFamily), { createdAt: now, ...(orgId !== undefined && { orgId }) })
 
     // ADR-0007 (BLOCKER 2): emit token-issuance audit for trusted-account
     // flows. Trace points: access token id, refresh token id, consumer host.
@@ -2093,6 +2559,7 @@ export class OAuthProvider {
         }
         const tier = tierFromLevel(identity?.level)
         if (tier) claims.tier = tier
+        if (orgId !== undefined) claims.org_id = orgId
         applySignInClaims(claims, signIn)
 
         // Compute at_hash (OIDC Core Section 3.1.3.6) over the access token issued
@@ -2137,6 +2604,7 @@ export class OAuthProvider {
     act?: ActorClaim
     notAfter?: number
     grantedAt?: number
+    orgId?: string
   }): Promise<{ token: string; expiresIn: number; jti: string }> {
     if (!this.signingKeyManager) throw new Error('no signing key')
     const key = await this.signingKeyManager.getCurrentKey()
@@ -2155,6 +2623,7 @@ export class OAuthProvider {
       iat,
       exp,
       jti,
+      ...(params.orgId !== undefined && { org_id: params.orgId }),
       ...(params.act && { act: params.act }),
     })
     const record: AccessTokenJwtRecord = {
@@ -2165,6 +2634,7 @@ export class OAuthProvider {
       resource: params.resource,
       ...(params.family !== undefined && { family: params.family }),
       ...(params.act && { act: params.act }),
+      ...(params.orgId !== undefined && { orgId: params.orgId }),
       issuer: params.issuer,
       expiresAt: exp * 1000,
       createdAt: nowMs,
@@ -2194,12 +2664,24 @@ export class OAuthProvider {
     if (await this.isTokenRevoked(record)) return null
     // The record is the authority; the claims must agree with it.
     if (claims.sub !== record.identityId || claims.client_id !== record.clientId || claims.aud !== record.resource || claims.iss !== record.issuer) return null
+    if ((claims as Record<string, unknown>).org_id !== record.orgId) return null
     return { ...record, claims }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Client Lookup
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Constant-time check of a presented client secret (B13.5). A legacy
+   * plaintext secret that matches is rewritten as a hash, so it is stored in
+   * plaintext no longer than until its next use.
+   */
+  private async verifyClientSecret(client: OAuthProviderClient, presented: string): Promise<boolean> {
+    const match = await checkClientSecret(client, presented)
+    if (match === 'legacy') await this.storage.put(`client:${client.id}`, await withHashedSecret(client))
+    return match !== null
+  }
 
   private async getClient(clientId: string): Promise<OAuthProviderClient | null> {
     if (!clientId) return null
@@ -2284,7 +2766,11 @@ export class OAuthProvider {
     const prefix = `consent:${identityId}:`
     const consents = await this.storage.list<ConsentRecord>({ prefix })
     const out = new Map<string, { client_id: string; scopes: string[]; created_at: number }>()
-    for (const [key, rec] of consents) out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes: rec.scopes, created_at: rec.createdAt })
+    for (const [key, rec] of consents) {
+      // Everything granted to the client: any workspace, and each workspace's (backend.md#b2).
+      const scopes = [...new Set([...rec.scopes, ...(rec.noOrg?.scopes ?? []), ...Object.values(rec.orgs ?? {}).flatMap((o) => o.scopes)])]
+      out.set(key.slice(prefix.length), { client_id: key.slice(prefix.length), scopes, created_at: rec.createdAt })
+    }
     // Clients holding tokens without a consent record (device flow, first-party
     // clients) come from the grant index, unless revoked since.
     const gPrefix = `grant:${encodeURIComponent(identityId)}:`
@@ -2367,17 +2853,21 @@ export class OAuthProvider {
     const subjectToken = input.subject_token
 
     // ── The subject: a live access token of a Person, for api.sb ─────────
-    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number } | null = null
+    let subject: { identityId: string; clientId: string; scopes: string[]; resource?: string; family?: string; act?: ActorClaim; issuer: string; expiresAt: number; grantedAt: number; orgId?: string } | null = null
     if (subjectToken.startsWith('at_')) {
       const rec = await this.storage.get<AccessToken>(`access:${subjectToken}`)
       if (rec && rec.identityId && rec.expiresAt > Date.now() && !(await this.isTokenRevoked(rec))) {
-        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+        subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, issuer: this.config.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt, orgId: rec.orgId }
       }
     } else {
       const rec = await this.verifyAccessTokenJwt(subjectToken)
-      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt }
+      if (rec) subject = { identityId: rec.identityId, clientId: rec.clientId, scopes: rec.scopes, resource: rec.resource, family: rec.family, act: rec.act, issuer: rec.issuer, expiresAt: rec.expiresAt, grantedAt: rec.grantedAt ?? rec.createdAt, orgId: rec.orgId }
     }
     if (!subject) return fail('invalid_grant', 'subject_token is not an active id.org.ai access token')
+    // As at refresh: a workspace's token is exchanged only while the Person is still in it.
+    if (subject.orgId !== undefined && !(await this.isOrgMember(subject.identityId, subject.orgId))) {
+      return fail('invalid_grant', 'No longer a member of the workspace this token was granted for')
+    }
     if (subject.resource === undefined || !isSbResource(subject.resource)) {
       return fail('invalid_target', `only an access token for api.sb (${SB_RESOURCES.join(' or ')}) can be exchanged`)
     }
@@ -2414,11 +2904,53 @@ export class OAuthProvider {
         act,
         notAfter: subject.expiresAt,
         grantedAt: subject.grantedAt,
+        // The subject's workspace: an exchange narrows, it never changes the org.
+        orgId: subject.orgId,
       })
     } catch (err) {
       return fail('invalid_grant', err instanceof Error ? err.message : 'could not issue the token')
     }
     return { ok: true, access_token: minted.token, issued_token_type: ACCESS, token_type: 'Bearer', expires_in: minted.expiresIn, scope: scopes.join(' ') }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRIVATE: Workspace (org_id) validation
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * The consent on record for this request (backend.md#b2): a string is the
+   * workspace whose consent covers it, undefined is consent without a
+   * workspace (a legacy record, which covers any, or one given with none, which
+   * covers only requests naming none), null is none. A workspace is reused
+   * only while the Person is still a member. Without a membership validator,
+   * workspaces don't apply and only consent without one counts.
+   */
+  private async consentOnRecord(identityId: string, rec: ConsentRecord | undefined, scopes: string[], orgHint?: string): Promise<string | undefined | null> {
+    if (!rec) return null
+    const covers = (granted: string[] | undefined) => !!granted && scopes.every((s) => granted.includes(s))
+    const anyOrg = covers(rec.scopes)
+    const withoutOrg = anyOrg || covers(rec.noOrg?.scopes)
+    if (!this.validateOrgMembership) return withoutOrg ? undefined : null
+    if (orgHint) {
+      const named = consentOrgsCovering(rec, scopes).includes(orgHint)
+      return (named || anyOrg) && (await this.isOrgMember(identityId, orgHint)) ? orgHint : null
+    }
+    if (withoutOrg) return undefined
+    for (const org of consentOrgsCovering(rec, scopes)) if (await this.isOrgMember(identityId, org)) return org
+    return null
+  }
+
+  /**
+   * Is `orgId` one of the Person's workspaces? Fails closed: with no
+   * `validateOrgMembership` hook, or when it throws, the answer is no.
+   */
+  private async isOrgMember(identityId: string, orgId: string): Promise<boolean> {
+    if (!this.validateOrgMembership) return false
+    try {
+      return (await this.validateOrgMembership(identityId, orgId)) === true
+    } catch {
+      return false
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2446,123 +2978,6 @@ export class OAuthProvider {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Consent Page
   // ═══════════════════════════════════════════════════════════════════════════
-
-  private renderConsentPage(
-    client: OAuthProviderClient,
-    params: {
-      clientId: string
-      redirectUri: string
-      scope: string
-      state?: string
-      codeChallenge?: string
-      codeChallengeMethod?: string
-      nonce?: string
-      resource?: string
-    },
-  ): Response {
-    const esc = (v: string) => this.escapeHtml(v)
-    const scopes = splitScopes(params.scope)
-    const delegatesDo = scopes.includes(SB_SCOPE_DO)
-    // Every scope string is escaped: a registered client chooses its own
-    // scope names, and this page is served from id.org.ai's origin.
-    const scopeItems = scopes
-      .map((s) => {
-        const text = esc(SCOPE_DESCRIPTIONS[s] ?? s)
-        if (s === SB_SCOPE_DO) return `<div class="scope write">${text}<div class="note">Changes are made in your name. Choose “Allow read only” to keep api.sb read-only.</div></div>`
-        return `<div class="scope">${text}</div>`
-      })
-      .join('\n        ')
-
-    // Name where the answer goes and which resource the access is for, from
-    // values id.org.ai checked (the registered redirect_uri, the RFC 8707
-    // resource), not from the client's self-chosen name.
-    const hostOf = (u: string) => {
-      try {
-        return new URL(u).host
-      } catch {
-        return u
-      }
-    }
-    const returnsTo = hostOf(params.redirectUri)
-    const audience = params.resource ? hostOf(params.resource) : undefined
-    // A CIMD client is named by the host of its client_id URL (which id.org.ai
-    // fetched it from); the document's client_name is only what it calls itself.
-    const cimd = looksLikeCimdClientId(client.id)
-    const appName = cimd ? hostOf(client.id) : client.name
-
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Authorize ${esc(appName)} - id.org.ai</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 420px; margin: 60px auto; padding: 24px; color: #111; }
-    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 8px; }
-    .subtitle { color: #666; margin-bottom: 24px; }
-    .app { display: flex; align-items: center; gap: 12px; padding: 16px; background: #f9f9f9; border-radius: 12px; margin-bottom: 24px; }
-    .app img { width: 40px; height: 40px; border-radius: 8px; }
-    .app-name { font-weight: 600; }
-    .app-url { font-size: 0.875rem; color: #666; }
-    .scopes { margin-bottom: 24px; }
-    .scope { padding: 10px 0; border-bottom: 1px solid #eee; font-size: 0.9375rem; }
-    .scope:last-child { border-bottom: none; }
-    .scope.write { font-weight: 600; }
-    .note { font-weight: 400; font-size: 0.8125rem; color: #8a4b00; margin-top: 4px; }
-    .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
-    button { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
-    button:hover { opacity: 0.85; }
-    .allow { background: #111; color: #fff; }
-    .deny { background: #f0f0f0; color: #333; }
-    .read { background: #e8eefc; color: #123; }
-  </style>
-</head>
-<body>
-  <h1>Authorize application</h1>
-  <p class="subtitle">Grant access to your id.org.ai account</p>
-  <div class="app">
-    ${client.logo ? `<img src="${esc(client.logo)}" alt="">` : ''}
-    <div>
-      <div class="app-name">${esc(appName)}</div>
-      ${cimd ? `<div class="app-url">Calls itself “${esc(client.name)}” · ${esc(client.id)}</div>` : ''}
-      ${client.website && !cimd ? `<div class="app-url">${esc(client.website)}</div>` : ''}
-      <div class="app-url">Returns to ${esc(returnsTo)}</div>
-      ${audience ? `<div class="app-url">Access for ${esc(audience)}</div>` : ''}
-    </div>
-  </div>
-  <div class="scopes">
-    ${scopeItems}
-  </div>
-  <form method="POST" action="/oauth/authorize">
-    <input type="hidden" name="client_id" value="${esc(params.clientId)}">
-    <input type="hidden" name="redirect_uri" value="${esc(params.redirectUri)}">
-    <input type="hidden" name="scope" value="${esc(params.scope)}">
-    ${params.state ? `<input type="hidden" name="state" value="${esc(params.state)}">` : ''}
-    ${params.codeChallenge ? `<input type="hidden" name="code_challenge" value="${esc(params.codeChallenge)}">` : ''}
-    ${params.codeChallengeMethod ? `<input type="hidden" name="code_challenge_method" value="${esc(params.codeChallengeMethod)}">` : ''}
-    ${params.nonce ? `<input type="hidden" name="nonce" value="${esc(params.nonce)}">` : ''}
-    ${params.resource ? `<input type="hidden" name="resource" value="${esc(params.resource)}">` : ''}
-    <div class="buttons">
-      <button type="submit" name="approved" value="false" class="deny">Deny</button>
-      ${delegatesDo ? '<button type="submit" name="approved" value="read" class="read">Allow read only</button>' : ''}
-      <button type="submit" name="approved" value="true" class="allow">Allow</button>
-    </div>
-  </form>
-</body>
-</html>`
-
-    return new Response(html, {
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        // The consent screen must not be framed: a framed "Allow" button can be
-        // clicked by a Person who never saw what it grants (clickjacking).
-        'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "frame-ancestors 'none'",
-        'Cache-Control': 'no-store',
-      },
-    })
-  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PRIVATE: Device Verification Page
@@ -2601,7 +3016,7 @@ export class OAuthProvider {
   ${error ? `<div class="error">${this.escapeHtml(error)}</div>` : ''}
   <form method="POST" action="/device">
     <label for="user_code">Device Code</label>
-    <input type="text" id="user_code" name="user_code" maxlength="8" autocomplete="off" autofocus
+    <input type="text" id="user_code" name="user_code" maxlength="9" autocomplete="off" autofocus
       value="${this.escapeHtml(userCode)}" placeholder="ABCD1234">
     <div class="buttons">
       <button type="submit" name="approved" value="false" class="deny">Deny</button>
@@ -2614,29 +3029,6 @@ export class OAuthProvider {
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     })
-  }
-
-  private deviceApprovedHtml(): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <title>Device Authorized - id.org.ai</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 420px; margin: 60px auto; padding: 24px; color: #111; text-align: center; }
-    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 8px; }
-    .check { font-size: 3rem; margin-bottom: 16px; }
-    .subtitle { color: #666; }
-  </style>
-</head>
-<body>
-  <div class="check">&#10003;</div>
-  <h1>Device Authorized</h1>
-  <p class="subtitle">You can close this window and return to your device or agent.</p>
-</body>
-</html>`
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

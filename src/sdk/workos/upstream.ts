@@ -9,6 +9,7 @@
  *   2. User authenticates at WorkOS
  *   3. GET /callback?code=...&state=... → exchange code → set cookie → redirect
  */
+import { workosUrl } from './base'
 
 // ============================================================================
 // Types
@@ -111,7 +112,7 @@ export interface OrgSelectionError extends Error {
  * @param provider - WorkOS provider (e.g. 'GitHubOAuth', 'GoogleOAuth'). Defaults to 'authkit' (all methods)
  */
 export function buildWorkOSAuthUrl(clientId: string, redirectUri: string, state: string, provider?: string, loginHint?: string): string {
-  const url = new URL('https://api.workos.com/user_management/authorize')
+  const url = new URL(workosUrl('/user_management/authorize'))
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('redirect_uri', redirectUri)
   url.searchParams.set('response_type', 'code')
@@ -148,7 +149,7 @@ export async function exchangeWorkOSCode(
   if (options?.userAgent) params.user_agent = options.userAgent
   if (options?.ipAddress) params.ip_address = options.ipAddress
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -239,7 +240,7 @@ export async function refreshWorkOSAccessToken(
   })
   if (organizationId) params.set('organization_id', organizationId)
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
@@ -274,7 +275,7 @@ export async function exchangeWorkOSOrgSelection(
   if (options?.userAgent) params.user_agent = options.userAgent
   if (options?.ipAddress) params.ip_address = options.ipAddress
 
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),
@@ -304,7 +305,7 @@ export async function exchangeWorkOSOrgSelection(
  */
 export async function fetchWorkOSUser(apiKey: string, userId: string): Promise<WorkOSUser | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -374,7 +375,7 @@ export interface OrgInfo {
  */
 export async function fetchOrgInfo(apiKey: string, orgId: string): Promise<OrgInfo | null> {
   try {
-    const response = await fetch(`https://api.workos.com/organizations/${orgId}`, {
+    const response = await fetch(workosUrl(`/organizations/${orgId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -410,7 +411,7 @@ export async function createWorkOSOrganization(
     if (options?.external_id) body.external_id = options.external_id
     if (options?.metadata) body.metadata = options.metadata
 
-    const response = await fetch('https://api.workos.com/organizations', {
+    const response = await fetch(workosUrl('/organizations'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -446,7 +447,7 @@ export async function createWorkOSMembership(
   roleSlug = 'admin',
 ): Promise<boolean> {
   try {
-    const response = await fetch('https://api.workos.com/user_management/organization_memberships', {
+    const response = await fetch(workosUrl('/user_management/organization_memberships'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -487,7 +488,7 @@ export async function ensurePersonalOrg(
 ): Promise<{ orgId: string; created: boolean } | null> {
   // Check if user already has org memberships
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=1`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?user_id=${userId}&limit=1`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (response.ok) {
@@ -544,7 +545,7 @@ export async function updateWorkOSUser(
   updates: { external_id?: string; metadata?: Record<string, string> },
 ): Promise<boolean> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -584,7 +585,7 @@ export async function listUserOrgMemberships(
   userId: string,
 ): Promise<WorkOSOrganizationMembership[]> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?user_id=${userId}&limit=100`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?user_id=${userId}&limit=100`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return []
@@ -607,7 +608,7 @@ export async function listOrgMembers(
   organizationId: string,
 ): Promise<WorkOSOrganizationMembership[]> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/organization_memberships?organization_id=${organizationId}&limit=100`, {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships?organization_id=${organizationId}&limit=100`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return []
@@ -634,7 +635,7 @@ export async function sendOrgInvitation(
   roleSlug = 'member',
 ): Promise<boolean> {
   try {
-    const response = await fetch('https://api.workos.com/user_management/invitations', {
+    const response = await fetch(workosUrl('/user_management/invitations'), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -675,6 +676,26 @@ export interface WorkOSInvitation {
 }
 
 /**
+ * Fetch one WorkOS organization membership.
+ * Wraps `GET /user_management/organization_memberships/:id`.
+ *
+ * @param apiKey - WorkOS API key
+ * @param membershipId - WorkOS organization membership ID (`om_*`)
+ * @returns The membership, or null when it doesn't exist or the call fails
+ */
+export async function getOrgMembership(apiKey: string, membershipId: string): Promise<WorkOSOrganizationMembership | null> {
+  try {
+    const response = await fetch(workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return null
+    return (await response.json()) as WorkOSOrganizationMembership
+  } catch {
+    return null
+  }
+}
+
+/**
  * Update a member's role on a WorkOS organization membership.
  * Wraps `PUT /user_management/organization_memberships/:id` with `{ role_slug }`.
  *
@@ -690,7 +711,7 @@ export async function updateOrgMembership(
 ): Promise<WorkOSOrganizationMembership | null> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'PUT',
         headers: {
@@ -723,7 +744,7 @@ export async function updateOrgMembership(
 export async function deleteOrgMembership(apiKey: string, membershipId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/organization_memberships/${membershipId}`,
+      workosUrl(`/user_management/organization_memberships/${encodeURIComponent(membershipId)}`),
       {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -756,7 +777,7 @@ export interface WorkOSUserProfile {
 
 export async function fetchWorkOSUserProfile(apiKey: string, userId: string): Promise<WorkOSUserProfile | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/users/${userId}`, {
+    const response = await fetch(workosUrl(`/user_management/users/${userId}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -780,7 +801,7 @@ export async function fetchWorkOSUserProfile(apiKey: string, userId: string): Pr
 export async function listOrgInvitations(apiKey: string, organizationId: string): Promise<WorkOSInvitation[]> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/invitations?organization_id=${organizationId}&limit=100`,
+      workosUrl(`/user_management/invitations?organization_id=${organizationId}&limit=100`),
       { headers: { Authorization: `Bearer ${apiKey}` } },
     )
     if (!response.ok) return []
@@ -801,7 +822,7 @@ export async function listOrgInvitations(apiKey: string, organizationId: string)
  */
 export async function getInvitation(apiKey: string, invitationId: string): Promise<WorkOSInvitation | null> {
   try {
-    const response = await fetch(`https://api.workos.com/user_management/invitations/${invitationId}`, {
+    const response = await fetch(workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}`), {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (!response.ok) return null
@@ -822,7 +843,7 @@ export async function getInvitation(apiKey: string, invitationId: string): Promi
 export async function revokeInvitation(apiKey: string, invitationId: string): Promise<boolean> {
   try {
     const response = await fetch(
-      `https://api.workos.com/user_management/invitations/${invitationId}/revoke`,
+      workosUrl(`/user_management/invitations/${encodeURIComponent(invitationId)}/revoke`),
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -917,7 +938,7 @@ export async function createWorkOSMagicAuth(
   const body: Record<string, string> = { email }
   if (options?.userAgent) body.user_agent = options.userAgent
   if (options?.ipAddress) body.ip_address = options.ipAddress
-  const response = await fetch('https://api.workos.com/user_management/magic_auth', {
+  const response = await fetch(workosUrl('/user_management/magic_auth'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -949,7 +970,7 @@ export async function authenticateWorkOSMagicAuth(
   }
   if (options?.userAgent) params.user_agent = options.userAgent
   if (options?.ipAddress) params.ip_address = options.ipAddress
-  const response = await fetch('https://api.workos.com/user_management/authenticate', {
+  const response = await fetch(workosUrl('/user_management/authenticate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString(),

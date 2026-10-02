@@ -32,6 +32,7 @@ import type { Env } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
 import { isSafeRedirectUrl, canonicalHostname, canonicalOrigin, requestOriginOf } from '../../src/sdk/csrf'
 import { parseTrustedAccountDomains } from '../routes/oauth'
+import { withHashedSecret } from '../../src/sdk/oauth/client-secret'
 
 /** The public origins this worker serves (worker/wrangler.jsonc routes + workers.dev). */
 export const OWN_ORIGINS: readonly string[] = [
@@ -184,6 +185,22 @@ export async function resolveBrowserRedirect(
   return { url: null, outcome: 'refused', host }
 }
 
+/**
+ * resolveBrowserRedirect for the redesigned screens (spec/security.md#redirects):
+ * always enforce, whatever LOGIN_CONTINUE_POLICY says, so a new route never
+ * follows an unlisted target even while the legacy routes run in `report`
+ * (D10 leaves the global switch to the owners).
+ */
+export async function resolveBrowserRedirectStrict(
+  env: Env,
+  raw: string | null | undefined,
+  opts: { requestOrigin: string; clientId?: string },
+): Promise<{ url: string | null; outcome: 'none' | 'accepted' | 'refused'; host?: string }> {
+  if (!raw) return { url: null, outcome: 'none' }
+  const accepted = await resolveContinue(env, raw, opts)
+  return accepted ? { url: accepted, outcome: 'accepted' } : { url: null, outcome: 'refused', host: hostForLog(raw) }
+}
+
 /** The host of a redirect target, for logs (never the full URL). */
 export function hostForLog(url: string): string {
   try {
@@ -197,13 +214,20 @@ export function hostForLog(url: string): string {
 export async function getRegisteredClient(
   env: Env,
   clientId: string,
-): Promise<{ id: string; secret?: string; redirectUris: string[]; tokenEndpointAuthMethod?: string; name?: string } | null> {
+): Promise<{ id: string; secret?: string; secretHash?: string; redirectUris: string[]; tokenEndpointAuthMethod?: string; name?: string } | null> {
   if (!clientId) return null
   const value = (await oauthStorage(env)({ op: 'get', key: `client:${clientId}` })).value as
-    | { id: string; secret?: string; redirectUris?: string[]; tokenEndpointAuthMethod?: string; name?: string }
+    | { id: string; secret?: string; secretHash?: string; redirectUris?: string[]; tokenEndpointAuthMethod?: string; name?: string }
     | undefined
   if (!value?.id) return null
   return { ...value, redirectUris: Array.isArray(value.redirectUris) ? value.redirectUris : [] }
+}
+
+/** Rewrite a client record's legacy plaintext secret as its hash (B13.5). */
+export async function rehashLegacyClientSecret(env: Env, clientId: string): Promise<void> {
+  const store = oauthStorage(env)
+  const value = (await store({ op: 'get', key: `client:${clientId}` })).value as { secret?: string } | undefined
+  if (value?.secret) await store({ op: 'put', key: `client:${clientId}`, value: await withHashedSecret(value) })
 }
 
 /**

@@ -340,6 +340,7 @@ export class AuthBrokerImpl implements AuthBroker {
             level: 2,
             claimStatus: 'claimed',
             scopes: wos.permissions ?? ['read', 'write'],
+            credential: 'workos-key',
           }
         }
       }

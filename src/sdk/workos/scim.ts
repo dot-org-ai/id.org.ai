@@ -12,6 +12,7 @@
  * directory_group_members). Users are never hard-deleted — deactivation
  * sets state to 'suspended'.
  */
+import { workosUrl } from './base'
 
 // ============================================================================
 // Types
@@ -420,7 +421,7 @@ export async function getAdminPortalUrl(
   organizationId: string,
   workosApiKey: string,
 ): Promise<{ url: string }> {
-  const response = await fetch('https://api.workos.com/portal/generate_link', {
+  const response = await fetch(workosUrl('/portal/generate_link'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

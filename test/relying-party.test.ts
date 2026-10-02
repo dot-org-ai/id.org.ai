@@ -132,7 +132,7 @@ function authorizeUrl(clientId: string, challenge: string, state: string, extra:
 /** Parse the consent page's hidden form fields. */
 function consentFields(html: string): Record<string, string> {
   const fields: Record<string, string> = {}
-  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"\s*\/?>/g)) {
     fields[m[1]!] = m[2]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
   }
   return fields

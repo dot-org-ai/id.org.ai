@@ -684,7 +684,9 @@ describe('OAuthProvider', () => {
       expect(res.headers.get('Content-Type')).toContain('text/html')
       const html = await res.text()
       expect(html).toContain('Authorize application')
-      expect(html).toContain('Untrusted')
+      // Every DCR client is unverified (D3): named by its registered redirect host, never its own name.
+      expect(html).toContain(`<div class="app-name">${new URL(redir).host}</div>`)
+      expect(html).not.toContain('Untrusted')
     })
 
     it('trusted client skips consent', async () => {
@@ -825,7 +827,9 @@ describe('OAuthProvider', () => {
       await provider.handleAuthorizeConsent(req, 'user-1')
       const c = await storage.get<Record<string, unknown>>(`consent:user-1:${untrustedId}`)
       expect(c).toBeDefined()
-      expect((c!.scopes as string[])).toContain('email')
+      // A consent with no workspace is its own entry (phase 5 review S2), never "any workspace".
+      expect((c!.noOrg as { scopes: string[] }).scopes).toContain('email')
+      expect(c!.scopes).toEqual([])
     })
 
     it('rejects unknown client_id', async () => {
@@ -1069,9 +1073,10 @@ describe('OAuthProvider', () => {
     it('initiates device authorization', async () => {
       const d = await initDevice()
       expect((d.device_code as string).startsWith('dc_')).toBe(true)
-      expect((d.user_code as string).length).toBe(8)
+      // XXXX-XXXX for people to read (backend.md#b3); typed with or without the hyphen.
+      expect(d.user_code as string).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/)
       expect(d.verification_uri).toBe('https://id.org.ai/device')
-      expect(d.verification_uri_complete).toContain('user_code=')
+      expect(d.verification_uri_complete).toBe(`https://id.org.ai/device?code=${d.user_code}`)
       expect(d.expires_in).toBe(1800)
       expect(d.interval).toBe(5)
     })
@@ -1116,10 +1121,7 @@ describe('OAuthProvider', () => {
 
     it('returns access_denied when user denies', async () => {
       const d = await initDevice()
-      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'false' }),
-      }), 'user-1')
+      await provider.decideDevice({ code: d.user_code as string, identityId: 'user-1', decision: 'deny' })
 
       const res = await provider.handleToken(makeTokenRequest({
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
@@ -1129,11 +1131,8 @@ describe('OAuthProvider', () => {
 
     it('full device flow: init -> approve -> tokens', async () => {
       const d = await initDevice()
-      const approveRes = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
-      }), 'user-1')
-      expect(await approveRes.text()).toContain('Device Authorized')
+      const approveRes = await provider.decideDevice({ code: d.user_code as string, identityId: 'user-1', decision: 'approve' })
+      expect(approveRes).toMatchObject({ ok: true, state: 'approved' })
 
       const res = await provider.handleToken(makeTokenRequest({
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
@@ -1184,10 +1183,7 @@ describe('OAuthProvider', () => {
 
     it('device code is one-time use', async () => {
       const d = await initDevice()
-      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
-      }), 'user-1')
+      await provider.decideDevice({ code: d.user_code as string, identityId: 'user-1', decision: 'approve' })
 
       const body = { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid }
       expect((await provider.handleToken(makeTokenRequest(body))).status).toBe(200)
@@ -1210,20 +1206,22 @@ describe('OAuthProvider', () => {
       expect(html).toContain('ABCD1234')
     })
 
-    it('shows error for short user code', async () => {
-      const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: 'ABC', approved: 'true' }),
-      }), 'user-1')
-      expect(await res.text()).toContain('valid 8-character code')
+    it('refuses a decision on a short or unknown code', async () => {
+      expect(await provider.decideDevice({ code: 'ABC', identityId: 'user-1', decision: 'approve' })).toMatchObject({ ok: false, error: 'expired' })
+      expect(await provider.decideDevice({ code: 'ZZZZ-ZZZZ', identityId: 'user-1', decision: 'approve' })).toMatchObject({ ok: false, error: 'expired' })
     })
 
-    it('shows error for non-existent user code', async () => {
+    it('no longer takes a decision as a POST to the page (it had no CSRF token)', async () => {
+      const d = await initDevice()
       const res = await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: 'ZZZZZZZZ', approved: 'true' }),
+        body: new URLSearchParams({ user_code: d.user_code as string, approved: 'true' }),
       }), 'user-1')
-      expect(await res.text()).toContain('Invalid or expired code')
+      expect(res.status).toBe(405)
+      const poll = await provider.handleToken(makeTokenRequest({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: d.device_code as string, client_id: dcid,
+      }))
+      expect((await poll.json() as Record<string, unknown>).error).toBe('authorization_pending')
     })
 
     it('rejects PUT method for device verification', async () => {
@@ -1620,10 +1618,7 @@ describe('OAuthProvider', () => {
       expect(p.error).toBe('authorization_pending')
 
       // Approve
-      await provider.handleDeviceVerification(new Request('https://id.org.ai/device', {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ user_code: init.user_code as string, approved: 'true' }),
-      }), 'user-2')
+      await provider.decideDevice({ code: init.user_code as string, identityId: 'user-2', decision: 'approve' })
 
       // Tokens
       const t = await (await provider.handleToken(makeTokenRequest({

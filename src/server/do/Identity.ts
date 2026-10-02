@@ -40,6 +40,7 @@ import type { CredentialFactService, CredentialVerificationEvent, HeldCredential
 import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
+import { configureWorkOSBase } from '../../sdk/workos/base'
 import { isClaimedBranch } from '../../sdk/claim/policy'
 
 // ============================================================================
@@ -72,6 +73,9 @@ export interface IdentityEnv {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
+
+  // Test seam: the local WorkOS stub in dev (src/sdk/workos/base.ts); unset in production
+  WORKOS_API_BASE?: string
 }
 
 // ============================================================================
@@ -83,6 +87,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   constructor(ctx: DurableObjectState, env: IdentityEnv) {
     super(ctx, env)
+    // The DO can run in its own isolate; give its WorkOS calls the same base as the worker's.
+    configureWorkOSBase(env)
     ctx.blockConcurrencyWhile(async () => {
       const done = await ctx.storage.get<boolean>('_idx_backfilled')
       if (!done) {

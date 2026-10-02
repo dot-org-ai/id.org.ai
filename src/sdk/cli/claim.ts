@@ -2,6 +2,10 @@ import { execSync } from 'child_process'
 import { writeClaimWorkflow } from '../claim/workflow-fs'
 import { getClaimStatus } from '../claim/client'
 import type { ProvisionStorage } from './provision-storage'
+import { cleanText, terminalSafeJson } from './untrusted'
+
+/** Runs a git command; returns its output, trimmed, or throws when it fails. */
+export type GitExec = (command: string) => string
 
 export interface ClaimCommandOptions {
   baseUrl: string
@@ -9,13 +13,13 @@ export interface ClaimCommandOptions {
   token?: string
   noPush: boolean
   storage: ProvisionStorage
+  /** Runs the git commands. Tests pass a fake, so no git runs. */
+  exec?: GitExec
 }
 
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
-}
+const runGit: GitExec = (cmd) => execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
 
-function isGitRepo(): boolean {
+function isGitRepo(exec: GitExec): boolean {
   try {
     exec('git rev-parse --is-inside-work-tree')
     return true
@@ -24,13 +28,10 @@ function isGitRepo(): boolean {
   }
 }
 
-function getRepoRoot(): string {
-  return exec('git rev-parse --show-toplevel')
-}
-
 export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
+  const exec = opts.exec ?? runGit
   try {
-    if (!isGitRepo()) {
+    if (!isGitRepo(exec)) {
       console.error('Not a git repository. Run this from inside the repo you want to claim.')
       process.exit(1)
     }
@@ -43,7 +44,7 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
       process.exit(1)
     }
 
-    const repoRoot = getRepoRoot()
+    const repoRoot = exec('git rev-parse --show-toplevel')
 
     const filePath = await writeClaimWorkflow(claimToken, repoRoot)
     console.log(`  Generated ${filePath.replace(repoRoot + '/', '')}`)
@@ -72,11 +73,12 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
     }
 
     if (opts.json) {
-      console.log(JSON.stringify({ claimToken, confirmed, level: confirmed ? 2 : 1 }))
+      // JSON.stringify leaves C1 and bidi characters raw; the claim token may have come from a server.
+      console.log(terminalSafeJson({ claimToken, confirmed, level: confirmed ? 2 : 1 }))
     }
   } catch (err) {
     if (err instanceof Error && err.message === 'exit') throw err
-    console.error(`Claim failed: ${err instanceof Error ? err.message : err}`)
+    console.error(`Claim failed: ${cleanText(err instanceof Error ? err.message : err)}`)
     process.exit(1)
   }
 }

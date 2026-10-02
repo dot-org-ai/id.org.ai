@@ -47,18 +47,19 @@
  * path's per-address guess budget and the per-IP guess budget; a code sent
  * here starts this path's guess budget afresh.
  */
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { renderErrorPage } from '../ui/errors'
 import type { Env, Variables } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
-import { constantTimeEqual } from '../../src/sdk/oauth/pkce'
+import { checkClientSecret, clientHasSecret } from '../../src/sdk/oauth/client-secret'
 import {
   createWorkOSMagicAuth,
   authenticateWorkOSMagicAuth,
   encodeLoginState,
 } from '../../src/sdk/workos/upstream'
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
-import { resolveContinue, getRegisteredClient, canonicalOrigin, requestOriginOf } from '../utils/relying-parties'
+import { resolveContinue, getRegisteredClient, canonicalOrigin, requestOriginOf, rehashLegacyClientSecret } from '../utils/relying-parties'
 import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
@@ -311,8 +312,11 @@ app.post('/api/magic-link', async (c) => {
   // ── Caller authentication: a confidential client, by its secret ──────
   // Only that. Callers inside the account use AuthService.sendMagicLink.
   const client = clientId ? await getRegisteredClient(c.env, clientId) : null
-  const confidential = !!client?.secret && client.tokenEndpointAuthMethod !== 'none'
-  if (!client || !confidential || !clientSecret || !(await constantTimeEqual(clientSecret, client.secret!))) {
+  const confidential = clientHasSecret(client) && client!.tokenEndpointAuthMethod !== 'none'
+  const match = confidential ? await checkClientSecret(client, clientSecret) : null
+  // A legacy plaintext secret is rewritten hashed on its first good use (B13.5).
+  if (match === 'legacy') await rehashLegacyClientSecret(c.env, clientId)
+  if (!client || !match) {
     return c.json(
       { error: 'invalid_client', error_description: 'A registered confidential client (client_id + client_secret) is required' },
       401,
@@ -370,12 +374,9 @@ button,a.btn{display:block;width:100%;padding:14px;font-size:16px;font-weight:50
   return new Response(html, { status, headers })
 }
 
-function expiredPage(): Response {
-  return page(
-    'Link expired',
-    `<h1>This sign-in link has expired</h1><p>Sign-in links last 10 minutes and work once. Ask for a new one, or sign in another way.</p><a class="btn" href="/login">Sign in</a>`,
-    410,
-  )
+/** 7b: the flow expired or was used (the error template; spec/screens.md#7b). */
+function expiredPage(c: Context<{ Bindings: Env; Variables: Variables }>): Promise<Response> {
+  return renderErrorPage(c, 'expired', { requestId: c.get('requestId'), expired: { what: 'sign-in link' } }, 410)
 }
 
 function codeForm(flowId: string, flow: MagicFlow, opts: { code?: string; error?: string } = {}): string {
@@ -392,7 +393,7 @@ ${opts.error ? `<div class="e">${escapeHtml(opts.error)}</div>` : ''}
 app.get('/magic-link/:flow', async (c) => {
   const flowId = c.req.param('flow')
   const flow = await loadFlow(c.env, flowId)
-  if (!flow) return expiredPage()
+  if (!flow) return expiredPage(c)
   // Bind the form to this browser: the POST must come from the browser that
   // opened this page (login-CSRF guard on top of the Origin check).
   const secure = new URL(c.req.url).protocol === 'https:'
@@ -407,7 +408,7 @@ app.post('/magic-link/:flow', async (c) => {
 
   const flowId = c.req.param('flow')
   const flow = await loadFlow(c.env, flowId)
-  if (!flow) return expiredPage()
+  if (!flow) return expiredPage(c)
 
   if (parseCookieValue(c.req.header('cookie') || '', FLOW_COOKIE) !== flowId) {
     return page('Sign in', codeForm(flowId, flow, { error: 'Open the sign-in link again in this browser, then enter your code.' }), 403)
@@ -429,7 +430,7 @@ app.post('/magic-link/:flow', async (c) => {
   })
   if (!attempt.allowed) {
     await endFlow(c.env, flowId)
-    return expiredPage()
+    return expiredPage(c)
   }
   // ...and against this path's guess budget for the address and this IP's
   // guess budget, so new flows cannot buy more guesses.
@@ -467,7 +468,7 @@ app.post('/magic-link/:flow', async (c) => {
     if (status === 400 || status === 401 || status === 403 || status === 404) {
       if (attempt.count >= MAX_CODE_ATTEMPTS) {
         await endFlow(c.env, flowId)
-        return expiredPage()
+        return expiredPage(c)
       }
       return page('Sign in', codeForm(flowId, flow, { error: 'That code is not valid or has expired.' }), 400)
     }

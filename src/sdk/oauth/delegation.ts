@@ -26,6 +26,8 @@
  */
 
 /** The OIDC scopes every client may request (unchanged). */
+import { REGISTRY_SUMMARIES } from './scope-registry'
+
 export const OIDC_SCOPES = ['openid', 'profile', 'email', 'offline_access'] as const
 
 /** Read api.sb as the Person: search and fetch. */
@@ -38,14 +40,11 @@ export const SB_SCOPES = [SB_SCOPE_READ, SB_SCOPE_DO] as const
 export const SCOPES_SUPPORTED: string[] = [...OIDC_SCOPES, ...SB_SCOPES]
 
 /** What the consent screen says each scope delegates. */
-export const SCOPE_DESCRIPTIONS: Record<string, string> = {
-  openid: 'Verify your identity',
-  profile: 'View your name and profile picture',
-  email: 'View your email address',
-  offline_access: 'Access your data while you are offline',
-  [SB_SCOPE_READ]: 'Read your Startups on api.sb (search and fetch)',
-  [SB_SCOPE_DO]: 'Act for you on api.sb: run Verbs that change your Startups',
-}
+/**
+ * One line per scope. Kept for API compatibility; derived from the scope
+ * registry (scope-registry.ts), which holds the per-context copy screens use.
+ */
+export const SCOPE_DESCRIPTIONS: Record<string, string> = { ...REGISTRY_SUMMARIES }
 
 /** The api.sb resources (RFC 8707 audiences) the sb scopes may be granted for. */
 export const SB_RESOURCES = ['https://api.sb', 'https://api.sb/mcp'] as const

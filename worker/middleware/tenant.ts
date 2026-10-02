@@ -12,6 +12,7 @@ import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import { parseCookieValue } from '../utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
+import { workosUrl } from '../../src/sdk/workos/base'
 
 /**
  * Get a DO stub for a specific identity shard.
@@ -141,6 +142,24 @@ export async function readSessionSignIn(
 }
 
 /**
+ * The organization the browser session is in (the `auth` cookie JWT's `org.id`),
+ * verified like readSessionSignIn. Consent preselects it when the request names none.
+ */
+export async function readSessionOrgId(request: Request, env: Env): Promise<string | undefined> {
+  const cookie = request.headers.get('cookie')
+  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
+  if (!jwt) return undefined
+  try {
+    const jwks = await getSigningKeyManager(env).getJWKS()
+    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const org = payload.org as { id?: unknown } | undefined
+    return typeof org?.id === 'string' ? org.id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Resolve the identity ID from a claim token via KV.
  */
 export async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<string | null> {
@@ -160,7 +179,7 @@ const JWKS_TTL_MS = 10 * 60 * 1000 // 10 minutes
 export async function getLocalJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
   if (_localJwks && Date.now() - _jwksFetchedAt < JWKS_TTL_MS) return _localJwks
 
-  const keys = await fetch(`https://api.workos.com/sso/jwks/${clientId}`)
+  const keys = await fetch(workosUrl(`/sso/jwks/${clientId}`))
     .then((r) => r.json() as Promise<{ keys: jose.JWK[] }>)
     .then((j) => j.keys)
   _localJwks = jose.createLocalJWKSet({ keys })

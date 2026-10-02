@@ -563,7 +563,7 @@ describe('3. sb:read / sb:do', () => {
     const back = new URL(res.headers.get('location')!)
     const { body } = await redeem(provider, clientId, back.searchParams.get('code')!)
     expect(body.scope).toBe('sb:read')
-    expect((await storage.get<{ scopes: string[] }>(`consent:${PERSON}:${clientId}`))!.scopes).toEqual(['sb:read'])
+    expect((await storage.get<{ noOrg?: { scopes: string[] } }>(`consent:${PERSON}:${clientId}`))!.noOrg?.scopes).toEqual(['sb:read'])
   })
 
   it('step-up: consent to sb:read does not cover sb:do; asking for it shows the screen again', async () => {

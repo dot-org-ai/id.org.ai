@@ -1,0 +1,707 @@
+{
+  "version": 1,
+  "fonts": {
+    "sans": "fonts/Geist-Variable.woff2",
+    "mono": "fonts/GeistMono-Variable.woff2",
+    "source": "geist@1.7.2"
+  },
+  "screenshot": {
+    "animations": "disabled",
+    "note": "Screenshots disable CSS animations so they are deterministic."
+  },
+  "screens": [
+    {
+      "id": "0",
+      "slug": "0-flow-map",
+      "title": "0 · Flow map",
+      "board": "FlowMap.dc.html",
+      "kind": "fixed",
+      "file": "screens/0-flow-map.html",
+      "viewports": {
+        "desktop": [
+          1984,
+          640
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1a",
+      "slug": "1a-sign-in",
+      "title": "1a · Sign in",
+      "board": "Main.dc.html",
+      "kind": "screen",
+      "file": "screens/1a-sign-in.html",
+      "viewports": {
+        "desktop": [
+          720,
+          900
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1b",
+      "slug": "1b-email-code",
+      "title": "1b · Email code",
+      "board": "EmailCode.dc.html",
+      "kind": "screen",
+      "file": "screens/1b-email-code.html",
+      "viewports": {
+        "desktop": [
+          720,
+          700
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1c",
+      "slug": "1c-sso",
+      "title": "1c · SSO domain",
+      "board": "SSO.dc.html",
+      "kind": "screen",
+      "file": "screens/1c-sso.html",
+      "viewports": {
+        "desktop": [
+          720,
+          720
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1d",
+      "slug": "1d-first-run",
+      "title": "1d · First run",
+      "board": "Welcome.dc.html",
+      "kind": "screen",
+      "file": "screens/1d-first-run.html",
+      "viewports": {
+        "desktop": [
+          720,
+          800
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1e",
+      "slug": "1e-link-account",
+      "title": "1e · Email already has an account",
+      "board": "LinkAccount.dc.html",
+      "kind": "screen",
+      "file": "screens/1e-link-account.html",
+      "viewports": {
+        "desktop": [
+          720,
+          720
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1f",
+      "slug": "1f-provider-fallback",
+      "title": "1f · Provider sign-in failed",
+      "board": "ProviderFallback.dc.html",
+      "kind": "screen",
+      "file": "screens/1f-provider-fallback.html",
+      "viewports": {
+        "desktop": [
+          720,
+          680
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "1g",
+      "slug": "1g-branded-sign-in",
+      "title": "1g · Branded for an app",
+      "board": "WhiteLabel.dc.html",
+      "kind": "screen",
+      "file": "screens/1g-branded-sign-in.html",
+      "viewports": {
+        "desktop": [
+          720,
+          900
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "2a",
+      "slug": "2a-account-chooser",
+      "title": "2a · Choose account",
+      "board": "AccountChooser.dc.html",
+      "kind": "screen",
+      "file": "screens/2a-account-chooser.html",
+      "viewports": {
+        "desktop": [
+          720,
+          780
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "2b",
+      "slug": "2b-workspace-chooser",
+      "title": "2b · Choose workspace",
+      "board": "WorkspaceChooser.dc.html",
+      "kind": "screen",
+      "file": "screens/2b-workspace-chooser.html",
+      "viewports": {
+        "desktop": [
+          720,
+          1020
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "2c",
+      "slug": "2c-handoff",
+      "title": "2c · Handing off",
+      "board": "Handoff.dc.html",
+      "kind": "screen",
+      "file": "screens/2c-handoff.html",
+      "viewports": {
+        "desktop": [
+          720,
+          640
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "2d",
+      "slug": "2d-connect-motion",
+      "title": "2d · Connect motion",
+      "board": "Motion.dc.html",
+      "kind": "fixed",
+      "file": "screens/2d-connect-motion.html",
+      "viewports": {
+        "desktop": [
+          1280,
+          1000
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "2e",
+      "slug": "2e-invitation",
+      "title": "2e · Accept invitation",
+      "board": "Invite.dc.html",
+      "kind": "screen",
+      "file": "screens/2e-invitation.html",
+      "viewports": {
+        "desktop": [
+          720,
+          780
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "3a",
+      "slug": "3a-consent",
+      "title": "3a · Authorize app (read + act)",
+      "board": "Consent.dc.html",
+      "kind": "screen",
+      "file": "screens/3a-consent.html",
+      "viewports": {
+        "desktop": [
+          720,
+          1180
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/3a-consent--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "3b",
+      "slug": "3b-consent-basic",
+      "title": "3b · Sign in with id.org.ai",
+      "board": "ConsentBasic.dc.html",
+      "kind": "screen",
+      "file": "screens/3b-consent-basic.html",
+      "viewports": {
+        "desktop": [
+          720,
+          700
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/3b-consent-basic--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "3c",
+      "slug": "3c-consent-unverified",
+      "title": "3c · Unverified app",
+      "board": "ConsentUnverified.dc.html",
+      "kind": "screen",
+      "file": "screens/3c-consent-unverified.html",
+      "viewports": {
+        "desktop": [
+          720,
+          920
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/3c-consent-unverified--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "3d",
+      "slug": "3d-admin-approve",
+      "title": "3d · Admin approves an app",
+      "board": "AdminApprove.dc.html",
+      "kind": "screen",
+      "file": "screens/3d-admin-approve.html",
+      "viewports": {
+        "desktop": [
+          720,
+          1140
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/3d-admin-approve--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "4a",
+      "slug": "4a-cli-terminal",
+      "title": "4a · CLI login (terminal)",
+      "board": "Terminal.dc.html",
+      "kind": "fixed",
+      "file": "screens/4a-cli-terminal.html",
+      "viewports": {
+        "desktop": [
+          800,
+          600
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "4b",
+      "slug": "4b-device-confirm",
+      "title": "4b · Confirm device code (live: Confirm or Cancel)",
+      "board": "DeviceConfirm.dc.html",
+      "kind": "screen",
+      "file": "screens/4b-device-confirm.html",
+      "viewports": {
+        "desktop": [
+          720,
+          1100
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "connecting",
+          "file": "screens/4b-device-confirm--connecting.html"
+        },
+        {
+          "name": "verdict",
+          "file": "screens/4b-device-confirm--verdict.html"
+        },
+        {
+          "name": "signed",
+          "file": "screens/4b-device-confirm--signed.html"
+        },
+        {
+          "name": "cancelling",
+          "file": "screens/4b-device-confirm--cancelling.html"
+        },
+        {
+          "name": "cancelled",
+          "file": "screens/4b-device-confirm--cancelled.html"
+        }
+      ]
+    },
+    {
+      "id": "4c",
+      "slug": "4c-device-entry",
+      "title": "4c · Enter device code",
+      "board": "DeviceEntry.dc.html",
+      "kind": "screen",
+      "file": "screens/4c-device-entry.html",
+      "viewports": {
+        "desktop": [
+          720,
+          680
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "4d",
+      "slug": "4d-device-done",
+      "title": "4d · Device connected",
+      "board": "DeviceDone.dc.html",
+      "kind": "screen",
+      "file": "screens/4d-device-done.html",
+      "viewports": {
+        "desktop": [
+          720,
+          660
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "5a",
+      "slug": "5a-agent-approve",
+      "title": "5a · Approve an agent",
+      "board": "AgentConnect.dc.html",
+      "kind": "screen",
+      "file": "screens/5a-agent-approve.html",
+      "viewports": {
+        "desktop": [
+          720,
+          1000
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/5a-agent-approve--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "5b",
+      "slug": "5b-action-approval",
+      "title": "5b · Approve an action (phone)",
+      "board": "ActionApproval.dc.html",
+      "kind": "phone",
+      "file": "screens/5b-action-approval.html",
+      "viewports": {
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "5c",
+      "slug": "5c-claim",
+      "title": "5c · Claim agent work",
+      "board": "Claim.dc.html",
+      "kind": "screen",
+      "file": "screens/5c-claim.html",
+      "viewports": {
+        "desktop": [
+          720,
+          860
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "5d",
+      "slug": "5d-claim-repo",
+      "title": "5d · Claim from a repository",
+      "board": "ClaimRepo.dc.html",
+      "kind": "screen",
+      "file": "screens/5d-claim-repo.html",
+      "viewports": {
+        "desktop": [
+          720,
+          980
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/5d-claim-repo--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "6a",
+      "slug": "6a-step-up",
+      "title": "6a · Confirm it’s you",
+      "board": "StepUp.dc.html",
+      "kind": "screen",
+      "file": "screens/6a-step-up.html",
+      "viewports": {
+        "desktop": [
+          720,
+          640
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "6b",
+      "slug": "6b-sign-out",
+      "title": "6b · Sign out",
+      "board": "SignOut.dc.html",
+      "kind": "screen",
+      "file": "screens/6b-sign-out.html",
+      "viewports": {
+        "desktop": [
+          720,
+          900
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "6c",
+      "slug": "6c-add-passkey",
+      "title": "6c · Add a passkey",
+      "board": "AddPasskey.dc.html",
+      "kind": "screen",
+      "file": "screens/6c-add-passkey.html",
+      "viewports": {
+        "desktop": [
+          720,
+          640
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "6d",
+      "slug": "6d-two-step",
+      "title": "6d · Two-step code",
+      "board": "TwoStep.dc.html",
+      "kind": "screen",
+      "file": "screens/6d-two-step.html",
+      "viewports": {
+        "desktop": [
+          720,
+          660
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "7a",
+      "slug": "7a-error-app",
+      "title": "7a · Misconfigured app",
+      "board": "ErrorApp.dc.html",
+      "kind": "screen",
+      "file": "screens/7a-error-app.html",
+      "viewports": {
+        "desktop": [
+          720,
+          840
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": [
+        {
+          "name": "copied",
+          "file": "screens/7a-error-app--copied.html"
+        }
+      ]
+    },
+    {
+      "id": "7b",
+      "slug": "7b-error-expired",
+      "title": "7b · Expired link",
+      "board": "ErrorExpired.dc.html",
+      "kind": "screen",
+      "file": "screens/7b-error-expired.html",
+      "viewports": {
+        "desktop": [
+          720,
+          640
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "7c",
+      "slug": "7c-error-blocked",
+      "title": "7c · Blocked by workspace policy",
+      "board": "ErrorBlocked.dc.html",
+      "kind": "screen",
+      "file": "screens/7c-error-blocked.html",
+      "viewports": {
+        "desktop": [
+          720,
+          720
+        ],
+        "phone": [
+          390,
+          844
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "8a",
+      "slug": "8a-email-sign-in-code",
+      "title": "8a · Sign-in code email",
+      "board": "CodeMail.dc.html",
+      "kind": "fixed",
+      "file": "screens/8a-email-sign-in-code.html",
+      "viewports": {
+        "desktop": [
+          640,
+          640
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "8b",
+      "slug": "8b-email-invitation",
+      "title": "8b · Invitation email",
+      "board": "InviteMail.dc.html",
+      "kind": "fixed",
+      "file": "screens/8b-email-invitation.html",
+      "viewports": {
+        "desktop": [
+          640,
+          620
+        ]
+      },
+      "states": []
+    },
+    {
+      "id": "8c",
+      "slug": "8c-email-sign-in-alert",
+      "title": "8c · New sign-in alert email",
+      "board": "AlertMail.dc.html",
+      "kind": "fixed",
+      "file": "screens/8c-email-sign-in-alert.html",
+      "viewports": {
+        "desktop": [
+          640,
+          680
+        ]
+      },
+      "states": []
+    }
+  ]
+}

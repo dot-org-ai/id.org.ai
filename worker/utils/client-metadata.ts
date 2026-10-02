@@ -40,7 +40,7 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
     all.set(c, off)
     off += c.byteLength
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(all)
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(all)
 }
 
 export const fetchClientMetadataDocument: ClientMetadataFetcher = async (clientId) => {

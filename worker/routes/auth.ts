@@ -30,6 +30,7 @@ import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/u
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
 import { resolveBrowserRedirect, requestOriginOf, canonicalOrigin } from '../utils/relying-parties'
+import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 
 /** Where a sign-in lands when no acceptable `continue` was given. */
 const DEFAULT_CONTINUE = '/dash/profile'
@@ -112,7 +113,9 @@ app.get('/login', async (c) => {
   // If the user already has a valid session, skip WorkOS and redirect to continue URL.
   // This prevents conflicts when e.g. CLI device flow redirects here while user is logged in,
   // or when WorkOS has its own active session that conflicts with a new auth request.
-  const identityId = await resolveIdentityId(c.req.raw, c.env)
+  // OIDC prompt=login (consent's "Switch"): sign in again even with a session.
+  const promptLogin = c.req.query('prompt') === 'login'
+  const identityId = promptLogin ? null : await resolveIdentityId(c.req.raw, c.env)
   if (identityId) {
     const redirectTo = continueUrl.startsWith('http') ? continueUrl : `${requestOriginOf(c.req.url)}${continueUrl}`
     return c.redirect(redirectTo, 302)
@@ -128,7 +131,7 @@ app.get('/login', async (c) => {
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    return renderProviderPicker(continueUrl, loginHint)
+    return renderProviderPicker(continueUrl, loginHint, promptLogin)
   }
 
   const csrf = crypto.randomUUID()
@@ -155,7 +158,8 @@ app.get('/login', async (c) => {
   // we can't use that domain's callback URL because it's not registered in WorkOS.
   // The requesting origin is stored in state.origin for the cross-origin bounce after auth.
   const CANONICAL_ORIGINS = ['https://id.org.ai', 'https://oauth.dotdo.workers.dev']
-  const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) ? requestOrigin : 'https://id.org.ai'
+  // Local dev against the WorkOS stub (src/sdk/workos/base.ts) keeps its own loopback callback.
+  const callbackOrigin = CANONICAL_ORIGINS.includes(requestOrigin) || isLocalStubOrigin(c.env, requestOrigin) ? requestOrigin : 'https://id.org.ai'
   const redirectUri = `${callbackOrigin}/api/callback`
   const authUrl = buildWorkOSAuthUrl(clientId, redirectUri, state, safeProvider, loginHint)
   // Store state in cookie so we can recover it if WorkOS drops the state param
@@ -768,14 +772,21 @@ app.post('/api/session/organization', async (c) => {
     const localJwks = jose.createLocalJWKSet(jwks)
     const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
 
-    // Validate the user is a member of the target org
+    // Validate the user is a member of the target org, and take their role there:
+    // roles and permissions belong to an organization, so the previous org's
+    // never carry over (B13.4). WorkOS permissions come back on the next sign-in
+    // or refresh scoped to this org; until then the session has none.
     const apiKey = c.env.WORKOS_API_KEY
+    let switchedRoles = payload.roles as string[] | undefined
+    let switchedPermissions = payload.permissions as string[] | undefined
     if (apiKey && payload.sub) {
       const memberships = await listUserOrgMemberships(apiKey, payload.sub)
-      const isMember = memberships.some((m) => m.organization_id === body.organizationId)
-      if (!isMember) {
+      const membership = memberships.find((m) => m.organization_id === body.organizationId)
+      if (!membership) {
         return c.json({ error: 'User is not a member of this organization' }, 403)
       }
+      switchedRoles = membership.role?.slug ? [membership.role.slug] : []
+      switchedPermissions = []
     }
 
     // Fetch org info for the new org
@@ -793,8 +804,8 @@ app.post('/api/session/organization', async (c) => {
         githubId: payload.githubId as string | undefined,
         githubUsername: payload.githubUsername as string | undefined,
         org: { id: body.organizationId, name: orgInfo?.name, domains: orgInfo?.domains?.length ? orgInfo.domains : undefined },
-        roles: payload.roles as string[] | undefined,
-        permissions: payload.permissions as string[] | undefined,
+        roles: switchedRoles,
+        permissions: switchedPermissions,
         ...(isSuperadmin ? { platformRole: 'superadmin' } : {}),
         // Switching org is not a new sign-in: keep how and when they signed in
         ...(Array.isArray(payload.amr) ? { amr: payload.amr as string[] } : {}),
@@ -820,8 +831,8 @@ app.post('/api/session/organization', async (c) => {
     const nameParts = fullName.trim().split(/\s+/)
     const firstName = nameParts[0] || null
     const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : null
-    const roles = (payload.roles as string[]) || []
-    const permissions = (payload.permissions as string[]) || []
+    const roles = switchedRoles ?? []
+    const permissions = switchedPermissions ?? []
 
     const user = {
       id: payload.sub || '',

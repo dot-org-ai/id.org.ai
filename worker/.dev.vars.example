@@ -1,0 +1,30 @@
+# Local development only. Copy to worker/.dev.vars (gitignored); `wrangler dev` reads it.
+#   cp worker/.dev.vars.example worker/.dev.vars
+#   pnpm dev:stub      # the WorkOS stub on :8788 (STUB_PORT to change)
+#   pnpm dev:worker    # wrangler dev on :8787 (PORT to change), with --local-upstream
+# Nothing here is a real secret. Never copy these into wrangler.jsonc.
+
+# Design gallery at /__design (never set in wrangler.jsonc).
+DESIGN_GALLERY=1
+
+# WorkOS goes to the local stub (node test-visual/workos-stub.mjs), never to api.workos.com.
+WORKOS_API_BASE=http://127.0.0.1:8788
+WORKOS_API_KEY=sk_test_local_stub
+WORKOS_CLIENT_ID=client_local_stub
+REDIRECT_URI=http://localhost:8787/api/callback
+
+# Placeholder signing secrets so the worker boots.
+AUTH_SECRET=dev-only-auth-secret-not-a-secret
+JWKS_SECRET=dev-only-jwks-secret-not-a-secret
+
+# New screens enforce the continue policy regardless; local dev enforces everywhere.
+LOGIN_CONTINUE_POLICY=enforce
+
+# Feature flags: off in production (wrangler.jsonc), on here (docs/product-update/README.md#flags).
+FEATURE_SESSIONS_V2=1
+FEATURE_STEP_UP=1
+FEATURE_PASSKEYS=1
+FEATURE_OWN_EMAILS=1
+DIRECT_MICROSOFT_APPLE=1
+LEGACY_OPEN_WORKOS_ROUTES=0
+VERIFIED_CLIENT_HOSTS=chatgpt.com,claude.ai

@@ -45,7 +45,7 @@ const cookieHeader = (c: Record<string, string>) =>
     .join('; ')
 function consentFields(html: string): Record<string, string> {
   const f: Record<string, string> = {}
-  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"\s*\/?>/g)) {
     f[m[1]!] = m[2]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
   }
   return f
@@ -159,7 +159,9 @@ describe('Client ID Metadata Documents through the worker', () => {
     const page = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
     expect(page.status).toBe(200)
     const html = await page.text()
-    expect(html).toContain('<div class="app-name">claude.ai</div>')
+    // Named by its CIMD host, never the name its document gives it (D3, 3c).
+    expect(html).toMatch(/>claude\.ai wants to read your Startups</)
+    expect(html).not.toContain('Claude Code')
     const back = await consent(url, cookies) // served from the cache: the mock answered once
     expect(`${back.origin}${back.pathname}`).toBe(redirect)
     expect(back.searchParams.get('iss')).toBe(BASE)
@@ -353,8 +355,17 @@ describe('PR #31 review round 2: the device flow and revocation', () => {
     const d = await SELF.fetch(`${BASE}/oauth/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, scope: 'openid profile email offline_access' }).toString() })
     expect(d.status).toBe(200)
     const dev = (await d.json()) as { device_code: string; user_code: string }
-    const ok = await SELF.fetch(`${BASE}/device`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies) }, body: new URLSearchParams({ user_code: dev.user_code, approved: 'true' }).toString() })
-    expect(ok.status).toBe(200)
+    // Open the confirm page (it sets the CSRF cookie), then approve through the
+    // CSRF-checked decision endpoint (backend.md#b3; the old POST /device had none).
+    const page = await SELF.fetch(`${BASE}/device?code=${dev.user_code}`, { headers: { cookie: cookieHeader(cookies) } })
+    const csrf = (await page.text()).match(/<input type="hidden" name="csrf" value="([^"]*)"/)![1]!
+    const ok = await SELF.fetch(`${BASE}/device/decision`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: setCookies(page).__csrf! }) },
+      body: new URLSearchParams({ code: dev.user_code, decision: 'approve', csrf }).toString(),
+    })
+    expect(ok.status).toBe(303)
     return dev.device_code
   }
   const poll = (clientId: string, deviceCode: string) => token({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: clientId, device_code: deviceCode })

@@ -444,11 +444,8 @@ describe('buildClaimWorkflow', () => {
     expect(yaml).toContain('claim:')
   })
 
-  it('handles special characters in claim token', () => {
-    const yaml = buildClaimWorkflow("clm_test'quote")
-    // The token is embedded in single quotes — this would technically break YAML,
-    // but the function simply interpolates. We just verify it's present.
-    expect(yaml).toContain("clm_test'quote")
+  it('refuses special characters in a claim token (they could break out of its YAML string)', () => {
+    expect(() => buildClaimWorkflow("clm_test'quote")).toThrow()
   })
 })
 

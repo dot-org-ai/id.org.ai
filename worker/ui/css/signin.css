@@ -1,0 +1,12 @@
+/*
+ * Sign-in screens (1a–1g): the few components only they use.
+ * Tokens only (tokens.css); values match docs/product-update/mocks.
+ */
+
+/* ── Organisation row (1c SSO well) ───────────────────────────────────── */
+
+.id-orgrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

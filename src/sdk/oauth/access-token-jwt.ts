@@ -5,7 +5,8 @@
  *
  * Header:  { alg: RS256, typ: "at+jwt", kid, crit: ["aud_bound"], aud_bound: true }
  * Claims:  iss, sub (the Person), aud (the resource), client_id, scope, iat,
- *          exp, jti; `act` when a token exchange made one (RFC 8693 §4.1,
+ *          exp, jti; `org_id` when the Person granted access for a chosen
+ *          workspace; `act` when a token exchange made one (RFC 8693 §4.1,
  *          nested for chains).
  *
  * Why `crit`: the same key signs id.org.ai's id_tokens and session JWTs, and
@@ -48,6 +49,8 @@ export interface AccessTokenJwtClaims {
   iat: number
   exp: number
   jti: string
+  /** The workspace the grant was made for. Absent for grants without one. */
+  org_id?: string
   act?: ActorClaim
 }
 

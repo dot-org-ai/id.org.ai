@@ -1,0 +1,1 @@
+function o(){return document.documentElement.hasAttribute("data-frozen")}function a(t,e){for(let n of document.querySelectorAll(`[data-js="${t}"]`))n.dataset.jsReady||(n.dataset.jsReady="1",e(n))}a("handoff",t=>{let e=t.dataset.target;!o()&&e&&requestAnimationFrame(()=>location.replace(e))});
