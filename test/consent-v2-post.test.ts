@@ -87,11 +87,11 @@ async function register(provider: OAuthProvider): Promise<string> {
   return ((await res.json()) as { client_id: string }).client_id
 }
 
-async function authorize(provider: OAuthProvider, clientId: string, params: Record<string, string> = {}): Promise<Response> {
+async function authorize(provider: OAuthProvider, clientId: string, params: Record<string, string> = {}, signIn?: { authTime?: number }, headers?: Record<string, string>): Promise<Response> {
   const u = new URL('https://id.org.ai/oauth/authorize')
   for (const [k, v] of Object.entries({ client_id: clientId, redirect_uri: REDIRECT, response_type: 'code', scope: 'openid profile email', state: 'st-1', code_challenge: await s256(VERIFIER), code_challenge_method: 'S256', ...params }))
     u.searchParams.set(k, v)
-  return provider.handleAuthorize(new Request(u.toString()), PERSON)
+  return provider.handleAuthorize(new Request(u.toString(), { headers }), PERSON, signIn)
 }
 
 function consentPost(fields: Record<string, string>): Request {
@@ -251,6 +251,86 @@ describe('step-up before granting act permissions (FEATURE_STEP_UP)', () => {
     const tokens = await redeem(provider, clientId, back.searchParams.get('code')!)
     expect(tokens.scope.split(' ')).toContain('sb:do')
     expect((await provider.resumeAuthorizeConsent(resume, PERSON, FRESH)).status).toBe(400) // single use
+  })
+
+  it.each([undefined, 'org_A'])('remembered sb:do consent for %s still requires step-up and resumes the exact grant once', async (orgId) => {
+    const { provider, storage } = makeProvider({ stepUpMaxAgeSeconds: 600 })
+    const clientId = await register(provider)
+    await consent(provider, clientId, SB, { access: 'act', ...(orgId && { org_id: orgId }) }, FRESH)
+    const state = 'original:+/=?&%# state'
+    const issuer = 'https://tenant.example'
+    const before = [...storage.store.keys()].filter((key) => key.startsWith('code:'))
+    const response = await authorize(provider, clientId, { ...SB, state, nonce: 'new-nonce' }, STALE, { 'X-Issuer': issuer })
+    const to = new URL(response.headers.get('location')!)
+    expect(to.pathname).toBe('/step-up')
+    expect(to.searchParams.get('reason')).toBe('act_permissions')
+    const resume = to.searchParams.get('resume')!
+    const key = `consent-resume:${resume}`
+    expect(storage.store.get(key)).toMatchObject({
+      identityId: PERSON, clientId, redirectUri: REDIRECT, state, nonce: 'new-nonce',
+      scopes: ['openid', 'sb:read', 'sb:do'], resource: SB.resource,
+      codeChallenge: await s256(VERIFIER), effectiveIssuer: issuer,
+    })
+    expect((storage.store.get(key) as { orgId?: string }).orgId).toBe(orgId)
+    expect([...storage.store.keys()].filter((k) => k.startsWith('code:'))).toEqual(before)
+    expect(response.headers.get('set-cookie')).toBeNull()
+
+    expect((await provider.resumeAuthorizeConsent(resume, 'human:someone_else', FRESH)).status).toBe(400)
+    expect((await provider.resumeAuthorizeConsent(resume, PERSON, STALE)).status).toBe(400)
+    expect(storage.store.has(key)).toBe(true)
+    const done = await provider.resumeAuthorizeConsent(resume, PERSON, FRESH)
+    const back = new URL(done.headers.get('location')!)
+    expect(back.origin + back.pathname).toBe(REDIRECT)
+    expect(back.searchParams.get('state')).toBe(state)
+    expect(back.searchParams.get('iss')).toBe(issuer)
+    expect(storage.store.get(`code:${codeOf(done)}`)).toMatchObject({
+      resource: SB.resource, nonce: 'new-nonce', codeChallenge: await s256(VERIFIER),
+      codeChallengeMethod: 'S256', effectiveIssuer: issuer, signIn: FRESH,
+    })
+    const tokens = await redeem(provider, clientId, codeOf(done))
+    expect(tokens.scope.split(' ')).toContain('sb:do')
+    expect((await introspect(provider, tokens.access_token)).org_id).toBe(orgId)
+    expect(storage.store.has(key)).toBe(false)
+    expect((await provider.resumeAuthorizeConsent(resume, PERSON, FRESH)).status).toBe(400)
+  })
+
+  it('remembered sb:do with prompt=none returns login_required without starting an interactive step-up', async () => {
+    const { provider, storage } = makeProvider({ stepUpMaxAgeSeconds: 600 })
+    const clientId = await register(provider)
+    await consent(provider, clientId, SB, { access: 'act', org_id: 'org_A' }, FRESH)
+    const before = [...storage.store.entries()]
+    const response = await authorize(provider, clientId, { ...SB, prompt: 'none', state: 'silent-state' }, STALE)
+    const back = new URL(response.headers.get('location')!)
+    expect(back.origin + back.pathname).toBe(REDIRECT)
+    expect(back.searchParams.get('error')).toBe('login_required')
+    expect(back.searchParams.get('state')).toBe('silent-state')
+    expect(back.searchParams.get('iss')).toBe(CONFIG.issuer)
+    expect(back.searchParams.get('code')).toBeNull()
+    expect([...storage.store.entries()]).toEqual(before)
+  })
+
+  it('remembered consent is silent when fresh, read-only, or the flag is off; missing auth_time requires step-up', async () => {
+    const on = makeProvider({ stepUpMaxAgeSeconds: 600 })
+    const clientId = await register(on.provider)
+    await consent(on.provider, clientId, SB, { access: 'act' }, FRESH)
+    expect(codeOf(await authorize(on.provider, clientId, { ...SB, prompt: 'none' }, FRESH))).toMatch(/^ac_/)
+    expect(codeOf(await authorize(on.provider, clientId, { scope: 'openid sb:read', resource: SB.resource }, STALE))).toMatch(/^ac_/)
+    expect(new URL((await authorize(on.provider, clientId, SB)).headers.get('location')!).pathname).toBe('/step-up')
+    const off = makeProvider()
+    const offId = await register(off.provider)
+    await consent(off.provider, offId, SB, { access: 'act' }, FRESH)
+    expect(codeOf(await authorize(off.provider, offId, SB, STALE))).toMatch(/^ac_/)
+  })
+
+  it('a remembered-consent resume expires after ten minutes even if storage has retained it', async () => {
+    const { provider, storage } = makeProvider({ stepUpMaxAgeSeconds: 600 })
+    const clientId = await register(provider)
+    await consent(provider, clientId, SB, { access: 'act' }, FRESH)
+    const response = await authorize(provider, clientId, SB, STALE)
+    const resume = new URL(response.headers.get('location')!).searchParams.get('resume')!
+    const record = storage.store.get(`consent-resume:${resume}`) as { createdAt: number }
+    record.createdAt = Date.now() - 600_001
+    expect((await provider.resumeAuthorizeConsent(resume, PERSON, FRESH)).status).toBe(400)
   })
 
   it('no step-up for a fresh sign-in, for read-only access, or with the flag off', async () => {

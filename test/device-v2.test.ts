@@ -219,6 +219,19 @@ describe('phase 6 review fixes', () => {
     const provider = makeProvider(undefined, storage)
     const { clientId, d } = await setup(provider)
     await provider.decideDevice({ code: d.user_code, identityId: PERSON, decision: 'approve' })
+    const get = storage.get.bind(storage)
+    let reads = 0
+    let release!: () => void
+    const bothRead = new Promise<void>((resolve) => { release = resolve })
+    storage.get = (async (key: string) => {
+      // Each poll must hold its own approved snapshot before either can collect.
+      const value = structuredClone(await get(key))
+      if (key === `device:${d.device_code}` && ++reads <= 2) {
+        if (reads === 2) release()
+        await bothRead
+      }
+      return value
+    }) as typeof storage.get
     const [a, b] = await Promise.all([poll(provider, clientId, d.device_code), poll(provider, clientId, d.device_code)])
     expect([a.status, b.status].sort()).toEqual([200, 400])
   })

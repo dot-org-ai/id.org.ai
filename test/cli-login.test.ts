@@ -1505,6 +1505,23 @@ describe('only tokens are stored, so `token` never prints server text (re-review
     await expect(refreshAccessToken('rt_old')).resolves.toEqual({ accessToken: 'at_new', refreshToken: 'rt_old', expiresAt: undefined })
   })
 
+  it.each([undefined, null, ''])('refresh: an invalid legacy fallback is never re-stored when the replacement is %s', async (replacement) => {
+    refreshServer({ access_token: 'at_new', refresh_token: replacement, expires_in: 3600 })
+    const storage = memoryStorage()
+    const stale = { accessToken: 'at_old', refreshToken: 'rt_\u001b[2J', expiresAt: Date.now() - 1_000 }
+    storage.saved = { ...stale }
+    await expect(ensureValidToken(storage)).rejects.toThrow("the server sent a token the CLI can't use")
+    expect(storage.saved).toEqual(stale)
+  })
+
+  it('refresh: a valid replacement supersedes an invalid legacy refresh token', async () => {
+    refreshServer({ access_token: 'at_new', refresh_token: 'rt_new', expires_in: 3600 })
+    const storage = memoryStorage()
+    storage.saved = { accessToken: 'at_old', refreshToken: 'rt_\u001b[2J', expiresAt: Date.now() - 1_000 }
+    await expect(ensureValidToken(storage)).resolves.toBe('at_new')
+    expect(storage.saved).toEqual({ accessToken: 'at_new', refreshToken: 'rt_new', expiresAt: Date.now() + 3_600_000 })
+  })
+
   it('ensureValidToken: a refreshed token that is not a token fails, and nothing is stored', async () => {
     refreshServer({ access_token: `at_${OSC52_PAYLOAD}`, expires_in: 3600 })
     const storage = memoryStorage()

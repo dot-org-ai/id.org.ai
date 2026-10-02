@@ -77,8 +77,8 @@ export class TokenReplyError extends Error {
 
 /**
  * A token reply (RFC 6749 §5.1) as the CLI stores it, or null when it is a
- * protocol error: the access token, and the refresh token when the reply has
- * one, must be made of token characters only (parseToken). `id.org.ai token`
+ * protocol error: the access token and effective refresh token (including a
+ * retained legacy value) must be made of token characters only (parseToken). `id.org.ai token`
  * prints the stored access token as is, so nothing else is ever stored.
  * With no refresh token in the reply, `previousRefreshToken` is kept.
  */
@@ -92,6 +92,7 @@ export function storedTokenData(reply: unknown, previousRefreshToken?: string): 
     if (!sent) return null
     refreshToken = sent
   }
+  if (refreshToken !== undefined && !parseToken(refreshToken)) return null
   const expiresIn = body.expires_in
   return {
     accessToken,

@@ -1026,17 +1026,24 @@ export class OAuthProvider {
       return this.renderConsent ? await this.renderConsent(vm, request) : renderConsentFallback(vm)
     }
 
-    // ── Generate authorization code ─────────────────────────────────────
-    return this.issueAuthorizationCode(client, identityId, {
-      ...(consentOrg && { orgId: consentOrg }),
+    const grant = {
       redirectUri,
       scopes: requestedScopes,
       codeChallenge: codeChallenge || '',
-      codeChallengeMethod: 'S256',
       state,
       nonce,
       resource,
+      orgId: consentOrg || undefined,
       effectiveIssuer: iss,
+    }
+    const stepUp = await this.requireFreshConsent(
+      { ...grant, identityId, clientId }, signIn, params.get('prompt') === 'none',
+    )
+    if (stepUp) return stepUp
+
+    return this.issueAuthorizationCode(client, identityId, {
+      ...grant,
+      codeChallengeMethod: 'S256',
       signIn,
     })
   }
@@ -1271,33 +1278,19 @@ export class OAuthProvider {
       if (!scopes.includes(SB_SCOPE_READ)) scopes.push(SB_SCOPE_READ)
     }
 
-    // Step-up before act permissions (FEATURE_STEP_UP): a stale sign-in granting
-    // sb:do parks this consent and confirms it's the Person first (B5). Nothing
-    // is granted or recorded until resumeAuthorizeConsent.
-    if (this.stepUpMaxAgeSeconds !== undefined && scopes.includes(SB_SCOPE_DO) && !signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
-      const resumeId = generateId('rsm_')
-      await this.storage.put(
-        `consent-resume:${resumeId}`,
-        {
-          identityId,
-          clientId: client.id,
-          redirectUri,
-          scopes,
-          state,
-          codeChallenge: codeChallenge || '',
-          nonce,
-          resource,
-          orgId,
-          effectiveIssuer: iss,
-          createdAt: Date.now(),
-        } satisfies ConsentResumeRecord,
-        { expirationTtl: CONSENT_RESUME_TTL_S },
-      )
-      const to = new URL('/step-up', this.config.issuer)
-      to.searchParams.set('resume', resumeId)
-      to.searchParams.set('reason', 'act_permissions')
-      return Response.redirect(to.toString(), 302)
-    }
+    const stepUp = await this.requireFreshConsent({
+      identityId,
+      clientId: client.id,
+      redirectUri,
+      scopes,
+      state,
+      codeChallenge: codeChallenge || '',
+      nonce,
+      resource,
+      orgId,
+      effectiveIssuer: iss,
+    }, signIn)
+    if (stepUp) return stepUp
 
     await this.recordConsent(identityId, client.id, scopes, orgId)
 
@@ -1314,6 +1307,31 @@ export class OAuthProvider {
       signIn,
       orgId,
     })
+  }
+
+  /** Both remembered consent and an approval need a fresh sign-in before granting sb:do. */
+  private async requireFreshConsent(
+    grant: Omit<ConsentResumeRecord, 'createdAt'>,
+    signIn?: SignInContext,
+    noInteraction = false,
+  ): Promise<Response | null> {
+    if (this.stepUpMaxAgeSeconds === undefined || !grant.scopes.includes(SB_SCOPE_DO) || signedInWithin(signIn, this.stepUpMaxAgeSeconds)) {
+      return null
+    }
+    // OIDC prompt=none cannot start an interactive step-up or park a resume record.
+    if (noInteraction) {
+      return this.redirectError(grant.redirectUri, 'login_required', 'Sign in again to continue.', grant.state, grant.effectiveIssuer)
+    }
+    const resumeId = generateId('rsm_')
+    await this.storage.put(
+      `consent-resume:${resumeId}`,
+      { ...grant, createdAt: Date.now() } satisfies ConsentResumeRecord,
+      { expirationTtl: CONSENT_RESUME_TTL_S },
+    )
+    const to = new URL('/step-up', this.config.issuer)
+    to.searchParams.set('resume', resumeId)
+    to.searchParams.set('reason', 'act_permissions')
+    return Response.redirect(to.toString(), 302)
   }
 
   /**

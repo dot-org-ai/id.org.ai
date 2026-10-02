@@ -25,6 +25,10 @@ describe('wantsHtml', () => {
     expect(await probe(BROWSER)).toBe(true) // address bar
     expect(await probe({ accept: 'text/html', 'sec-fetch-mode': 'navigate' }, 'POST')).toBe(true) // form post
     expect(await probe({ 'sec-fetch-mode': 'navigate' })).toBe(true) // navigation without Accept
+    expect(await probe({ accept: 'text/html' })).toBe(true) // older browser with no metadata
+    for (const mode of ['cors', 'no-cors', 'same-origin', 'websocket', '']) {
+      expect(await probe({ accept: 'text/html', 'sec-fetch-mode': mode })).toBe(false)
+    }
     expect(await probe(API)).toBe(false) // fetch() asking for JSON
     expect(await probe({ accept: '*/*' })).toBe(false) // curl
     expect(await probe({})).toBe(false)
@@ -73,6 +77,20 @@ describe('7a: a bad client or redirect_uri never redirects', () => {
     expect(html).toContain('https://attacker.example/steal?x=&lt;b&gt;1&lt;/b&gt;') // shown, escaped
     expect(html).not.toMatch(/href="https:\/\/attacker\.example/) // never a link
     expect(html).not.toContain('<b>1</b>')
+  })
+
+  it('explicit fetch asking for HTML still gets byte-identical JSON errors', async () => {
+    const url = authorizeUrl({ client_id: 'nope', redirect_uri: 'https://attacker.example/steal' })
+    const baseline = await SELF.fetch(url, { headers: API, redirect: 'manual' })
+    const fetched = await SELF.fetch(url, {
+      headers: { accept: 'text/html', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin' },
+      redirect: 'manual',
+    })
+    expect(fetched.status).toBe(baseline.status)
+    for (const header of ['content-type', 'cache-control', 'access-control-allow-origin', 'location']) {
+      expect(fetched.headers.get(header)).toBe(baseline.headers.get(header))
+    }
+    expect(await fetched.text()).toBe(await baseline.text())
   })
 
   it('API callers keep byte-identical JSON', async () => {

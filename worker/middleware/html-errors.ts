@@ -4,17 +4,18 @@
  * On the browser-facing routes, and for the catch-all 404 anywhere, a JSON
  * error answered to a browser navigation is replaced with the error template
  * (worker/ui/errors.ts), at the same status, with the request ID in its
- * details. API callers (no text/html in Accept, not a navigation) keep the
+ * details. Explicit non-navigation fetches, and other API callers, keep the
  * JSON byte for byte.
  */
 import type { Context, MiddlewareHandler } from 'hono'
 import type { Env, Variables } from '../types'
 import { kindForApiError, renderErrorPage, type ErrorContext } from '../ui/errors'
 
-/** A browser navigation or form post: Accept includes text/html, or Sec-Fetch-Mode is navigate. */
+/** Fetch Metadata decides when present; older clients fall back to Accept. */
 export function wantsHtml(c: Context): boolean {
-  const accept = c.req.header('accept') ?? ''
-  return accept.includes('text/html') || c.req.header('sec-fetch-mode') === 'navigate'
+  const mode = c.req.header('sec-fetch-mode')
+  if (mode !== undefined) return mode === 'navigate'
+  return (c.req.header('accept') ?? '').includes('text/html')
 }
 
 /** Routes a person reaches in a browser. Everything else is an API, whatever its Accept says. */
