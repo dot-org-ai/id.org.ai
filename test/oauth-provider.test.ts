@@ -827,7 +827,9 @@ describe('OAuthProvider', () => {
       await provider.handleAuthorizeConsent(req, 'user-1')
       const c = await storage.get<Record<string, unknown>>(`consent:user-1:${untrustedId}`)
       expect(c).toBeDefined()
-      expect((c!.scopes as string[])).toContain('email')
+      // A consent with no workspace is its own entry (phase 5 review S2), never "any workspace".
+      expect((c!.noOrg as { scopes: string[] }).scopes).toContain('email')
+      expect(c!.scopes).toEqual([])
     })
 
     it('rejects unknown client_id', async () => {
