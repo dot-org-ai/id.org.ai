@@ -7,15 +7,17 @@
  * stream, the browser and the clipboard come in through `io`, so tests drive it
  * with a fake terminal and a mocked fetch.
  *
- * Nothing the server sends is printed or opened as sent: the device reply is
- * parsed (parseDeviceAuthorization) and userinfo is cleaned (getUser) before
- * use, and the link is opened or copied only when it is https on the API's
- * own origin (untrusted.ts).
+ * Nothing the server sends is printed, opened or stored as sent: the device
+ * reply is parsed (parseDeviceAuthorization), userinfo is cleaned (getUser),
+ * and tokens are stored only when made of token characters (storedTokenData).
+ * The link opened and copied is not the server's: the CLI builds it from the
+ * API origin and the checked user code, and opens it only when that origin is
+ * https, or http on loopback (device.ts, untrusted.ts).
  */
 
 import { API_BASE, authorizeDevice, parseDeviceAuthorization, pollDeviceToken, DeviceFlowError } from './device.js'
 import type { DeviceAuthorizationResponse, DevicePollResult } from './device.js'
-import { getUser } from './auth.js'
+import { getUser, storedTokenData, UNUSABLE_TOKEN } from './auth.js'
 import { originOf } from './untrusted.js'
 import type { TokenStorage } from './storage.js'
 import {
@@ -145,7 +147,8 @@ export async function runLogin(options: LoginOptions): Promise<number> {
   if (options.signal?.aborted) return EXIT.interrupted
 
   // From here on only checked, cleaned values: a bad user code ends the run
-  // without being echoed, and `link` is set only for a link safe to open.
+  // without being echoed, and `link` (built by the CLI, not sent by the
+  // server) is set only when the API's origin is safe to open.
   const parsed = parseDeviceAuthorization(reply, API_BASE)
   if (!parsed.ok) return fail(parsed.error)
   const { userCode: code, url, link, expiresIn } = parsed.grant
@@ -271,17 +274,15 @@ async function settle(result: Exclude<DevicePollResult, { status: 'aborted' }>, 
     case 'error':
       return { kind: 'error', message: result.description ?? result.error }
     case 'approved': {
-      const { tokens } = result
+      // Only token characters are stored: `id.org.ai token` prints the access token as is.
+      const tokens = storedTokenData(result.tokens)
+      if (!tokens) return { kind: 'error', message: UNUSABLE_TOKEN }
       try {
-        await options.storage.setTokenData({
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
-        })
+        await options.storage.setTokenData(tokens)
       } catch (error) {
         return { kind: 'error', message: `couldn't store the credentials (${describeError(error)})` }
       }
-      const { user } = await getUser(tokens.access_token, options.headers)
+      const { user } = await getUser(tokens.accessToken, options.headers)
       return {
         kind: 'success',
         name: user?.name || undefined,

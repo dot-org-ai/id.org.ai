@@ -1,6 +1,6 @@
 import { provision } from '../claim/client.js'
 import type { ProvisionStorage } from './provision-storage.js'
-import { cleanText } from './untrusted.js'
+import { cleanText, terminalSafeJson } from './untrusted.js'
 
 export interface ProvisionCommandOptions {
   baseUrl: string
@@ -20,7 +20,8 @@ export async function provisionCommand(opts: ProvisionCommandOptions): Promise<v
     })
 
     if (opts.json) {
-      console.log(JSON.stringify(result, null, 2))
+      // Lossless, and no raw C1 or bidi characters from the server reach the terminal.
+      console.log(terminalSafeJson(result, 2))
       return
     }
 

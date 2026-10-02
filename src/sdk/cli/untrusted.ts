@@ -12,7 +12,8 @@
  * So server data is parsed into clean values where it enters the CLI
  * (device.ts and auth.ts call these), and the renderer only ever sees those.
  * The renderer's own escapes (bold, dim, cursor moves) are added after; they
- * are not data.
+ * are not data. The confirm link is not taken from the server at all: the CLI
+ * builds it from the API origin and the checked user code (device.ts).
  */
 
 /**
@@ -87,7 +88,55 @@ export function openableUrl(value: unknown, apiBase: string): string | null {
   return URL_CHARACTERS.test(url.href) ? url.href : null
 }
 
-/** The API's origin, for the "not on …" warning; the configured value, cleaned, if it doesn't parse. */
+/**
+ * A bearer token's characters: RFC 6750's token68 (`A–Z a–z 0–9 - . _ ~ + /`,
+ * `=` padding), which covers JWTs and opaque keys, plus `:`. Printable ASCII
+ * and no spaces, so a token can't drive a terminal or split into two words.
+ */
+const TOKEN = /^[A-Za-z0-9._~+/=:-]+$/
+
+/**
+ * The token when it is made of token characters only; else null. Login and
+ * refresh store only what passes, since `id.org.ai token` prints the stored
+ * access token as is, for piping.
+ */
+export function parseToken(value: unknown): string | null {
+  return typeof value === 'string' && TOKEN.test(value) ? value : null
+}
+
+/**
+ * What JSON.stringify leaves raw that a terminal acts on or hides: DEL and the
+ * C1 controls, and the bidi, zero-width, separator and format characters
+ * cleanText removes. (It already escapes U+0000–U+001F.)
+ */
+const JSON_UNSAFE = /[\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g
+
+/**
+ * JSON.stringify, with the characters above written as `\uXXXX`. They can only
+ * appear inside strings, so the output parses to the same value: lossless, and
+ * safe to print. Every `--json` print goes through this.
+ */
+export function terminalSafeJson(value: unknown, space?: number): string {
+  return JSON.stringify(value, null, space).replace(JSON_UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
+/** The most characters of any one stack line printed under --debug: frames carry long paths. */
+const MAX_STACK_LINE = 500
+
+/**
+ * A stack trace as `--debug` prints it: each line through cleanText, with its
+ * indent kept, and the line breaks kept (CR and CRLF become LF). The stack
+ * repeats the error's message, which can carry a server's words.
+ */
+export function cleanStack(stack: unknown): string {
+  if (typeof stack !== 'string') return ''
+  return stack
+    .split(/\r\n|\r|\n/)
+    .map((line) => /^ */.exec(line)![0] + cleanText(line, MAX_STACK_LINE))
+    .join('\n')
+}
+
+/** The API's origin, for the confirm link and the "isn't https" warning; the configured value, cleaned, if it doesn't parse. */
 export function originOf(apiBase: string): string {
   try {
     return new URL(apiBase).origin

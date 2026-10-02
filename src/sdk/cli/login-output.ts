@@ -41,8 +41,9 @@ export interface BrowserState {
   /** The last key's result, shown in place of the browser sentence. */
   note?: 'copied' | 'copy-failed'
   /**
-   * Set when the link isn't safe to open or copy (not https on the API's
-   * origin): that origin, for the warning shown instead of the keys.
+   * Set when the link isn't safe to open or copy (the API is neither https
+   * nor http on loopback): the API's origin, for the warning shown instead of
+   * the keys.
    */
   refusedFor?: string
 }
@@ -77,7 +78,7 @@ export interface LoginScreen {
   app: LoginApp
   /** The user code, already `XXXX-XXXX`. */
   code: string
-  /** verification_uri_complete, cleaned. */
+  /** The confirm link the CLI built from the API origin and the code (device.ts). */
   url: string
   browser: BrowserState
   waiting: WaitingState
@@ -149,7 +150,7 @@ function browserSentence(browser: BrowserState): string {
  */
 export function hintLine(browser: BrowserState, mode: OutputMode): Line {
   if (browser.refusedFor !== undefined) {
-    return [seg(`${INDENT}${' '.repeat(LABEL_WIDTH)}Not opened: this link isn't on ${browser.refusedFor}.`)]
+    return [seg(`${INDENT}${' '.repeat(LABEL_WIDTH)}Not opened: ${browser.refusedFor} isn't https.`)]
   }
   const lead = INDENT + ' '.repeat(LABEL_WIDTH) + browserSentence(browser)
   if (!mode.keys) return [seg(lead, 'dim')]

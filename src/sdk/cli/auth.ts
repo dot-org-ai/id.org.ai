@@ -4,7 +4,7 @@
 
 import { CANONICAL_API_ORIGIN } from '../auth/index.js'
 import type { TokenStorage, StoredTokenData } from './storage.js'
-import { cleanText } from './untrusted.js'
+import { cleanText, parseToken } from './untrusted.js'
 
 const API_BASE = process.env.ID_ORG_AI_URL || CANONICAL_API_ORIGIN
 const CLIENT_ID = process.env.ID_ORG_AI_CLIENT_ID || 'id_org_ai_cli'
@@ -64,15 +64,55 @@ export async function getUser(token: string, headers?: Record<string, string>): 
   }
 }
 
+/** What the person reads when a token reply carries a token the CLI won't store. The token is never quoted. */
+export const UNUSABLE_TOKEN = "the server sent a token the CLI can't use"
+
+/** A token reply whose access or refresh token isn't made of token characters (see parseToken). */
+export class TokenReplyError extends Error {
+  constructor() {
+    super(UNUSABLE_TOKEN)
+    this.name = 'TokenReplyError'
+  }
+}
+
+/**
+ * A token reply (RFC 6749 §5.1) as the CLI stores it, or null when it is a
+ * protocol error: the access token, and the refresh token when the reply has
+ * one, must be made of token characters only (parseToken). `id.org.ai token`
+ * prints the stored access token as is, so nothing else is ever stored.
+ * With no refresh token in the reply, `previousRefreshToken` is kept.
+ */
+export function storedTokenData(reply: unknown, previousRefreshToken?: string): StoredTokenData | null {
+  const body = (reply && typeof reply === 'object' ? reply : {}) as Record<string, unknown>
+  const accessToken = parseToken(body.access_token)
+  if (!accessToken) return null
+  let refreshToken = previousRefreshToken
+  if (body.refresh_token !== undefined && body.refresh_token !== null && body.refresh_token !== '') {
+    const sent = parseToken(body.refresh_token)
+    if (!sent) return null
+    refreshToken = sent
+  }
+  const expiresIn = body.expires_in
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt: typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0 ? Date.now() + expiresIn * 1000 : undefined,
+  }
+}
+
 /**
  * Refresh an access token using a refresh token.
  * Calls POST /oauth/token with grant_type=refresh_token.
- * Returns new token data or null if refresh failed.
+ * Returns new token data, or null if the refresh failed (no reply, an error
+ * reply, or one that isn't JSON). Throws TokenReplyError when the server
+ * answers with a token that isn't one (see storedTokenData): a protocol
+ * error, and the value must not be stored.
  */
 export async function refreshAccessToken(
   refreshToken: string,
   options?: { clientId?: string; headers?: Record<string, string> },
 ): Promise<StoredTokenData | null> {
+  let data: unknown
   try {
     const response = await fetch(`${API_BASE}/oauth/token`, {
       method: 'POST',
@@ -85,26 +125,22 @@ export async function refreshAccessToken(
     })
 
     if (!response.ok) return null
-
-    const data = (await response.json()) as {
-      access_token: string
-      refresh_token?: string
-      expires_in?: number
-    }
-
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token || refreshToken,
-      expiresAt: data.expires_in ? Date.now() + data.expires_in * 1000 : undefined,
-    }
+    data = await response.json()
   } catch {
     return null
   }
+
+  const stored = storedTokenData(data, refreshToken)
+  if (!stored) throw new TokenReplyError()
+  return stored
 }
 
 /**
  * Ensure we have a valid access token, refreshing if needed.
- * Returns the access token or null if no valid token is available.
+ * Returns the access token or null if no valid token is available. A stored
+ * token that isn't made of token characters (an older CLI stored whatever the
+ * server sent) counts as none: `id.org.ai token` prints what this returns.
+ * Throws TokenReplyError when a refresh answers with a token that isn't one.
  *
  * Auto-refreshes when:
  * - Token is expired
@@ -112,7 +148,7 @@ export async function refreshAccessToken(
  */
 export async function ensureValidToken(storage: TokenStorage): Promise<string | null> {
   const tokenData = await storage.getTokenData()
-  if (!tokenData?.accessToken) return null
+  if (!tokenData?.accessToken || !parseToken(tokenData.accessToken)) return null
 
   // Check if token is still valid (with 30s buffer)
   const needsRefresh = tokenData.expiresAt && (tokenData.expiresAt - Date.now() < REFRESH_BUFFER_MS)

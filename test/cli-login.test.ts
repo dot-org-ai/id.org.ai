@@ -15,8 +15,8 @@ import { runLogin, parseLoginArgs, EXIT } from '../src/sdk/cli/login'
 import type { LoginOptions } from '../src/sdk/cli/login'
 import { canOpenBrowser, copyToClipboard, openInBrowser } from '../src/sdk/cli/desktop'
 import type { SpawnBrowser } from '../src/sdk/cli/desktop'
-import { cleanText, parseUserCode, openableUrl, MAX_TEXT_LENGTH } from '../src/sdk/cli/untrusted'
-import { getUser } from '../src/sdk/cli/auth'
+import { cleanText, parseUserCode, openableUrl, parseToken, terminalSafeJson, cleanStack, MAX_TEXT_LENGTH } from '../src/sdk/cli/untrusted'
+import { getUser, refreshAccessToken, ensureValidToken } from '../src/sdk/cli/auth'
 import type { StoredTokenData, TokenStorage } from '../src/sdk/cli/storage'
 
 // The confirm link is opened only on the API's own origin, and the API base is
@@ -891,6 +891,8 @@ interface FieldCase {
   /** fakeServer's options, given the hostile text. */
   server: (text: string) => Parameters<typeof fakeServer>[1]
   exit: number
+  /** False for the reply's links: the CLI builds its own and never prints, opens or copies theirs. */
+  shown?: false
 }
 
 const FIELDS: FieldCase[] = [
@@ -899,12 +901,14 @@ const FIELDS: FieldCase[] = [
     replies: () => [pending(), approved()],
     server: (text) => ({ device: { verification_uri_complete: `https://id.org.ai/device?code=WDJB-MJHT${text}` } }),
     exit: EXIT.ok,
+    shown: false,
   },
   {
     field: 'verification_uri (with no _complete)',
     replies: () => [pending(), approved()],
     server: (text) => ({ device: { verification_uri_complete: '', verification_uri: `https://id.org.ai/device${text}` } }),
     exit: EXIT.ok,
+    shown: false,
   },
   {
     field: 'error_description from /oauth/device',
@@ -935,7 +939,7 @@ const FIELDS: FieldCase[] = [
   { field: 'userinfo org_name', replies: () => [pending(), approved()], server: (text) => ({ userinfo: { ...USERINFO, org_name: text } }), exit: EXIT.ok },
 ]
 
-describe.each(FIELDS)('$field is printed without control bytes', ({ replies, server, exit }) => {
+describe.each(FIELDS)('$field is printed without control bytes', ({ replies, server, exit, shown }) => {
   it.each(PAYLOADS)('%s', async (_, payload) => {
     const text = hostile(payload)
     fakeServer(replies(text), server(text))
@@ -945,9 +949,15 @@ describe.each(FIELDS)('$field is printed without control bytes', ({ replies, ser
     await expect(done).resolves.toBe(exit)
 
     expect(strayControls(term.raw)).toEqual([])
-    // The field did reach the screen, cleaned: not a vacuous pass.
-    expect(term.raw).toMatch(/Evil[^\n]*Corp/)
-    // A link that came with control characters is neither opened nor copied.
+    if (shown === false) {
+      // The reply's link never reaches the screen: the CLI prints the link it built.
+      expect(term.raw).not.toContain('Evil')
+      expect(term.line(4)).toBe(`{d}  Confirm  {/}${URL_4A}`)
+    } else {
+      // The field did reach the screen, cleaned: not a vacuous pass.
+      expect(term.raw).toMatch(/Evil[^\n]*Corp/)
+    }
+    // Only the link the CLI built is ever opened or copied.
     for (const call of [...openUrl.mock.calls, ...copyText.mock.calls]) expect(call[0]).toBe(URL_4A)
   })
 })
@@ -1095,12 +1105,16 @@ describe('the user code', () => {
     })
     expect(parseDeviceAuthorization({ ...DEVICE_REPLY, verification_uri_complete: 'file:///etc/passwd', expires_in: 'soon' }, 'https://id.org.ai')).toEqual({
       ok: true,
-      grant: { deviceCode: 'dc_test', userCode: 'WDJB-MJHT', url: 'file:///etc/passwd', link: undefined, expiresIn: 600, interval: 4 },
+      grant: { deviceCode: 'dc_test', userCode: 'WDJB-MJHT', url: URL_4A, link: URL_4A, expiresIn: 600, interval: 4 },
     })
   })
 })
 
 // ── The confirm link is opened and copied only when it is safe ──────────────
+//
+// Since the re-review (BL-1) the CLI never opens, copies or prints the reply's
+// link: it builds its own (see the re-review tests below). openableUrl still
+// checks that built link, so these cases still test it.
 
 describe('the confirm link', () => {
   const UNSAFE_LINKS: Array<[string, string]> = [
@@ -1122,33 +1136,20 @@ describe('the confirm link', () => {
     ['more than 200 characters', `https://id.org.ai/device?code=WDJB-MJHT&pad=${'a'.repeat(200)}`],
   ]
 
-  it.each(UNSAFE_LINKS)('%s: not opened, not copied, shown with a warning', async (_, link) => {
+  it.each(UNSAFE_LINKS)('%s: ignored; the CLI shows, opens and copies the link it built', async (_, link) => {
     fakeServer([pending(), pending(), pending()], { device: { verification_uri_complete: link } })
     const { options, term, keys, openUrl, copyText } = loginOptions()
     void runLogin(options)
     await vi.advanceTimersByTimeAsync(0)
     keys.press('o')
     keys.press('c')
-    keys.press('O')
-    keys.press('C')
     await vi.advanceTimersByTimeAsync(1)
 
-    expect(openUrl).not.toHaveBeenCalled()
-    expect(copyText).not.toHaveBeenCalled()
-    expect(term.line(4)).toBe(`{d}  Confirm  {/}${cleanText(link)}`)
-    expect(term.line(5)).toBe("           Not opened: this link isn't on https://id.org.ai.")
+    expect(openUrl.mock.calls).toEqual([[URL_4A], [URL_4A]])
+    expect(copyText.mock.calls).toEqual([[URL_4A]])
+    expect(term.line(4)).toBe(`{d}  Confirm  {/}${URL_4A}`)
+    expect(term.raw).not.toContain('Not opened')
     expect(strayControls(term.raw)).toEqual([])
-  })
-
-  it('the warning is printed when not a terminal too', async () => {
-    fakeServer([pending(), approved()], { device: { verification_uri_complete: 'file:///etc/passwd' } })
-    const term = new FakeTerminal(false)
-    const { options, openUrl } = loginOptions({ term, keys: new FakeKeys(false) })
-    const done = runLogin(options)
-    await vi.advanceTimersByTimeAsync(8_000)
-    await expect(done).resolves.toBe(EXIT.ok)
-    expect(term.raw.split('\n').slice(3, 6)).toEqual(['  Code     WDJB-MJHT', '  Confirm  file:///etc/passwd', "           Not opened: this link isn't on https://id.org.ai."])
-    expect(openUrl).not.toHaveBeenCalled()
   })
 
   it('a good https link on the API origin still opens and copies, normalised', async () => {
@@ -1205,7 +1206,8 @@ describe('openInBrowser', () => {
     expect(calls.length).toBeGreaterThan(0)
     for (const { command, args, options } of calls) {
       expect(options.shell).toBeFalsy()
-      expect(command).not.toMatch(/powershell|pwsh|^cmd(\.exe)?$|^sh$|bash/i)
+      // wslview is a bash script that hands the link to PowerShell inside a double-quoted string.
+      expect(command).not.toMatch(/powershell|pwsh|^cmd(\.exe)?$|^sh$|bash|wslview/i)
       expect(args.at(-1)).toBe(url)
     }
   }
@@ -1233,10 +1235,17 @@ describe('openInBrowser', () => {
     expectNoShell(calls, LINK)
   })
 
-  it('WSL: wslview, then the Windows opener, then xdg-open; never PowerShell', async () => {
-    const { spawn, calls } = fakeSpawn(['wslview', 'rundll32.exe'])
+  it('WSL: the Windows opener, rundll32.exe, as on Windows; never wslview or PowerShell', async () => {
+    const { spawn, calls } = fakeSpawn()
     await expect(openInBrowser(LINK, { platform: 'linux', env: { WSL_DISTRO_NAME: 'Ubuntu' }, spawn })).resolves.toBe(true)
-    expect(calls.map((c) => c.command)).toEqual(['wslview', 'rundll32.exe', 'xdg-open'])
+    expect(calls.map((c) => [c.command, c.args])).toEqual([['rundll32.exe', ['url.dll,FileProtocolHandler', LINK]]])
+    expectNoShell(calls, LINK)
+  })
+
+  it('WSL: falls back to xdg-open when rundll32.exe will not start (interop off)', async () => {
+    const { spawn, calls } = fakeSpawn(['rundll32.exe'])
+    await expect(openInBrowser(LINK, { platform: 'linux', env: { WSL_DISTRO_NAME: 'Ubuntu' }, spawn })).resolves.toBe(true)
+    expect(calls.map((c) => c.command)).toEqual(['rundll32.exe', 'xdg-open'])
     expectNoShell(calls, LINK)
   })
 
@@ -1285,5 +1294,345 @@ describe('other commands never print server text raw (phase 6 review B2, beyond 
     const out = lines.join('\n')
     expect(out).toContain('Tenant:')
     expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/)
+  })
+})
+
+// \u2500\u2500 Phase 6 re-review \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+/** Everything a terminal acts on or hides: C0, DEL, C1, bidi, zero-width, separators, format controls. */
+const TERMINAL_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/
+
+// BL-1. The CLI opened the reply's own link. On WSL that went through wslview,
+// which runs PowerShell with the link inside a double-quoted string, and
+// RFC 3986 allows `$`, `(` and `)`: a same-origin link from a hostile server or
+// a man in the middle ran commands on the Windows host. Now the CLI builds the
+// link it opens and copies from the API origin and the checked user code, so
+// only [A-Z2-9-] from the server reaches any opener.
+describe('the confirm link is built by the CLI, never taken from the reply (re-review BL-1)', () => {
+  const SAME_ORIGIN: Array<[string, string]> = [
+    ['a shell subexpression', 'https://id.org.ai/device?code=WDJB-MJHT&x=$(calc)'],
+    ['a PowerShell subexpression', 'https://id.org.ai/device?code=WDJB-MJHT$(Start-Process(calc))'],
+    ['another code', 'https://id.org.ai/device?code=AAAA-BBBB'],
+    ['another page', 'https://id.org.ai/elsewhere?code=WDJB-MJHT'],
+  ]
+
+  it.each(SAME_ORIGIN)('a same-origin link with %s: the CLI shows, opens and copies the one it built', async (_, link) => {
+    // The old check let each of these through to the opener.
+    expect(openableUrl(link, 'https://id.org.ai')).not.toBeNull()
+    fakeServer([pending(), pending()], { device: { verification_uri_complete: link } })
+    const { options, term, keys, openUrl, copyText } = loginOptions()
+    void runLogin(options)
+    await vi.advanceTimersByTimeAsync(0)
+    keys.press('c')
+    keys.press('o')
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(openUrl.mock.calls).toEqual([[URL_4A], [URL_4A]])
+    expect(copyText.mock.calls).toEqual([[URL_4A]])
+    expect(term.line(4)).toBe(`{d}  Confirm  {/}${URL_4A}`)
+    expect(term.raw).not.toMatch(/\$|AAAA|elsewhere/)
+  })
+
+  it('parseDeviceAuthorization builds the link from the API origin and the code', () => {
+    const reply = { ...DEVICE_REPLY, verification_uri_complete: 'https://id.org.ai/device?code=WDJB-MJHT&x=$(calc)' }
+    expect(parseDeviceAuthorization(reply, 'https://id.org.ai')).toMatchObject({ ok: true, grant: { url: URL_4A, link: URL_4A } })
+    // Only the origin: a path or trailing slash on the API base is not part of the link.
+    expect(parseDeviceAuthorization(reply, 'https://ID.ORG.AI:443/api/')).toMatchObject({ ok: true, grant: { url: URL_4A, link: URL_4A } })
+    // Local development: the worker names https://id.org.ai as issuer, the CLI opens the local server.
+    const local = 'http://localhost:8787/device?code=WDJB-MJHT'
+    expect(parseDeviceAuthorization(DEVICE_REPLY, 'http://localhost:8787')).toMatchObject({ ok: true, grant: { url: local, link: local } })
+  })
+
+  it('the built link holds the API origin and [A-Z2-9-] only, whatever the reply says', () => {
+    const codes = ['WDJBMJHT', 'ABCD-EFGH', 'JKLMNPQR', 'STUV-WXYZ', '2345-6789']
+    const hostileLinks = ['https://id.org.ai/device?code=$(calc)', `https://id.org.ai/device?${OSC52_PAYLOAD}`, 'file:///etc/passwd', '']
+    for (const user_code of codes) {
+      for (const verification_uri_complete of hostileLinks) {
+        const parsed = parseDeviceAuthorization({ ...DEVICE_REPLY, user_code, verification_uri_complete }, 'https://id.org.ai')
+        expect(parsed.ok && parsed.grant.link).toMatch(/^https:\/\/id\.org\.ai\/device\?code=[A-Z2-9]{4}-[A-Z2-9]{4}$/)
+      }
+    }
+  })
+
+  it('an API that is not https (nor loopback http) gets no link to open: shown, with the reason', () => {
+    expect(parseDeviceAuthorization(DEVICE_REPLY, 'http://example.test')).toMatchObject({
+      ok: true,
+      grant: { url: 'http://example.test/device?code=WDJB-MJHT', link: undefined },
+    })
+  })
+
+  describe('runLogin against an API that is not https', () => {
+    // The API base is read once, at import: load the CLI afresh with it set. fetch is mocked; nothing is sent.
+    async function loadLogin() {
+      process.env.ID_ORG_AI_URL = 'http://example.test'
+      vi.resetModules()
+      return import('../src/sdk/cli/login')
+    }
+
+    afterEach(() => {
+      delete process.env.ID_ORG_AI_URL
+      vi.resetModules()
+    })
+
+    it('on a terminal: not opened, not copied, the reason instead of the keys', async () => {
+      const login = await loadLogin()
+      fakeServer([pending(), pending()])
+      const { options, term, keys, openUrl, copyText } = loginOptions()
+      void login.runLogin(options)
+      await vi.advanceTimersByTimeAsync(0)
+      keys.press('o')
+      keys.press('c')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(openUrl).not.toHaveBeenCalled()
+      expect(copyText).not.toHaveBeenCalled()
+      expect(term.line(4)).toBe('{d}  Confirm  {/}http://example.test/device?code=WDJB-MJHT')
+      expect(term.line(5)).toBe("           Not opened: http://example.test isn't https.")
+    })
+
+    it('when not a terminal: the same reason', async () => {
+      const login = await loadLogin()
+      fakeServer([pending(), approved()])
+      const term = new FakeTerminal(false)
+      const { options, openUrl } = loginOptions({ term, keys: new FakeKeys(false) })
+      const done = login.runLogin(options)
+      await vi.advanceTimersByTimeAsync(8_000)
+      await expect(done).resolves.toBe(login.EXIT.ok)
+      expect(term.raw.split('\n').slice(3, 6)).toEqual([
+        '  Code     WDJB-MJHT',
+        '  Confirm  http://example.test/device?code=WDJB-MJHT',
+        "           Not opened: http://example.test isn't https.",
+      ])
+      expect(openUrl).not.toHaveBeenCalled()
+    })
+  })
+})
+
+// SF-4. `id.org.ai token` prints the stored access token as is, for piping.
+// Login and refresh stored whatever non-empty string the server sent, so a
+// hostile server could make `token` write escape sequences to the terminal.
+// Now only token characters are ever stored.
+describe('only tokens are stored, so `token` never prints server text (re-review SF-4)', () => {
+  const GOOD_TOKENS = [
+    'at_test',
+    'eyJhbGciOiJFZERTQSIsImtpZCI6ImsxIn0.eyJzdWIiOiJ1c2VyXzEifQ.c2lnbmF0dXJl-_', // a JWT
+    'mF_9.B5f-4.1JqM', // RFC 6750's example
+    'YWxhZGRpbjpvcGVuc2VzYW1l+/==', // token68
+    'oai_live:AbC~123',
+  ]
+
+  /** Strings that are not tokens. */
+  const BAD_TOKENS: Array<[string, string]> = [
+    ['an escape sequence', 'at_\x1b[2Jtest'],
+    ['OSC 52', `at_${OSC52_PAYLOAD}`],
+    ['a C1 control', 'at_\u009b2Jtest'],
+    ['a bidi control', 'at_\u202etest'],
+    ['a zero-width space', 'at_\u200btest'],
+    ['a space', 'at_ test'],
+    ['a tab', 'at_\ttest'],
+    ['a newline', 'at_test\n'],
+    ['a non-ASCII letter', 'at_t\u00e9st'],
+    ['a shell subexpression', 'at_$(calc)'],
+    ['a quote', 'at_"test'],
+    ['a backslash', 'at_\\test'],
+  ]
+
+  it('parseToken takes the token68, JWT and opaque characters, plus :', () => {
+    for (const token of GOOD_TOKENS) expect(parseToken(token)).toBe(token)
+  })
+
+  it.each([...BAD_TOKENS, ['empty', ''], ['a number', 42], ['an object', { token: 'at_test' }], ['nothing', undefined]] as Array<[string, unknown]>)(
+    'parseToken refuses %s',
+    (_, token) => {
+      expect(parseToken(token)).toBeNull()
+    },
+  )
+
+  const tokenReply = (body: Record<string, unknown>): Reply => ({ status: 200, body: { token_type: 'Bearer', expires_in: 3600, ...body } })
+
+  it.each(BAD_TOKENS)('login: an access token with %s is a protocol error, exit 1, nothing stored', async (_, token) => {
+    const server = fakeServer([tokenReply({ access_token: token, refresh_token: 'rt_test' })])
+    const { options, term, storage } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await expect(done).resolves.toBe(EXIT.failed)
+    expect(term.line(9)).toBe("  \u2717 Sign-in failed: the server sent a token the CLI can't use")
+    expect(storage.saved).toBeNull()
+    expect(strayControls(term.raw)).toEqual([])
+    expect(server.calls.some((c) => c.url.endsWith('/oauth/userinfo'))).toBe(false)
+  })
+
+  it.each(BAD_TOKENS)('login: a refresh token with %s is a protocol error too', async (_, token) => {
+    fakeServer([tokenReply({ access_token: 'at_test', refresh_token: token })])
+    const { options, term, storage } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await expect(done).resolves.toBe(EXIT.failed)
+    expect(term.line(9)).toBe("  \u2717 Sign-in failed: the server sent a token the CLI can't use")
+    expect(storage.saved).toBeNull()
+  })
+
+  it('login stores a JWT, and a reply with no refresh token', async () => {
+    const jwt = GOOD_TOKENS[1]
+    fakeServer([tokenReply({ access_token: jwt })])
+    const { options, storage } = loginOptions()
+    const done = runLogin(options)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await expect(done).resolves.toBe(EXIT.ok)
+    expect(storage.saved).toEqual({ accessToken: jwt, refreshToken: undefined, expiresAt: Date.now() + 3_600_000 })
+  })
+
+  const refreshServer = (body: unknown) => vi.stubGlobal('fetch', vi.fn(async () => json(200, body)))
+
+  it.each(BAD_TOKENS)('refresh: an access token with %s is refused with a clean message', async (_, token) => {
+    refreshServer({ access_token: token, refresh_token: 'rt_new', expires_in: 3600 })
+    const error = await refreshAccessToken('rt_old').then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error!.message).toBe("the server sent a token the CLI can't use")
+  })
+
+  it.each(BAD_TOKENS)('refresh: a refresh token with %s is refused too', async (_, token) => {
+    refreshServer({ access_token: 'at_new', refresh_token: token, expires_in: 3600 })
+    await expect(refreshAccessToken('rt_old')).rejects.toThrow("the server sent a token the CLI can't use")
+  })
+
+  it('refresh takes good tokens, and keeps the old refresh token when the reply has none', async () => {
+    refreshServer({ access_token: 'at_new', refresh_token: 'rt_new', expires_in: 3600 })
+    await expect(refreshAccessToken('rt_old')).resolves.toEqual({ accessToken: 'at_new', refreshToken: 'rt_new', expiresAt: Date.now() + 3_600_000 })
+    refreshServer({ access_token: 'at_new' })
+    await expect(refreshAccessToken('rt_old')).resolves.toEqual({ accessToken: 'at_new', refreshToken: 'rt_old', expiresAt: undefined })
+  })
+
+  it('ensureValidToken: a refreshed token that is not a token fails, and nothing is stored', async () => {
+    refreshServer({ access_token: `at_${OSC52_PAYLOAD}`, expires_in: 3600 })
+    const storage = memoryStorage()
+    const stale = { accessToken: 'at_old', refreshToken: 'rt_old', expiresAt: Date.now() - 1_000 }
+    storage.saved = { ...stale }
+    await expect(ensureValidToken(storage)).rejects.toThrow("the server sent a token the CLI can't use")
+    expect(storage.saved).toEqual(stale)
+  })
+
+  it('ensureValidToken: a stored token that is not a token (an older CLI stored it) counts as none', async () => {
+    const storage = memoryStorage()
+    storage.saved = { accessToken: `at_${OSC52_PAYLOAD}` }
+    await expect(ensureValidToken(storage)).resolves.toBeNull()
+    storage.saved = { accessToken: 'at_good' }
+    await expect(ensureValidToken(storage)).resolves.toBe('at_good')
+  })
+})
+
+// N-a. JSON.stringify escapes only U+0000\u2013U+001F, so `--json` printed C1 and
+// bidi characters raw.
+describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
+  /** Some of each range terminalSafeJson escapes, ends included. */
+  const ESCAPED = '\u007f\u0080\u0085\u009b\u009d\u009f\u061c\u200b\u200d\u200e\u200f\u2028\u2029\u202a\u202e\u2060\u2066\u2069\u206f\ufeff'
+  const evil = `Evil${ESCAPED}\x1b]52;c;ZXZpbA==\x07Corp`
+
+  it('terminalSafeJson writes each of those characters as \\uXXXX, in keys too', () => {
+    const value = { name: evil, [`key\u202e`]: [evil] }
+    const text = terminalSafeJson(value)
+    expect(text).not.toMatch(TERMINAL_UNSAFE)
+    expect(JSON.parse(text)).toEqual(value)
+    expect(text).toContain('\\u009b')
+    expect(text).toContain('\\u202e')
+    expect(text).toContain('\\u2028')
+    expect(text).toContain('\\ufeff')
+  })
+
+  it('terminalSafeJson leaves everything else as JSON.stringify writes it', () => {
+    const value = { name: 'Zo\u00eb \u00c5ngstr\u00f6m \u00b7 \u65e5\u672c\u8a9e \u00b7 \ud83e\udd8a', path: 'a\\b "c"', n: 1, list: [true, null] }
+    expect(terminalSafeJson(value, 2)).toBe(JSON.stringify(value, null, 2))
+    expect(terminalSafeJson(value)).toBe(JSON.stringify(value))
+    // An escaped backslash before an escaped character: still the same string.
+    expect(terminalSafeJson('\\\u0085')).toBe('"\\\\\\u0085"')
+    expect(JSON.parse(terminalSafeJson('\\\u0085'))).toBe('\\\u0085')
+  })
+
+  it('provision --json', async () => {
+    const { provisionCommand } = await import('../src/sdk/cli/provision')
+    const result = { tenantId: evil, sessionToken: 'ses_x', claimToken: `clm_${evil}`, level: 1, limits: { ttlHours: 24 } }
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, result)))
+    const lines: string[] = []
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')))
+    try {
+      await provisionCommand({ baseUrl: 'http://127.0.0.1:1', json: true, storage: { setProvisionData: async () => {} } as never })
+    } finally {
+      log.mockRestore()
+    }
+    const out = lines.join('\n')
+    // The line breaks are the layout's (space = 2); any in the data are escaped.
+    expect(out.replace(/\n/g, '')).not.toMatch(TERMINAL_UNSAFE)
+    expect(JSON.parse(out)).toEqual(result)
+  })
+
+  it('claim --json (git is a fake: nothing is run, committed or pushed)', async () => {
+    const { claimCommand } = await import('../src/sdk/cli/claim')
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const repo = await mkdtemp(join(tmpdir(), 'id-claim-json-'))
+    const commands: string[] = []
+    const exec = (command: string) => {
+      commands.push(command)
+      return command === 'git rev-parse --show-toplevel' ? repo : 'true'
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, { status: 'claimed', level: 2 })))
+    const claimToken = `clm_${evil}`
+    const lines: string[] = []
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+    try {
+      await claimCommand({
+        baseUrl: 'http://127.0.0.1:1',
+        json: true,
+        token: claimToken,
+        noPush: false,
+        storage: { getProvisionData: async () => null, removeProvisionData: async () => {} } as never,
+        exec,
+      })
+    } finally {
+      log.mockRestore()
+      error.mockRestore()
+      exit.mockRestore()
+      await rm(repo, { recursive: true, force: true })
+    }
+    expect(commands).toEqual([
+      'git rev-parse --is-inside-work-tree',
+      'git rev-parse --show-toplevel',
+      `git add "${join(repo, '.github', 'workflows', 'headlessly.yml')}"`,
+      'git commit -m "Claim headless.ly tenant"',
+      'git push',
+    ])
+    const out = lines.at(-1)!
+    expect(out).not.toMatch(TERMINAL_UNSAFE)
+    expect(JSON.parse(out)).toEqual({ claimToken, confirmed: true, level: 2 })
+  })
+})
+
+// N-b. Under --debug, printError printed error.stack raw, and the stack
+// repeats the error's message, which can carry a server's words.
+describe('--debug stack traces are cleaned line by line (re-review N-b)', () => {
+  it('cleanStack strips control bytes from every line, keeping the line breaks and the frames', () => {
+    const error = new Error(`Evil${OSC52_PAYLOAD}\u202eCorp\nsecond\u0085line\x1b[2J`)
+    const stack = error.stack!
+    const cleaned = cleanStack(stack)
+    expect(cleaned).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/)
+    const lines = cleaned.split('\n')
+    expect(lines).toHaveLength(stack.split('\n').length)
+    expect(lines[0]).toBe(`Error: Evil]52;c;${OSC52_CONTENT}Corp`)
+    expect(lines[1]).toBe('secondline[2J')
+    expect(lines.length).toBeGreaterThan(2)
+    for (const frame of lines.slice(2)) expect(frame).toMatch(/^ {4}at \S/)
+  })
+
+  it('cleanStack takes CR and CRLF as line breaks, never prints a CR, and is empty for a non-string', () => {
+    expect(cleanStack('a\r\nb\rc\nd')).toBe('a\nb\nc\nd')
+    expect(cleanStack(undefined)).toBe('')
+    expect(cleanStack(42)).toBe('')
   })
 })
