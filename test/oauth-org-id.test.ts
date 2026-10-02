@@ -443,6 +443,8 @@ function mockMemberships(userId: string, rows: Array<{ org: string; status: stri
       }),
       { headers: { 'content-type': 'application/json' } },
     )
+    // The consent page lists the workspaces (GET) and the POST checks org_id: both read them.
+    .persist()
 }
 
 async function registerRp(): Promise<string> {
