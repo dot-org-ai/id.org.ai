@@ -49,7 +49,7 @@
   - the identity and workspaces are present;
   - `org_id` round-trips into every token type;
   - the read downgrade;
-  - unverified clients show the host and flipped buttons;
+  - unverified clients show the host and warning; all clients keep secondary Cancel on the left and primary Allow on the right;
   - escaping;
   - JSON submit returns `{redirect}`.
 - The gallery visual diff for 3a, 3b and 3c is still 0 px.

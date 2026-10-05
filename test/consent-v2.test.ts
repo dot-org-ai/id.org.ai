@@ -151,9 +151,10 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(html).toMatch(/<option value="org_BETA"[^>]*>Beta<\/option>/)
     expect(html).not.toContain('org_GAMMA')
     expect(html).toMatch(/id="consent-access-act"[^>]*checked/)
-    // Stable positions for every trust level: Cancel first, then Allow. Cancel retains primary emphasis.
+    // Consistent actions for every trust level: secondary Cancel first, then primary Allow.
     expect(html.indexOf('value="false"')).toBeLessThan(html.indexOf('value="true"'))
-    expect(html).toMatch(/class="id-btn id-btn--primary[^"]*"[^>]*name="approved" value="false"/)
+    expect(html).toMatch(/class="id-btn id-btn--secondary[^"]*"[^>]*name="approved" value="false"/)
+    expect(html).toMatch(/class="id-btn id-btn--primary[^"]*"[^>]*name="approved" value="true"/)
 
     // CSRF: the cookie, and the form's state bound to it (the client's own state is wrapped, not shown).
     const csrf = setCookies(page).__csrf
