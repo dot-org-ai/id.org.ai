@@ -224,9 +224,9 @@ describe('3c · Unverified app', () => {
     expect(d.querySelector('[role="status"][data-status]')).toBeTruthy()
   })
 
-  it('flips the buttons: Allow outlined on the left, Cancel primary on the right', async () => {
+  it('keeps Cancel primary on the left and Allow outlined on the right', async () => {
     const d = await render(f3c.default)
-    const [allow, cancel] = [...d.querySelectorAll('[data-actions] > button')]
+    const [cancel, allow] = [...d.querySelectorAll('[data-actions] > button')]
     expect(text(allow)).toBe('Allow')
     expect(allow!.className).toContain('id-btn--secondary')
     expect(allow!.getAttribute('value')).toBe('true')
@@ -293,11 +293,11 @@ describe('Consent derives the trust level from client.verified (security.md, scr
     expect(tiles).not.toContain('Cx')
   })
 
-  it('verified: false with variant "full" still renders 3c: callout, flipped buttons, Verified: No', async () => {
+  it('verified: false with variant "full" still renders 3c: callout, emphasized Cancel, Verified: No', async () => {
     expect(consentVariant(impostor)).toBe('unverified')
     const d = await dom(<Consent {...impostor} />)
     expect(text(d.querySelector('.id-warning__title'))).toBe('id.org.ai can’t vouch for this app')
-    const [allow, cancel] = [...d.querySelectorAll('[data-actions] > button')]
+    const [cancel, allow] = [...d.querySelectorAll('[data-actions] > button')]
     expect([text(allow), allow!.className.includes('id-btn--secondary')]).toEqual(['Allow', true])
     expect([text(cancel), cancel!.className.includes('id-btn--primary')]).toEqual(['Cancel', true])
     expect(sourceRows(d)).toEqual(['Runs on: This computer', 'Returns to: 127.0.0.1:61022', 'Verified: No'])
@@ -309,7 +309,7 @@ describe('Consent derives the trust level from client.verified (security.md, scr
     const d = await dom(<Consent {...p} />)
     expect(text(d.querySelector('h1'))).toBe('agent-tools.dev wants to use api.sb as you')
     expect(d.querySelector('.id-warning')).toBeTruthy()
-    expect(text(d.querySelector('[data-actions] > button:last-child'))).toBe('Cancel')
+    expect(text(d.querySelector('[data-actions] > button:last-child'))).toBe('Allow')
   })
 
   it('a caller-supplied Verified row is replaced, never trusted', async () => {

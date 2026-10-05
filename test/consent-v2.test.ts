@@ -151,8 +151,8 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(html).toMatch(/<option value="org_BETA"[^>]*>Beta<\/option>/)
     expect(html).not.toContain('org_GAMMA')
     expect(html).toMatch(/id="consent-access-act"[^>]*checked/)
-    // 3c's flipped buttons: Allow comes first, outlined; Cancel is the primary.
-    expect(html.indexOf('value="true"')).toBeLessThan(html.indexOf('value="false"'))
+    // Stable positions for every trust level: Cancel first, then Allow. Cancel retains primary emphasis.
+    expect(html.indexOf('value="false"')).toBeLessThan(html.indexOf('value="true"'))
     expect(html).toMatch(/class="id-btn id-btn--primary[^"]*"[^>]*name="approved" value="false"/)
 
     // CSRF: the cookie, and the form's state bound to it (the client's own state is wrapped, not shown).

@@ -238,7 +238,7 @@ Shown only when there is no id.org.ai session, or the app asked for a fresh one 
 
 ## 3 · Authorize apps
 
-Consent is shown for third-party apps on first use, for any new permission, and always for apps running on this computer (loopback). It always shows who is signed in and which workspace. Act permissions are a choice, not a third button. Unverified apps flip the buttons so Cancel is primary. First-party .do apps skip consent, except for `sb:*` scopes (the server already enforces this).
+Consent is shown for third-party apps on first use, for any new permission, and always for apps running on this computer (loopback). It always shows who is signed in and which workspace. Act permissions are a choice, not a third button. Cancel stays left and Allow stays right for every app (Nathan, 2026-10-05); unverified apps make Cancel primary without changing positions. First-party .do apps skip consent, except for `sb:*` scopes (the server already enforces this).
 
 <a id="3a"></a>
 
@@ -284,7 +284,7 @@ Consent is shown for third-party apps on first use, for any new permission, and 
 - Notes:
   - The displayed name is the host, never the self-asserted `client_name`.
   - The warning callout reads "id.org.ai can't vouch for this app".
-  - The buttons are flipped: Allow is secondary and Cancel is primary.
+  - Cancel stays on the left and Allow on the right. Allow is secondary and Cancel is primary.
   - Source details include "Verified: No".
 - Server: B2.
 

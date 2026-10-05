@@ -50,14 +50,14 @@ There is **no account chip in the header**. The signed-in account is shown insid
   - 7c: send icon, "Admins get an email and can approve in one click."
   - 1d: no icon, "Signed in with GitHub as **bryant22**. Not you?"
 - **Text-only feet** (no buttons) use 13px/20px `var(--id-fg-3)`, centred, `text-wrap: balance`. Examples: "New here? Any option above creates your account.", "Not redirected? Continue to headless.ly", "Wasn't you? Sign this device out".
-- **Unverified apps flip the emphasis**: Allow becomes the outlined button on the left and Cancel the primary on the right (3c).
+- **Cancel stays left; Allow stays right for every app** (Nathan, 2026-10-05). Unverified apps change only the emphasis: Cancel is primary and Allow is outlined (3c).
 - Nothing else goes in the action band: no help links, no "learn more", and no second copy of links that already exist in the card.
 
 ## Phones (viewport ≤ 480px)
 
 - The card goes edge to edge: `align-self: stretch; width: auto; max-width: none; margin: 0 -20px; border-radius: 0; border-left: 0; border-right: 0; box-shadow: none`.
 - Card body padding becomes `28px 20px 24px`.
-- Two actions **stack full width, primary on top**: `grid-template-columns: 1fr`, and the primary gets `order: -1`. Keep the DOM order secondary, then primary, and reorder only visually.
+- Two actions **stack full width, primary on top**: `grid-template-columns: 1fr`, and the primary gets `order: -1`. Consent keeps Cancel then Allow in DOM order and reorders only visually when stacked.
 - Action buttons are **48px** tall on phones (`[data-actions] > * { height: 48px; min-height: 48px }`). Only the height changes: radius and font size stay as on desktop.
 - Reference: `5b-action-approval` (390px). Every other screen has a `.phone.png` at 390×844 in `../mocks/png/`.
 

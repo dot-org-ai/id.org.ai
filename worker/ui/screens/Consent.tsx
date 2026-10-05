@@ -17,8 +17,8 @@
  *   primary reads "Continue as {first name}".
  * - `unverified` (3c): every unverified client, whatever the caller asked for.
  *   The host is the name (never the self-asserted client_name), the warning
- *   callout replaces the rule under the head, and the buttons flip (Allow
- *   outlined on the left, Cancel primary on the right).
+ *   callout replaces the rule under the head, and Cancel gets primary emphasis.
+ *   Cancel stays on the left and Allow on the right for every trust level.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
@@ -253,14 +253,14 @@ function Foot({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
       {allow.label}
     </Button>
   )
-  // Unverified apps flip the emphasis: Allow outlined on the left, Cancel primary on the right (layout.md#actions).
+  // Keep action positions consistent; unverified apps emphasize Cancel without moving it.
   return (
     <CardFoot>
       <Actions>
         {view.v === 'unverified' ? (
           <>
-            {allowButton('secondary')}
             {cancelButton('primary')}
+            {allowButton('secondary')}
           </>
         ) : (
           <>
