@@ -76,8 +76,8 @@
     // /fga/* and /pipes/* if an unknown estate caller breaks. "0" is secure.
     "LEGACY_OPEN_WORKOS_ROUTES": "0",
     // CIMD client hosts shown as verified on consent (D3), comma-separated.
-    // Empty: only the seeded first-party clients are verified (owner step).
-    "VERIFIED_CLIENT_HOSTS": "",
+    // Nathan approved the deployed Studio pitch app on 2026-10-05. Exact production host only.
+    "VERIFIED_CLIENT_HOSTS": "pitch.startups.studio",
     // "1": step up before granting act permissions (sb:do) on a sign-in older
     // than 10 minutes. /step-up arrives in phase 9; keep "0" until then.
     "FEATURE_STEP_UP": "0",
