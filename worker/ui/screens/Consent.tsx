@@ -11,14 +11,14 @@
  *
  * The trust level is the component's job, not the caller's (security.md, D3).
  * From `client.verified` it derives the variant, the name shown, the tile's
- * monogram, the warning callout, the button order and the "Verified: No" row:
+ * monogram, the warning callout and the "Verified: No" row:
  * - `full` (3a): workspace select, the access level radios, permissions.
  * - `basic` (3b): a verified client asking for identity scopes only; the
  *   primary reads "Continue as {first name}".
  * - `unverified` (3c): every unverified client, whatever the caller asked for.
  *   The host is the name (never the self-asserted client_name), the warning
- *   callout replaces the rule under the head, and Cancel gets primary emphasis.
- *   Cancel stays on the left and Allow on the right for every trust level.
+ *   callout replaces the rule under the head.
+ * Cancel is secondary on the left and Allow is primary on the right for every trust level.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
@@ -243,31 +243,16 @@ function Body({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
 function Foot({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
   const allow = allowLabels(p, view)
   const busy = !!p.busy
-  const cancelButton = (variant: 'primary' | 'secondary') => (
-    <Button variant={variant} block name="approved" value="false" disabled={busy} on="cancel">
-      Cancel
-    </Button>
-  )
-  const allowButton = (variant: 'primary' | 'secondary') => (
-    <Button variant={variant} block name="approved" value="true" busy={busy} busyLabel={allow.busy} on="allow">
-      {allow.label}
-    </Button>
-  )
-  // Keep action positions consistent; unverified apps emphasize Cancel without moving it.
+  // Action order and emphasis are consistent for every trust level.
   return (
     <CardFoot>
       <Actions>
-        {view.v === 'unverified' ? (
-          <>
-            {cancelButton('primary')}
-            {allowButton('secondary')}
-          </>
-        ) : (
-          <>
-            {cancelButton('secondary')}
-            {allowButton('primary')}
-          </>
-        )}
+        <Button variant="secondary" block name="approved" value="false" disabled={busy} on="cancel">
+          Cancel
+        </Button>
+        <Button variant="primary" block name="approved" value="true" busy={busy} busyLabel={allow.busy} on="allow">
+          {allow.label}
+        </Button>
       </Actions>
     </CardFoot>
   )

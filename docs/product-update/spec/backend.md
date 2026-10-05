@@ -154,7 +154,7 @@ Storage today is key/value in Durable Objects (the `oauth` shard of `IdentityDO`
 - **Verified vs unverified** (D3):
   - Verified means a first-party seeded client (`src/sdk/oauth/clients.ts`), or a CIMD host in the `VERIFIED_CLIENT_HOSTS` env list.
   - Everything else is unverified. That includes every DCR client.
-  - Unverified clients show the host as the name, the warning callout, and the flipped buttons (3c).
+  - Unverified clients show the host as the name and the warning callout (3c). Every client keeps secondary Cancel on the left and primary Allow on the right.
 - **Identity-only requests** (`openid profile email`) render 3b instead of 3a.
 - **Remember consent per client per workspace**: key `consent:{identityId}:{clientId}:{orgId}`. Migrate the existing key by treating it as "any org" until it is next re-consented.
 - **Step-up hook**: if the grant includes `sb:do` and `now - auth_time > 600s`, store the pending consent as a resume record (single-use, 10-minute TTL), redirect to `/step-up?resume=<id>&reason=act_permissions`, then resume (B5).
@@ -162,7 +162,7 @@ Storage today is key/value in Durable Objects (the `oauth` shard of `IdentityDO`
 
 **Done when**
 - Existing consent and CIMD tests stay green.
-- New tests cover: the identity and workspaces render; `org_id` round-trips to the code, token and introspection; `access=read` downgrades; an unverified client gets the flipped buttons and the host as its name; each registry context renders its exact copy; scope strings stay escaped; a stale `auth_time` with `sb:do` redirects to step-up and resumes.
+- New tests cover: the identity and workspaces render; `org_id` round-trips to the code, token and introspection; `access=read` downgrades; an unverified client gets consistent action order and emphasis, and the host as its name; each registry context renders its exact copy; scope strings stay escaped; a stale `auth_time` with `sb:do` redirects to step-up and resumes.
 
 ---
 

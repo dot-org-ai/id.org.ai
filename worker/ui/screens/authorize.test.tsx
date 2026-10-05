@@ -224,15 +224,15 @@ describe('3c · Unverified app', () => {
     expect(d.querySelector('[role="status"][data-status]')).toBeTruthy()
   })
 
-  it('keeps Cancel primary on the left and Allow outlined on the right', async () => {
+  it('keeps Cancel secondary on the left and Allow primary on the right', async () => {
     const d = await render(f3c.default)
     const [cancel, allow] = [...d.querySelectorAll('[data-actions] > button')]
     expect(text(allow)).toBe('Allow')
-    expect(allow!.className).toContain('id-btn--secondary')
+    expect(allow!.className).toContain('id-btn--primary')
     expect(allow!.getAttribute('value')).toBe('true')
     expect(allow!.getAttribute('data-busy-label')).toBe('Allowing…')
     expect(text(cancel)).toBe('Cancel')
-    expect(cancel!.className).toContain('id-btn--primary')
+    expect(cancel!.className).toContain('id-btn--secondary')
     expect(cancel!.getAttribute('value')).toBe('false')
   })
 
@@ -293,13 +293,13 @@ describe('Consent derives the trust level from client.verified (security.md, scr
     expect(tiles).not.toContain('Cx')
   })
 
-  it('verified: false with variant "full" still renders 3c: callout, emphasized Cancel, Verified: No', async () => {
+  it('verified: false with variant "full" still renders 3c: callout, consistent actions, Verified: No', async () => {
     expect(consentVariant(impostor)).toBe('unverified')
     const d = await dom(<Consent {...impostor} />)
     expect(text(d.querySelector('.id-warning__title'))).toBe('id.org.ai can’t vouch for this app')
     const [cancel, allow] = [...d.querySelectorAll('[data-actions] > button')]
-    expect([text(allow), allow!.className.includes('id-btn--secondary')]).toEqual(['Allow', true])
-    expect([text(cancel), cancel!.className.includes('id-btn--primary')]).toEqual(['Cancel', true])
+    expect([text(allow), allow!.className.includes('id-btn--primary')]).toEqual(['Allow', true])
+    expect([text(cancel), cancel!.className.includes('id-btn--secondary')]).toEqual(['Cancel', true])
     expect(sourceRows(d)).toEqual(['Runs on: This computer', 'Returns to: 127.0.0.1:61022', 'Verified: No'])
   })
 

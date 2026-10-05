@@ -50,7 +50,7 @@ There is **no account chip in the header**. The signed-in account is shown insid
   - 7c: send icon, "Admins get an email and can approve in one click."
   - 1d: no icon, "Signed in with GitHub as **bryant22**. Not you?"
 - **Text-only feet** (no buttons) use 13px/20px `var(--id-fg-3)`, centred, `text-wrap: balance`. Examples: "New here? Any option above creates your account.", "Not redirected? Continue to headless.ly", "Wasn't you? Sign this device out".
-- **Cancel stays left; Allow stays right for every app** (Nathan, 2026-10-05). Unverified apps change only the emphasis: Cancel is primary and Allow is outlined (3c).
+- **Cancel is secondary on the left; Allow is primary on the right for every app**, including unverified apps (Nathan, 2026-10-05). Trust labels and warnings do not change action order or emphasis.
 - Nothing else goes in the action band: no help links, no "learn more", and no second copy of links that already exist in the card.
 
 ## Phones (viewport ≤ 480px)
