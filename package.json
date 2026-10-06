@@ -89,7 +89,8 @@
     "test:motion": "node test-visual/motion-check.mjs",
     "test:agent-visual": "node test-visual/agent-diff.mjs",
     "test:agent-check": "node test-visual/agent-check.mjs",
-    "test:agent-behaviour": "node test-visual/agent-behaviour.mjs"
+    "test:agent-behaviour": "node test-visual/agent-behaviour.mjs",
+    "test:phone": "node test-visual/phone-check.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",
