@@ -113,7 +113,14 @@
 
 /* ── Base ────────────────────────────────────────────────────────────────── */
 
+/* iOS doesn't inflate text in landscape; pinch zoom still works. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
+  /* No grey or blue flash on tap: controls show their own pressed and focus states. */
+  -webkit-tap-highlight-color: transparent;
   margin: 0;
   background: var(--id-bg);
   color: var(--id-fg);
@@ -541,6 +548,9 @@ details[data-x][open] > summary [data-chev-d] {
   color: var(--id-accent);
 }
 .id-input {
+  /* No native field styling (iOS Safari's inner shadow and corners). */
+  -webkit-appearance: none;
+  appearance: none;
   box-sizing: border-box;
   width: 100%;
   min-height: var(--id-control-h);
@@ -556,6 +566,19 @@ details[data-x][open] > summary [data-chev-d] {
 }
 .id-input:focus {
   border-color: var(--id-select);
+  box-shadow: var(--id-sh-input), var(--id-ring);
+}
+/* Autofill keeps the card's colours: Chrome and Safari otherwise paint the
+   field light blue or yellow behind an !important background, and Firefox
+   filters it. An inset shadow paints over that background. */
+.id-input:-webkit-autofill {
+  -webkit-text-fill-color: var(--id-fg);
+  caret-color: var(--id-fg);
+  box-shadow: var(--id-sh-input), inset 0 0 0 100px var(--id-panel);
+  filter: none;
+}
+.id-input:-webkit-autofill:focus {
+  box-shadow: var(--id-sh-input), inset 0 0 0 100px var(--id-panel), var(--id-ring);
 }
 .id-select-wrap {
   position: relative;
@@ -1846,6 +1869,37 @@ button.id-link[hidden] {
   }
   .id-radios--row > .id-radio {
     flex-basis: auto;
+  }
+  /* The connector shrinks (owner direction, 2026-10-06): 48px tiles (56 × 0.857,
+     content and ring with them) and the middle three dots. The middle dot still
+     becomes the verdict, and the pulse still runs toward the destination. */
+  .id-tile-wrap {
+    zoom: 0.857;
+  }
+  .id-conn__dot--0,
+  .id-conn__dot--4 {
+    display: none;
+  }
+  /* Every md control is 48px, as the action band's buttons are (owner direction, 2026-10-06). */
+  .id-input:not(.id-textarea),
+  .id-btn:not(.id-btn--sm) {
+    min-height: var(--id-control-h-phone);
+  }
+  .id-check {
+    min-height: 44px;
+  }
+}
+
+/* Phones and touch screens (owner direction, 2026-10-06). Field text is 16px:
+   below that, iOS Safari zooms the page when a field takes focus. A coarse
+   pointer covers landscape phones, which are wider than 480px. */
+@media (max-width: 480px), (pointer: coarse) {
+  .id-input,
+  .id-select option {
+    font-size: 16px;
+  }
+  .id-select option {
+    min-height: 44px;
   }
 }
 

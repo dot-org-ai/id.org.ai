@@ -67,6 +67,8 @@ export interface InputProps {
 
 export function Input(p: InputProps): JSX.Element {
   const describedBy = p.error ? `${p.id}-error` : p.hint ? `${p.id}-hint` : undefined
+  // An address is typed as is: phone keyboards don't capitalise or correct it.
+  const literal = p.type === 'email'
   return (
     <input
       class="id-input"
@@ -76,6 +78,9 @@ export function Input(p: InputProps): JSX.Element {
       value={p.value}
       placeholder={p.placeholder}
       autocomplete={p.autocomplete}
+      autocapitalize={literal ? 'none' : undefined}
+      autocorrect={literal ? 'off' : undefined}
+      spellcheck={literal ? false : undefined}
       required={p.required ? true : undefined}
       autofocus={p.autofocus ? true : undefined}
       maxlength={p.maxlength}
