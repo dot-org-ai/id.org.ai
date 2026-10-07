@@ -13,7 +13,7 @@ import { listUserOrgMemberships } from '../../src/sdk/workos/upstream'
 import type { OrgMembershipValidator } from '../../src/sdk/oauth/provider'
 
 /** The WorkOS user id stored on the identity record (`identity:{id}` → `{ workosUserId }`). */
-async function workosUserIdOf(env: Env, identityId: string): Promise<string | null> {
+export async function workosUserIdOf(env: Env, identityId: string): Promise<string | null> {
   const stub = getStubForIdentity(env, identityId)
   const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${identityId}` }).catch(() => null)
   const id = (stored?.value as { workosUserId?: unknown } | null | undefined)?.workosUserId

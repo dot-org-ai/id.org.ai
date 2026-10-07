@@ -45,6 +45,8 @@ import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from
 import type { VerifyTokenResult } from '../src/sdk/auth'
 import { authVerifyRoutes, verifyIdentityTokenWithEnv } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
+import { orgRoleOf } from './utils/org-role'
+import type { AccountRole } from '../src/sdk/workos/roles'
 import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
@@ -275,6 +277,19 @@ export class AuthService extends WorkerEntrypoint<Env> {
   async isPlatformAdmin(token: string): Promise<boolean> {
     const user = await this.getUser(token)
     return user?.platformRole === 'superadmin'
+  }
+
+  // ── orgRole ─────────────────────────────────────────────────────────
+  // The role a person holds in an organization: 'owner' | 'admin' | 'editor'
+  // | 'viewer', or null when they have no active membership there. `sub` is
+  // the identity id from an id.org.ai id_token / access token (the OIDC
+  // `sub`); `orgId` defaults to PLATFORM_ORG_ID. Read live from WorkOS, so a
+  // relying party gets the current role, not one frozen into a token. For
+  // bound estate Workers that already verified the token themselves
+  // (e.g. emails.do deciding who administers every mailbox).
+
+  async orgRole(sub: string, orgId?: string): Promise<AccountRole | null> {
+    return orgRoleOf(this.env, sub, orgId)
   }
 
   // ── invalidate ──────────────────────────────────────────────────────
