@@ -1,0 +1,52 @@
+# Typecheck and the full test suite on every PR and every push to main.
+# Needs no repository secret: the Workers pool runs locally in Miniflare,
+# WorkOS is mocked, and vitest.config.ts supplies test-only bindings.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CI: true
+  WRANGLER_SEND_METRICS: false
+
+jobs:
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test (Workers pool)
+        run: pnpm test:workers
+
+      - name: Test (Node)
+        run: pnpm test:node
+
+      - name: Test (UI)
+        run: pnpm test:ui
