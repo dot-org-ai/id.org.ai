@@ -18,6 +18,7 @@ import {
   extractGitHubId,
   fetchGitHubUsername,
   updateWorkOSUser,
+  getOrgMembership,
   updateOrgMembership,
   deleteOrgMembership,
   fetchWorkOSUserProfile,
@@ -59,6 +60,7 @@ import {
 } from '../../src/sdk/workos/tenant-vault'
 import { PIPES_PROVIDERS, getAccessToken, listConnections, getConnection, disconnectConnection, getConnectionStatus } from '../../src/sdk/workos/pipes'
 import type { PipesProvider } from '../../src/sdk/workos/pipes'
+import { legacyOpenRoutes, requireOrgAccess, requirePlatform, requireSelfOrPlatform } from '../utils/org-authz'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -310,6 +312,9 @@ app.get('/api/orgs/:id/members', async (c) => {
 
   const orgId = c.req.param('id')
   const apiKey = c.env.WORKOS_API_KEY
+  // Members of :id may read it (B13.3).
+  const denied = await requireOrgAccess(c, orgId, 'member')
+  if (denied) return denied
 
   // Active memberships + pending invitations, fetched in parallel.
   const [memberships, invitations] = await Promise.all([
@@ -332,6 +337,28 @@ app.get('/api/orgs/:id/members', async (c) => {
   return c.json({ members: [...activeRows, ...pendingRows] })
 })
 
+// A membership or invitation id from the path. WorkOS ids are letters, digits
+// and underscores; anything else (dots, slashes, `?`, `#`, after decoding)
+// could steer the WorkOS URL, so it is a 404 before any call.
+const WORKOS_ID = /^[A-Za-z0-9_]{1,128}$/
+
+function memberNotFound(c: any): Response {
+  return errorResponse(c, 404, ErrorCode.NotFound, 'No such member or invitation in this organization')
+}
+
+// Resolve `id` to a membership or invitation of `orgId`, or null. The role on
+// :id was checked by requireOrgAccess; this checks the thing being changed
+// belongs to :id too, so an admin of one org can't act on another's members
+// by putting their own org in the path (phase 4 review B1).
+async function memberOf(apiKey: string, orgId: string, id: string): Promise<{ kind: 'membership' | 'invitation' } | null> {
+  if (!WORKOS_ID.test(id)) return null
+  const asInvitation = async () => ((await getInvitation(apiKey, id))?.organization_id === orgId ? { kind: 'invitation' as const } : null)
+  const asMembership = async () => ((await getOrgMembership(apiKey, id))?.organization_id === orgId ? { kind: 'membership' as const } : null)
+  if (id.startsWith('invitation_')) return asInvitation()
+  if (id.startsWith('om_') || id.startsWith('member_')) return asMembership()
+  return (await asInvitation()) ?? (await asMembership())
+}
+
 // PATCH /api/orgs/:id/members/:membershipId — Change a member's role.
 // Wraps WorkOS PUT /user_management/organization_memberships/:id { role_slug }.
 app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
@@ -344,11 +371,17 @@ app.patch('/api/orgs/:id/members/:membershipId', async (c) => {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
+  // Only an owner or admin of :id changes roles (B13.3).
+  const denied = await requireOrgAccess(c, c.req.param('id'), 'admin')
+  if (denied) return denied
+
   const membershipId = c.req.param('membershipId')
   const body = (await c.req.json().catch(() => ({}))) as { role?: string }
   if (!body.role) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'role is required')
   }
+
+  if ((await memberOf(c.env.WORKOS_API_KEY, c.req.param('id'), membershipId))?.kind !== 'membership') return memberNotFound(c)
 
   const roleSlug = accountRoleToWorkosSlug(body.role)
   const updated = await updateOrgMembership(c.env.WORKOS_API_KEY, membershipId, roleSlug)
@@ -373,22 +406,19 @@ app.delete('/api/orgs/:id/members/:membershipId', async (c) => {
     return errorResponse(c, 401, ErrorCode.Unauthorized, 'Authentication required')
   }
 
+  // Only an owner or admin of :id removes members or rescinds invites (B13.3).
+  const denied = await requireOrgAccess(c, c.req.param('id'), 'admin')
+  if (denied) return denied
+
   const id = c.req.param('membershipId')
   const apiKey = c.env.WORKOS_API_KEY
 
-  // Invitation id → rescind. Membership id → delete. We branch on the WorkOS
-  // id prefix; for ambiguous ids we look the invitation up first.
-  const looksLikeInvitation = id.startsWith('invitation_')
-  let ok: boolean
-  if (looksLikeInvitation) {
-    ok = await revokeInvitation(apiKey, id)
-  } else if (id.startsWith('om_') || id.startsWith('member_')) {
-    ok = await deleteOrgMembership(apiKey, id)
-  } else {
-    // Unknown prefix: probe the invitation API, else treat as a membership.
-    const inv = await getInvitation(apiKey, id)
-    ok = inv ? await revokeInvitation(apiKey, id) : await deleteOrgMembership(apiKey, id)
-  }
+  // Invitation id → rescind. Membership id → delete. memberOf branches on the
+  // WorkOS id prefix (an unknown prefix tries the invitation first) and only
+  // answers for one that belongs to :id.
+  const found = await memberOf(apiKey, c.req.param('id'), id)
+  if (!found) return memberNotFound(c)
+  const ok = found.kind === 'invitation' ? await revokeInvitation(apiKey, id) : await deleteOrgMembership(apiKey, id)
 
   if (!ok) {
     return errorResponse(c, 502, ErrorCode.ServerError, 'Failed to remove member')
@@ -415,6 +445,9 @@ async function handleInvite(c: any): Promise<Response> {
   }
 
   const orgId = c.req.param('id')
+  // Only an owner or admin of :id invites (B13.3).
+  const denied = await requireOrgAccess(c, orgId, 'admin')
+  if (denied) return denied
   const body = (await c.req.json().catch(() => ({}))) as { email?: string; role?: string }
   if (!body.email) {
     return errorResponse(c, 400, ErrorCode.InvalidRequest, 'email is required')
@@ -549,6 +582,11 @@ app.get('/admin-portal', async (c) => {
   if (!c.env.WORKOS_API_KEY) {
     return errorResponse(c, 503, ErrorCode.ServiceUnavailable, 'WorkOS is not configured')
   }
+  // An owner or admin of the organization (or a platform caller) only (B13.2).
+  if (!legacyOpenRoutes(c.env)) {
+    const denied = await requireOrgAccess(c, orgId, 'admin')
+    if (denied) return denied
+  }
 
   try {
     const result = await getAdminPortalUrl(orgId, c.env.WORKOS_API_KEY)
@@ -565,6 +603,8 @@ app.get('/admin-portal', async (c) => {
 // POST /fga/setup — Initialize FGA resource types (admin only, run once)
 app.post('/fga/setup', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   await defineResourceTypes(c.env.WORKOS_API_KEY)
   return c.json({ ok: true, resourceTypes: FGA_RESOURCE_TYPES.length })
 })
@@ -572,6 +612,8 @@ app.post('/fga/setup', async (c) => {
 // POST /fga/check — Check a permission
 app.post('/fga/check', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as FGACheckRequest
   const authorized = await checkPermission(c.env.WORKOS_API_KEY, body)
   return c.json({ authorized })
@@ -580,6 +622,8 @@ app.post('/fga/check', async (c) => {
 // POST /fga/share — Share a resource cross-tenant
 app.post('/fga/share', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
   const fgaType = entityTypeToFGA(body.resourceType)
   if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
@@ -590,6 +634,8 @@ app.post('/fga/share', async (c) => {
 // DELETE /fga/share — Revoke cross-tenant sharing
 app.delete('/fga/share', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const body = (await c.req.json()) as { resourceType: string; resourceId: string; targetTenant: string; relation?: string }
   const fgaType = entityTypeToFGA(body.resourceType)
   if (!fgaType) return c.json({ error: `Unknown resource type: ${body.resourceType}` }, 400)
@@ -600,6 +646,8 @@ app.delete('/fga/share', async (c) => {
 // GET /fga/accessible — List resources accessible by a user
 app.get('/fga/accessible', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   const resourceType = c.req.query('type')
   const userId = c.req.query('user')
   if (!resourceType || !userId) return c.json({ error: 'type and user query params required' }, 400)
@@ -763,7 +811,8 @@ app.post('/vault/resolve', async (c) => {
   if (gate instanceof Response) return gate
   const { apiKey, tenant } = gate
 
-  const body = await c.req.json<{ name?: string; names?: string[]; template?: string }>().catch(() => ({}))
+  type ResolveBody = { name?: string; names?: string[]; template?: string }
+  const body = await c.req.json<ResolveBody>().catch((): ResolveBody => ({}))
 
   // Single secret resolution — scoped to the caller's tenant.
   if (body.name) {
@@ -815,6 +864,8 @@ app.post('/pipes/token', async (c) => {
   if (!PIPES_PROVIDERS.includes(body.provider as PipesProvider)) {
     return c.json({ error: `Unsupported provider: ${body.provider}. Supported: ${PIPES_PROVIDERS.join(', ')}` }, 400)
   }
+  const denied = legacyOpenRoutes(c.env) ? null : await requireSelfOrPlatform(c, body.userId, body.organizationId)
+  if (denied) return denied
   const token = await getAccessToken(c.env.WORKOS_API_KEY, body.provider as PipesProvider, body.userId, body.organizationId)
   return c.json(token)
 })
@@ -825,6 +876,9 @@ app.get('/pipes/connections', async (c) => {
   const userId = c.req.query('user_id')
   const orgId = c.req.query('organization_id')
   const provider = c.req.query('provider')
+  // Listing every connection (no user_id) is a platform view; a person may list their own.
+  const denied = legacyOpenRoutes(c.env) ? null : userId ? await requireSelfOrPlatform(c, userId, orgId || undefined) : await requirePlatform(c)
+  if (denied) return denied
   const result = await listConnections(c.env.WORKOS_API_KEY, {
     userId: userId || undefined,
     organizationId: orgId || undefined,
@@ -836,6 +890,8 @@ app.get('/pipes/connections', async (c) => {
 // GET /pipes/connections/:id — Get a specific connection
 app.get('/pipes/connections/:id', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   try {
     const connection = await getConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
     return c.json(connection)
@@ -847,6 +903,8 @@ app.get('/pipes/connections/:id', async (c) => {
 // DELETE /pipes/connections/:id — Disconnect a provider
 app.delete('/pipes/connections/:id', async (c) => {
   if (!c.env.WORKOS_API_KEY) return c.json({ error: 'WorkOS not configured' }, 503)
+  const denied = legacyOpenRoutes(c.env) ? null : await requirePlatform(c)
+  if (denied) return denied
   await disconnectConnection(c.env.WORKOS_API_KEY, c.req.param('id'))
   return c.json({ ok: true })
 })
@@ -857,6 +915,8 @@ app.get('/pipes/status', async (c) => {
   const userId = c.req.query('user_id')
   const orgId = c.req.query('organization_id')
   if (!userId) return c.json({ error: 'user_id query param required' }, 400)
+  const denied = legacyOpenRoutes(c.env) ? null : await requireSelfOrPlatform(c, userId, orgId || undefined)
+  if (denied) return denied
   const status = await getConnectionStatus(c.env.WORKOS_API_KEY, userId, orgId || undefined)
   return c.json({ providers: status })
 })

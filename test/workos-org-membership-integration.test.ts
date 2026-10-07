@@ -106,6 +106,18 @@ const workosKeyValidation = (overrides: Record<string, unknown> = {}) => ({
     }),
 })
 
+/**
+ * The routes look a membership or invitation up before changing it, to check
+ * it belongs to the org in the path (phase 4 review B1). Here they all do.
+ */
+const lookupInOrg = {
+  match: (url: string, init?: RequestInit) =>
+    (init?.method ?? 'GET') === 'GET' && /\/user_management\/(organization_memberships|invitations)\/[A-Za-z0-9_]+$/.test(url),
+  res: () => {
+    return jsonResponse({ id: 'x', user_id: 'u', email: 'x@y.z', state: 'pending', organization_id: ORG, role: { slug: 'viewer' }, status: 'active', created_at: 't', updated_at: 't' })
+  },
+}
+
 function mockFetch(
   routes: Array<{ match: (url: string, init?: RequestInit) => boolean; res: () => Response }>,
 ) {
@@ -177,6 +189,7 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
     it('PATCH /api/orgs/:id/members/:membershipId — role-change reaches the handler', async () => {
       mockFetch([
         workosKeyValidation(),
+        lookupInOrg,
         {
           match: (url, init) =>
             url === 'https://api.workos.com/user_management/organization_memberships/om_1' && init?.method === 'PUT',
@@ -210,6 +223,7 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
     it('DELETE /api/orgs/:id/members/:membershipId — remove member reaches the handler', async () => {
       mockFetch([
         workosKeyValidation(),
+        lookupInOrg,
         {
           match: (url, init) =>
             url === 'https://api.workos.com/user_management/organization_memberships/om_42' && init?.method === 'DELETE',
@@ -227,6 +241,7 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
     it('DELETE /api/orgs/:id/members/:invitationId — revoke invite reaches the handler', async () => {
       mockFetch([
         workosKeyValidation(),
+        lookupInOrg,
         {
           match: (url, init) =>
             url === 'https://api.workos.com/user_management/invitations/invitation_9/revoke' && init?.method === 'POST',
@@ -327,9 +342,17 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
       expect(res.status).toBe(401)
     })
 
-    it('accepts a valid id.org.ai-issued oai_* key (DO path, unchanged)', async () => {
+    // B13.3 (docs/product-update/spec/backend.md#b13): this used to pin that any
+    // authenticated oai_* key could read any org's members. Reads now need
+    // membership of :id, so the key's person is a member here; the regression
+    // it guards (the DO credential path, no WorkOS key validation) is unchanged.
+    it('accepts a valid id.org.ai-issued oai_* key whose person is a member (DO path)', async () => {
       mockFetch([
-        // memberships + invites — no WorkOS validation call expected
+        // the caller's memberships (B13.3), then members + invites — no WorkOS validation call expected
+        {
+          match: (url) => url.includes('/user_management/organization_memberships') && url.includes('user_id=user_test'),
+          res: () => jsonResponse({ data: [{ id: 'om_t', user_id: 'user_test', organization_id: ORG, role: { slug: 'viewer' }, status: 'active', created_at: 't', updated_at: 't' }] }),
+        },
         {
           match: (url) => url.includes('/user_management/organization_memberships') && url.includes('organization_id='),
           res: () => jsonResponse({ data: [] }),
@@ -359,7 +382,7 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
         getAgent: vi.fn(async () => null),
         touchAgent: vi.fn(async () => {}),
         checkRateLimit: vi.fn(async () => ({ allowed: true, remaining: 99, resetAt: Date.now() + 60000 })),
-        oauthStorageOp: vi.fn(async () => ({ value: undefined })),
+        oauthStorageOp: vi.fn(async () => ({ value: { workosUserId: 'user_test' } })),
       } as unknown as IdentityStub
 
       const app = makeApp(makeEnv(), () => stub)
@@ -370,6 +393,27 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
       const fetchMock = (globalThis.fetch as unknown) as ReturnType<typeof vi.fn>
       const calls = fetchMock.mock.calls.map(([u]) => (typeof u === 'string' ? u : (u as URL).toString()))
       expect(calls.some((u) => u.includes('/api_keys/validations'))).toBe(false)
+    })
+
+    it('refuses a valid oai_* key whose person is not a member of :id (B13.3)', async () => {
+      mockFetch([
+        {
+          match: (url) => url.includes('/user_management/organization_memberships') && url.includes('user_id=user_test'),
+          res: () => jsonResponse({ data: [] }),
+        },
+      ])
+      const stub = {
+        validateApiKey: vi.fn(async () => ({ valid: true, identityId: 'human:test-user', scopes: ['read', 'write'], level: 2 as const })),
+        getSession: vi.fn(async () => ({ valid: false })),
+        getIdentity: vi.fn(async (id: string) => ({ id, type: 'human' as const, name: 'test-user', verified: true, level: 2 as const, claimStatus: 'claimed' as const })),
+        getAgent: vi.fn(async () => null),
+        touchAgent: vi.fn(async () => {}),
+        checkRateLimit: vi.fn(async () => ({ allowed: true, remaining: 99, resetAt: Date.now() + 60000 })),
+        oauthStorageOp: vi.fn(async () => ({ value: { workosUserId: 'user_test' } })),
+      } as unknown as IdentityStub
+      const app = makeApp(makeEnv(), () => stub)
+      const res = await app(req(`/api/orgs/${ORG}/members`, {}, 'oai_test_user_key'))
+      expect(res.status).toBe(403)
     })
 
     it('rejects an invalid oai_* key with 401 (presented-but-invalid path)', async () => {
@@ -447,5 +491,49 @@ describe('integration: real authenticateRequest middleware + /api/orgs/*', () =>
         expect(m).toHaveProperty('status', 'active')
       }
     })
+  })
+})
+
+describe('phase 4 review B2: the caller is the credential that authenticated, not the Authorization header', () => {
+  /** A person's own id.org.ai key (hly_sk_) that the DO validates; the person belongs to no org. */
+  function nativeKeyStub(): IdentityStub {
+    return {
+      ...emptyStub(),
+      validateApiKey: vi.fn(async (key: string) => (key === 'hly_sk_persons_own_key' ? { valid: true, identityId: 'human:nobody', level: 2 } : { valid: false })),
+      getIdentity: vi.fn(async (id: string) => (id === 'human:nobody' ? { id, type: 'human', name: 'Nobody', verified: true, level: 2, claimStatus: 'claimed' } : null)),
+      oauthStorageOp: vi.fn(async () => ({ value: { workosUserId: 'user_nobody' } })),
+    } as unknown as IdentityStub
+  }
+
+  it('a native key in X-API-Key plus `Bearer sk_junk` is refused on another org, and WorkOS never validates the junk', async () => {
+    const fetchFn = mockFetch([
+      {
+        match: (url) => url.includes('/user_management/organization_memberships') && url.includes('user_id=user_nobody'),
+        res: () => jsonResponse({ data: [] }),
+      },
+    ])
+    const app = makeApp(makeEnv(), () => nativeKeyStub())
+    const res = await app(
+      new Request(`https://id.org.ai/api/orgs/org_victim/members/om_victim`, {
+        method: 'PATCH',
+        headers: { 'x-api-key': 'hly_sk_persons_own_key', authorization: 'Bearer sk_anything_at_all', 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'owner' }),
+      }),
+    )
+    expect(res.status).toBe(403)
+    const urls = fetchFn.mock.calls.map(([u, i]) => `${(i as RequestInit | undefined)?.method ?? 'GET'} ${String(u)}`)
+    expect(urls.some((u) => u.includes('/api_keys/validations'))).toBe(false)
+    expect(urls.some((u) => u.startsWith('PUT '))).toBe(false)
+  })
+
+  it('a WorkOS sk_ key sent as X-API-Key is the service caller for its own org', async () => {
+    mockFetch([
+      workosKeyValidation(),
+      { match: (url) => url.includes('/user_management/organization_memberships') && url.includes('organization_id='), res: () => jsonResponse({ data: [] }) },
+      { match: (url) => url.includes('/user_management/invitations') && url.includes('organization_id='), res: () => jsonResponse({ data: [] }) },
+    ])
+    const app = makeApp(makeEnv(), () => emptyStub())
+    const res = await app(new Request(`https://id.org.ai/api/orgs/${ORG}/members`, { headers: { 'x-api-key': WORKOS_SK } }))
+    expect(res.status).toBe(200)
   })
 })

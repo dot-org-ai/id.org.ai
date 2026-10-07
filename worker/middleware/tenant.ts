@@ -12,6 +12,7 @@ import { SigningKeyManager } from '../../src/sdk/jwt/signing'
 import { parseCookieValue } from '../utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
+import { workosUrl } from '../../src/sdk/workos/base'
 
 /**
  * Get a DO stub for a specific identity shard.
@@ -50,6 +51,25 @@ export function getSigningKeyManager(env: Env): SigningKeyManager {
     cachedSigningKeyManager = new SigningKeyManager((op) => getStubForIdentity(signingKeyManagerEnv!, 'oauth').oauthStorageOp(op))
   }
   return cachedSigningKeyManager
+}
+
+let cachedDlvpKeyManager: SigningKeyManager | null = null
+let dlvpKeyManagerEnv: Env | null = null
+
+/**
+ * The DLVP signer's own key set (storage key `dlvp-signing-keys` in the
+ * 'oauth' shard). It is NOT the id.org.ai issuer key: nothing publishes it at
+ * /.well-known/jwks.json, so no sign-in verifier anywhere (this worker, the
+ * `auth` worker, a relying party fetching our JWKS) can accept a DLVP token,
+ * whatever its claims. POST /dlvp/session is anonymous and signs claims the
+ * caller chooses; it must never sign with a published key.
+ */
+export function getDlvpSigningKeyManager(env: Env): SigningKeyManager {
+  dlvpKeyManagerEnv = env
+  if (!cachedDlvpKeyManager) {
+    cachedDlvpKeyManager = new SigningKeyManager((op) => getStubForIdentity(dlvpKeyManagerEnv!, 'oauth').oauthStorageOp(op), 'dlvp-signing-keys')
+  }
+  return cachedDlvpKeyManager
 }
 
 /**
@@ -95,6 +115,51 @@ export async function resolveIdentityId(request: Request, env: Env): Promise<str
 }
 
 /**
+ * How the browser session in the `auth` cookie was established: the `amr`,
+ * `idp` and `auth_time` claims /api/callback (or the magic-link flow) signed
+ * into it. Undefined when there is no verifiable cookie or it carries none
+ * (sessions minted before these claims existed).
+ */
+export async function readSessionSignIn(
+  request: Request,
+  env: Env,
+): Promise<{ amr?: string[]; idp?: string; authTime?: number } | undefined> {
+  const cookie = request.headers.get('cookie')
+  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
+  if (!jwt) return undefined
+  try {
+    const manager = getSigningKeyManager(env)
+    const jwks = await manager.getJWKS()
+    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const amr = Array.isArray(payload.amr) ? payload.amr.filter((x): x is string => typeof x === 'string') : undefined
+    const idp = typeof payload.idp === 'string' ? payload.idp : undefined
+    const authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined
+    if (!amr?.length && !idp && !authTime) return undefined
+    return { ...(amr?.length ? { amr } : {}), ...(idp ? { idp } : {}), ...(authTime ? { authTime } : {}) }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The organization the browser session is in (the `auth` cookie JWT's `org.id`),
+ * verified like readSessionSignIn. Consent preselects it when the request names none.
+ */
+export async function readSessionOrgId(request: Request, env: Env): Promise<string | undefined> {
+  const cookie = request.headers.get('cookie')
+  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
+  if (!jwt) return undefined
+  try {
+    const jwks = await getSigningKeyManager(env).getJWKS()
+    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const org = payload.org as { id?: unknown } | undefined
+    return typeof org?.id === 'string' ? org.id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Resolve the identity ID from a claim token via KV.
  */
 export async function resolveIdentityFromClaim(claimToken: string, env: Env): Promise<string | null> {
@@ -114,7 +179,7 @@ const JWKS_TTL_MS = 10 * 60 * 1000 // 10 minutes
 export async function getLocalJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
   if (_localJwks && Date.now() - _jwksFetchedAt < JWKS_TTL_MS) return _localJwks
 
-  const keys = await fetch(`https://api.workos.com/sso/jwks/${clientId}`)
+  const keys = await fetch(workosUrl(`/sso/jwks/${clientId}`))
     .then((r) => r.json() as Promise<{ keys: jose.JWK[] }>)
     .then((j) => j.keys)
   _localJwks = jose.createLocalJWKSet({ keys })

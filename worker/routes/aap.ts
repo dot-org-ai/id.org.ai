@@ -47,13 +47,14 @@
  * capabilities structured grants instead of flat strings.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import type { AgentMode } from '../../src/sdk/types'
 import { verifyJWT, decodeJWT, importPublicJwk, type JWK, type JWTHeader } from '../../src/sdk/oauth/jwt-verify'
 import { safeFetchJson, assertPublicHttpsUrl } from '../utils/ssrf'
 import { getSigningKeyManager, getStubForIdentity } from '../middleware/tenant'
+import { requestOriginOf } from '../../src/sdk/csrf'
 
 /** ID-JAG token type (RFC 8693 token-exchange subject token) and JWT `typ`. */
 const IDJAG_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id-jag'
@@ -67,7 +68,7 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 // No authentication required. Cached for 1 hour upstream.
 
 app.get('/.well-known/agent-configuration', (c) => {
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   return c.json(
     {
       version: '1.0-draft',
@@ -125,7 +126,7 @@ app.get('/.well-known/agent-configuration', (c) => {
 
 // ── Auth helper ───────────────────────────────────────────────────────────
 
-function requireTenant(c: Parameters<Parameters<typeof app.post>[1]>[0]) {
+function requireTenant(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
     return null
@@ -270,7 +271,7 @@ async function verifyHostJwt(c: any): Promise<AapAuth | { error: string } | null
   if (decoded.header.alg === 'none') return { error: 'unsigned host jwt rejected' }
 
   const iss = typeof decoded.payload.iss === 'string' ? decoded.payload.iss : undefined
-  const selfOrigin = new URL(c.req.url).origin
+  const selfOrigin = requestOriginOf(c.req.url)
   const selfIssued = iss === selfOrigin
 
   let key: CryptoKey | null
@@ -634,7 +635,7 @@ app.post('/agent/reactivate', async (c) => {
 //   POST → verify the ID-JAG and return the resolved identity, or fail closed.
 
 app.get('/agent/identity', (c) => {
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   return c.json({
     endpoint: 'agent-identity',
     description: 'POST an ID-JAG assertion to resolve an agent identity.',
@@ -652,7 +653,7 @@ app.get('/agent/identity', (c) => {
 })
 
 app.post('/agent/identity', async (c) => {
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
   const body = (await c.req.json().catch(() => ({}))) as { assertion?: string }
   const assertion = typeof body.assertion === 'string' ? body.assertion : undefined
   if (!assertion) {
@@ -744,7 +745,7 @@ const SET_ERR = (c: any, err: string, description: string, status: 400 | 401 | 4
   c.json({ err, description }, status)
 
 app.post('/agent/events', async (c) => {
-  const origin = new URL(c.req.url).origin
+  const origin = requestOriginOf(c.req.url)
 
   // A SET may arrive as application/secevent+jwt (raw JWT) or JSON { set }.
   const raw = await c.req.text().catch(() => '')

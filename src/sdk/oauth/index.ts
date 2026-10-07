@@ -74,6 +74,8 @@ export type { JWTVerifyResult, JWTVerifyOptions, JWTHeader, JWTPayload } from '.
 
 // Consent screen generation (canonical, from @dotdo/oauth)
 export { generateConsentScreenHtml, getScopeDescription, consentCoversScopes } from './consent'
+export { renderConsentFallback, consentClientName, type ConsentViewModel } from './consent-view'
+export type { ConsentRenderer } from './provider'
 export type { ConsentScreenOptions } from './consent'
 
 // Guards / validation (canonical, from @dotdo/oauth)

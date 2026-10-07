@@ -82,12 +82,31 @@ export function signerFromKey(key: SigningKey, issuer = RESOLVER_ORIGIN): DlvpSi
 }
 
 /**
+ * The `iss` of every JWT the production DLVP signer mints (session
+ * request-objects and receipt VCs). It must never be `https://id.org.ai`,
+ * the issuer of id.org.ai sign-in sessions: the signer shares the id.org.ai
+ * key, POST /dlvp/session is anonymous and puts the caller's `identifier`
+ * in `sub`, and every session verifier (the `auth` cookie in
+ * resolveIdentityId, /api/me, /api/session, /auth/verify, …) accepts any
+ * token signed by that key whose `iss` is `https://id.org.ai`. Signed
+ * under that issuer, a DLVP session for `identifier: "<user id>"` WAS a
+ * sign-in session as that user. Under this issuer those verifiers refuse it
+ * (their issuer check is exact), and DLVP in turn refuses a sign-in JWT
+ * passed as a session.
+ */
+export const DLVP_TOKEN_ISSUER = `${RESOLVER_ORIGIN}/dlvp`
+
+/**
  * Wrap the DO-backed SigningKeyManager (the id.org.ai issuer key) as a
  * DlvpSigner — the PRODUCTION signer. Stateless: it signs/verifies the session
  * request-object with the estate's existing issuer key, so DLVP needs no new
- * provisioned binding.
+ * provisioned binding, but always under DLVP_TOKEN_ISSUER, never the sign-in
+ * session issuer (see above).
  */
-export function signerFromKeyManager(manager: SigningKeyManager, issuer = RESOLVER_ORIGIN): DlvpSigner {
+export function signerFromKeyManager(manager: SigningKeyManager, issuer = DLVP_TOKEN_ISSUER): DlvpSigner {
+  if (!issuer.startsWith(`${RESOLVER_ORIGIN}/`) || issuer.replace(/\/+$/, '') === RESOLVER_ORIGIN) {
+    throw new Error(`DLVP tokens must not be signed under the sign-in issuer (got ${issuer})`)
+  }
   return {
     async sign(claims, opts) {
       return manager.sign({ sub: 'dlvp', ...claims }, { issuer, expiresIn: opts.expiresIn })

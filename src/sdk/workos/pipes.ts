@@ -14,8 +14,9 @@
  * can be called from the Hono routes in worker/index.ts without needing
  * to instantiate a WorkerEntrypoint.
  */
+import { workosUrl } from './base'
 
-const PIPES_BASE = 'https://api.workos.com/pipes/v1'
+const pipesBase = () => workosUrl('/pipes/v1')
 
 // ============================================================================
 // Types
@@ -80,7 +81,7 @@ export async function getAccessToken(
   const body: Record<string, string> = { provider, user_id: userId }
   if (organizationId) body.organization_id = organizationId
 
-  const resp = await fetch(`${PIPES_BASE}/access-tokens`, {
+  const resp = await fetch(`${pipesBase()}/access-tokens`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -113,7 +114,7 @@ export async function listConnections(
   if (options?.limit) params.set('limit', String(options.limit))
   if (options?.after) params.set('after', options.after)
 
-  const url = `${PIPES_BASE}/connections${params.toString() ? '?' + params.toString() : ''}`
+  const url = `${pipesBase()}/connections${params.toString() ? '?' + params.toString() : ''}`
   const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
@@ -128,7 +129,7 @@ export async function listConnections(
  * Get a specific connection by ID.
  */
 export async function getConnection(apiKey: string, connectionId: string): Promise<PipesConnection> {
-  const resp = await fetch(`${PIPES_BASE}/connections/${connectionId}`, {
+  const resp = await fetch(`${pipesBase()}/connections/${connectionId}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
   if (!resp.ok) {
@@ -142,7 +143,7 @@ export async function getConnection(apiKey: string, connectionId: string): Promi
  * Disconnect (revoke) a connection.
  */
 export async function disconnectConnection(apiKey: string, connectionId: string): Promise<void> {
-  const resp = await fetch(`${PIPES_BASE}/connections/${connectionId}`, {
+  const resp = await fetch(`${pipesBase()}/connections/${connectionId}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${apiKey}` },
   })

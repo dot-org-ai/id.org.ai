@@ -40,6 +40,7 @@ import type { CredentialFactService, CredentialVerificationEvent, HeldCredential
 import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
+import { configureWorkOSBase } from '../../sdk/workos/base'
 import { isClaimedBranch } from '../../sdk/claim/policy'
 
 // ============================================================================
@@ -72,6 +73,9 @@ export interface IdentityEnv {
   GITHUB_APP_ID?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_WEBHOOK_SECRET?: string
+
+  // Test seam: the local WorkOS stub in dev (src/sdk/workos/base.ts); unset in production
+  WORKOS_API_BASE?: string
 }
 
 // ============================================================================
@@ -83,6 +87,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
   constructor(ctx: DurableObjectState, env: IdentityEnv) {
     super(ctx, env)
+    // The DO can run in its own isolate; give its WorkOS calls the same base as the worker's.
+    configureWorkOSBase(env)
     ctx.blockConcurrencyWhile(async () => {
       const done = await ctx.storage.get<boolean>('_idx_backfilled')
       if (!done) {
@@ -487,6 +493,48 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     }
 
     throw new Error(`Unknown storage operation: ${op.op}`)
+  }
+
+  // ─── One-time values (RPC) ────────────────────────────────────────────
+  //
+  // Read a key and delete it in ONE call, answering the value to exactly one
+  // caller. The `_auth_code` redemption at /callback used to get over one RPC
+  // and delete over another, so N parallel redemptions of one code all read
+  // it and all minted a session. As in consumeBudget below, the delete follows
+  // the read with no other await between them, and the input gate holds every
+  // other event until the read settles, so a second call sees the key gone.
+  async takeOnce(input: { key: string }): Promise<{ value: unknown }> {
+    const value = await this.ctx.storage.get(input.key)
+    if (value === undefined) return { value: undefined }
+    await this.ctx.storage.delete(input.key)
+    return { value }
+  }
+
+  // ─── Fixed-window budgets (RPC) ───────────────────────────────────────
+  //
+  // Increment-and-check in ONE call. The route used to read the counter over
+  // one RPC and write it back over another, so N parallel requests could all
+  // read the same count and all pass (the magic-link code budget, id-ml S2).
+  // Here the get and the put run inside a single invocation with no other
+  // await between them: the Durable Object's input gate holds every other
+  // event until the storage read settles, and the put follows synchronously
+  // after it, so no second call can observe the pre-increment count (the same
+  // pattern as claimHostRegistration below). The caller acts (asks WorkOS,
+  // sends a mail) only when `allowed` is true, i.e. when the POST-increment
+  // count is within budget.
+  async consumeBudget(input: { key: string; max: number; windowMs: number }): Promise<{ allowed: boolean; count: number; retryAfterSec: number }> {
+    const now = Date.now()
+    const current = await this.ctx.storage.get<{ count: number; windowStartedAt: number }>(input.key)
+    if (!current || typeof current.count !== 'number' || now - current.windowStartedAt >= input.windowMs) {
+      await this.ctx.storage.put(input.key, { count: 1, windowStartedAt: now })
+      return { allowed: 1 <= input.max, count: 1, retryAfterSec: 0 }
+    }
+    if (current.count >= input.max) {
+      return { allowed: false, count: current.count, retryAfterSec: Math.max(1, Math.ceil((current.windowStartedAt + input.windowMs - now) / 1000)) }
+    }
+    const count = current.count + 1
+    await this.ctx.storage.put(input.key, { count, windowStartedAt: current.windowStartedAt })
+    return { allowed: true, count, retryAfterSec: 0 }
   }
 
   // ─── AAP Host Registration Claim (RPC) — ax-p18 ───────────────────────

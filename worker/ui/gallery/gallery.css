@@ -1,0 +1,57 @@
+/*
+ * Design gallery only (/__design, dev). Never loaded by a production page:
+ * build:ui writes it as its own hashed asset.
+ */
+
+.id-gallery__title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.id-gallery {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.id-gallery__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.id-gallery__missing {
+  color: var(--id-fg-3);
+}
+
+/* Component sheet (/__design/components) */
+.id-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.id-sheet__section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.id-sheet__heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--id-fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.id-sheet__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.id-sheet__wide {
+  max-width: none;
+}

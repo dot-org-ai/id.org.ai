@@ -56,6 +56,17 @@ function makeApp(env: Env) {
         scopes: wos.permissions ?? ['read', 'write'],
         capabilities: ['explore', 'search', 'fetch', 'try', 'do'],
       } as never)
+      // As the broker does: only a key WorkOS validated is marked a key caller.
+      c.set('identity', {
+        id: wos.id ?? 'workos-key',
+        type: 'service',
+        name: wos.name ?? 'workos-service-key',
+        tenantId: wos.organization_id,
+        verified: true,
+        level: 2,
+        claimStatus: 'claimed',
+        credential: 'workos-key',
+      } as never)
     } else {
       c.set('auth', { authenticated: false, level: 0, scopes: [], capabilities: [] } as never)
     }
@@ -86,6 +97,16 @@ function workosMock(routes: Array<{ match: (url: string, init?: RequestInit) => 
 const validationRoute = {
   match: (url: string) => url === 'https://api.workos.com/api_keys/validations',
   res: () => jsonResponse({ id: 'key_1', name: 'SaaS.Studio server token', organization_id: ORG }),
+}
+
+/**
+ * The membership/invitation lookup the write routes make to check the target
+ * belongs to the org in the path (phase 4 review B1). Here it always does.
+ */
+const lookupRoute = {
+  match: (url: string, init?: RequestInit) =>
+    (init?.method ?? 'GET') === 'GET' && /\/user_management\/(organization_memberships|invitations)\/[A-Za-z0-9_]+$/.test(url),
+  res: () => jsonResponse({ id: 'x', user_id: 'u', email: 'x@y.z', state: 'pending', organization_id: ORG, role: { slug: 'viewer' }, status: 'active', created_at: 't', updated_at: 't' }),
 }
 
 function authReq(path: string, init: RequestInit = {}): Request {
@@ -229,6 +250,7 @@ describe('PATCH /api/orgs/:id/members/:membershipId', () => {
     let putBody: any = null
     mockFetch = workosMock([
       validationRoute,
+      lookupRoute,
       {
         match: (url, init) => url === 'https://api.workos.com/user_management/organization_memberships/om_1' && init?.method === 'PUT',
         res: () => jsonResponse({ id: 'om_1', user_id: 'user_1', organization_id: ORG, role: { slug: 'admin' }, status: 'active', created_at: 't', updated_at: 't' }),
@@ -263,6 +285,7 @@ describe('PATCH /api/orgs/:id/members/:membershipId', () => {
   it('502 when the WorkOS update fails', async () => {
     mockFetch = workosMock([
       validationRoute,
+      lookupRoute,
       { match: (url, init) => url.includes('/organization_memberships/om_1') && init?.method === 'PUT', res: () => jsonResponse({}, 404) },
     ])
     vi.stubGlobal('fetch', mockFetch)
@@ -282,6 +305,7 @@ describe('DELETE /api/orgs/:id/members/:membershipId', () => {
     mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url === 'https://api.workos.com/api_keys/validations') return jsonResponse({ id: 'k', organization_id: ORG })
+      if (lookupRoute.match(url, init)) return lookupRoute.res()
       if (init?.method === 'DELETE') {
         calledDelete = url
         return new Response(null, { status: 204 })
@@ -302,6 +326,7 @@ describe('DELETE /api/orgs/:id/members/:membershipId', () => {
     mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url === 'https://api.workos.com/api_keys/validations') return jsonResponse({ id: 'k', organization_id: ORG })
+      if (lookupRoute.match(url, init)) return lookupRoute.res()
       if (url.endsWith('/revoke') && init?.method === 'POST') {
         calledRevoke = url
         return jsonResponse({ id: 'invitation_7', state: 'revoked' })
