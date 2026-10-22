@@ -262,9 +262,36 @@ describe('OAuthProvider - trusted-account mode (ADR-0007)', () => {
         })
         return (await provider.handleAuthorize(new Request(url, { method: 'GET', redirect: 'manual' }), 'user-1')).status
       }
-      expect(await status('http://localhost:3000/cb')).toBe(302)
+      // Accepted, and asked: a loopback port is anyone's to bind (RFC 8252 §8.6).
+      expect(await status('http://localhost:3000/cb')).toBe(200)
       expect(await status('evil://localhost/cb')).toBe(400)
       expect(await status('javascript://localhost/%0aalert(1)')).toBe(400)
+    })
+
+    it('asks at an allowlisted loopback callback, and skips consent at an allowlisted https one', async () => {
+      const provider = createTrustedProvider(['localhost', 'startup.games'])
+      const codeChallenge = await computeS256Challenge('verifier-1234567890abcdef')
+      const authorize = (redirect_uri: string) =>
+        provider.handleAuthorize(
+          new Request(
+            buildAuthorizeUrl({
+              client_id: TRUSTED_CLIENT_ID,
+              redirect_uri,
+              response_type: 'code',
+              scope: 'openid',
+              code_challenge: codeChallenge,
+              code_challenge_method: 'S256',
+            }),
+            { method: 'GET', redirect: 'manual' },
+          ),
+          'user-1',
+        )
+      const local = await authorize('http://localhost:3000/cb')
+      expect(local.status).toBe(200)
+      expect(local.headers.get('Content-Type')).toContain('text/html')
+      const remote = await authorize('https://startup.games/cb')
+      expect(remote.status).toBe(302)
+      expect(new URL(remote.headers.get('location')!).searchParams.get('code')).toBeTruthy()
     })
 
     it('still requires PKCE for the trusted-account public client', async () => {

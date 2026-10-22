@@ -818,6 +818,7 @@ export class OAuthProvider {
       // the trusted-account model — account membership is the trust boundary.
       scopes: ['openid', 'profile', 'email', 'offline_access'],
       // First-party: skip consent screen. Account membership = consent.
+      // A loopback callback on an allowlisted host still asks (handleAuthorize).
       trusted: true,
       tokenEndpointAuthMethod: 'none',
       createdAt: 0,
@@ -993,8 +994,9 @@ export class OAuthProvider {
 
     // ── Check existing consent ──────────────────────────────────────────
     // A first-party (trusted) client skips the consent screen, except for
-    // the sb scopes: delegating api.sb authority is always shown to the
-    // Person once per client (and again on a step-up to more scopes).
+    // the sb scopes (delegating api.sb authority is always shown to the
+    // Person once per client, and again on a step-up to more scopes) and
+    // at a non-https callback (below).
     const consentKey = `consent:${identityId}:${clientId}`
     const existingConsent = await this.storage.get<ConsentRecord>(consentKey)
     const orgHint = params.get('organization_id') || undefined
@@ -1009,9 +1011,11 @@ export class OAuthProvider {
     // The client_id is public (CIMD) or readable from the app's config (DCR),
     // so anyone can start the flow with their own PKCE challenge and catch
     // the code. RFC 8252 §8.6: never approve it silently, even when consent
-    // is on record. CIMD clients are never trusted; first-party (trusted)
-    // clients keep skipping consent.
-    const alwaysAsk = !client.trusted && !redirectUri.startsWith('https://')
+    // is on record. That holds for first-party (trusted) clients too: a
+    // seeded client's id and its localhost dev redirect are just as well
+    // known, and so is the trusted-account client (ADR-0007) on an
+    // allowlisted loopback host. Trusted clients skip consent at https only.
+    const alwaysAsk = !redirectUri.startsWith('https://')
 
     if ((consentRequired && !hasFullConsent) || alwaysAsk) {
       const vm = buildConsentViewModel({

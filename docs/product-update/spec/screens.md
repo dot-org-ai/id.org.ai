@@ -238,7 +238,7 @@ Shown only when there is no id.org.ai session, or the app asked for a fresh one 
 
 ## 3 · Authorize apps
 
-Consent is shown for third-party apps on first use, for any new permission, and always for apps running on this computer (loopback). It always shows who is signed in and which workspace. Act permissions are a choice, not a third button. Cancel is secondary on the left and Allow is primary on the right for every app, including unverified apps (Nathan, 2026-10-05). First-party .do apps skip consent, except for `sb:*` scopes (the server already enforces this).
+Consent is shown for third-party apps on first use, for any new permission, and always for apps running on this computer (loopback). It always shows who is signed in and which workspace. Act permissions are a choice, not a third button. Cancel is secondary on the left and Allow is primary on the right for every app, including unverified apps (Nathan, 2026-10-05). First-party .do apps skip consent, except for `sb:*` scopes and at a loopback callback such as a `localhost:3000` dev redirect (the server already enforces this).
 
 <a id="3a"></a>
 

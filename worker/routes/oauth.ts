@@ -230,18 +230,6 @@ app.get('/oauth/authorize', async (c) => {
 
   // Skip CSRF wrapping for service binding callers — the proxy handles its own security
   const isServiceBinding = !!c.req.header('X-Issuer')
-  // ADR-0007: also skip for the canonical trusted-account client. Trusted-
-  // account clients have `client.trusted === true`, which makes provider.ts
-  // (handleAuthorize, ~line 582) bypass the consent page and call
-  // issueAuthorizationCode directly — there's no consent POST round-trip
-  // where a wrapped state would be unwrapped, so the wrapped value would
-  // leak straight through to the consumer's better-auth callback and fail
-  // CSRF on that side. better-auth (and any standards-conformant OAuth
-  // client) compares the returned `state` against the one it sent and
-  // rejects on mismatch. Same failure mode as 08abc13 fixed for ChatGPT
-  // via the X-Issuer path; same fix shape.
-  const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
-  const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
 
   // A request that asks for (or imitates) an sb scope never takes the
   // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
@@ -250,8 +238,11 @@ app.get('/oauth/authorize', async (c) => {
   // The consent screen binds its form to a CSRF token (the renderer stores it,
   // sets the cookie and folds it into the form's state). Only a rendered
   // consent screen carries it: a login redirect, an error redirect or an issued
-  // code (consent on record) keeps the client's own state untouched.
-  const csrf = !((isServiceBinding && !asksSb) || isTrustedAccount)
+  // code (consent on record) keeps the client's own state untouched. So the
+  // trusted-account client (ADR-0007) gets its state back verbatim when it
+  // skips consent at https, and a CSRF-bound form, which the POST below
+  // requires, when it is asked at a loopback callback.
+  const csrf = !(isServiceBinding && !asksSb)
   const provider = getOAuthProvider(c, { renderConsent: (vm) => renderConsentScreen(c, vm, { csrf }) })
   return provider.handleAuthorize(c.req.raw, identityId, signIn)
 })
