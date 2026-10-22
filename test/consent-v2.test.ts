@@ -164,6 +164,26 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(fields.csrf).toBe(csrf)
   })
 
+  it('a Cursor client at its native callback gets a consent form whose redirect the CSP allows', async () => {
+    const cookies = await signIn('user_01CONSENT_CURSOR')
+    const cursor = 'cursor://anysphere.cursor-mcp/oauth/callback'
+    const reg = await SELF.fetch(`${BASE}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Cursor',
+        redirect_uris: [cursor, 'https://www.cursor.com/agents/mcp/oauth/callback', 'http://localhost:8787/callback'],
+        token_endpoint_auth_method: 'none',
+      }),
+    })
+    expect(reg.status).toBe(201)
+    const { client_id } = (await reg.json()) as { client_id: string }
+    const page = await SELF.fetch(authorizeUrl(client_id, cursor, await challenge()), { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(page.status).toBe(200)
+    // cursor:// has no origin; the POST's 302 to it needs the scheme in form-action.
+    expect(page.headers.get('content-security-policy')).toContain("form-action 'self' cursor:;")
+  })
+
   it('the route renders exactly what the screen renders from the same props', async () => {
     const cookies = await signIn('user_01CONSENT_B')
     const clientId = await register('Same props')

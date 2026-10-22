@@ -94,6 +94,11 @@ describe('renderPage', () => {
       "form-action 'self';",
     )
   })
+
+  it('extends form-action with an allowlisted native-app scheme only', () => {
+    expect(contentSecurityPolicy(['cursor:'])).toContain("form-action 'self' cursor:;")
+    expect(contentSecurityPolicy(['evil:', 'null', 'cursor:x', 'cursor://anysphere.cursor-mcp'])).toContain("form-action 'self';")
+  })
 })
 
 describe('request IDs', () => {

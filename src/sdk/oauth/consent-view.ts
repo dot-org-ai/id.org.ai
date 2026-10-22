@@ -15,6 +15,7 @@
 import type { OAuthProviderClient } from './provider'
 import { isLoopbackUri, looksLikeCimdClientId } from './cimd'
 import { SB_SCOPE_DO, SB_SCOPE_READ, SCOPE_DESCRIPTIONS } from './delegation'
+import { NATIVE_CLIENT_REDIRECTS } from './native-redirects'
 
 const IDENTITY_SCOPES: ReadonlySet<string> = new Set(['openid', 'profile', 'email'])
 
@@ -91,7 +92,8 @@ export function buildConsentViewModel(i: ConsentViewInput): ConsentViewModel {
   const verified = i.client.trusted || (cimd && i.verifiedHosts.has(host.toLowerCase()))
   let origin = ''
   try {
-    origin = new URL(i.redirectUri).origin
+    // A native-app callback (cursor://…) has no origin; form-action must allow its scheme.
+    origin = NATIVE_CLIENT_REDIRECTS.has(i.redirectUri) ? new URL(i.redirectUri).protocol : new URL(i.redirectUri).origin
   } catch {
     /* validated already; never reached */
   }
