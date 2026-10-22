@@ -5,6 +5,7 @@
 import type { Context } from 'hono'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { assetUrl, FONT_PRELOAD, type ClientScript, type Stylesheet } from './assets'
+import { NATIVE_REDIRECT_SCHEMES } from '../../src/sdk/oauth/native-redirects'
 
 export interface RenderOptions {
   /** Document title, for example "Sign in · id.org.ai". */
@@ -32,10 +33,12 @@ export interface RenderOptions {
 
 /**
  * A bare http(s) origin exactly as given (`https://app.example`, `http://[::1]:57585`),
- * or null. Anything with a path, credentials, whitespace or other punctuation is
- * refused, so a redirect origin can never smuggle extra CSP directives.
+ * the scheme of an allowlisted native-app callback (`cursor:`), or null. Anything with
+ * a path, credentials, whitespace or other punctuation is refused, so a redirect origin
+ * can never smuggle extra CSP directives.
  */
 export function bareOrigin(candidate: string): string | null {
+  if (NATIVE_REDIRECT_SCHEMES.has(candidate)) return candidate
   try {
     const u = new URL(candidate)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null

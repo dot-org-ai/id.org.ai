@@ -89,6 +89,7 @@ import {
 } from './delegation'
 import { checkClientSecret, clientHasSecret, hashClientSecret, withHashedSecret } from './client-secret'
 import { buildConsentViewModel, renderConsentFallback, type ConsentViewModel } from './consent-view'
+import { NATIVE_CLIENT_REDIRECTS } from './native-redirects'
 
 export interface OAuthConfig {
   issuer: string
@@ -893,8 +894,10 @@ export class OAuthProvider {
       return oauthError('invalid_client_metadata', 'redirect_uris required for authorization_code grant')
     }
 
-    // Validate redirect URIs (must be HTTPS or localhost for dev)
+    // Validate redirect URIs (must be HTTPS or localhost for dev, or a known
+    // native-client callback registered by a public client)
     for (const uri of redirectUris) {
+      if (tokenEndpointAuthMethod === 'none' && NATIVE_CLIENT_REDIRECTS.has(uri)) continue
       try {
         const parsed = new URL(uri)
         if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {

@@ -380,6 +380,77 @@ describe('OAuthProvider', () => {
       expect(d.error_description).toContain('HTTPS')
     })
 
+    describe('native-client callbacks (Cursor, Grok Bot)', () => {
+      const CURSOR = 'cursor://anysphere.cursor-mcp/oauth/callback'
+      const CURSOR_REDIRECTS = [CURSOR, 'https://www.cursor.com/agents/mcp/oauth/callback', 'http://localhost:8787/callback']
+
+      it('accepts Cursor and Grok Bot registration (their native callback plus https and loopback)', async () => {
+        const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+          client_name: 'Cursor',
+          redirect_uris: CURSOR_REDIRECTS,
+          grant_types: ['authorization_code', 'refresh_token'],
+          response_types: ['code'],
+          token_endpoint_auth_method: 'none',
+        })
+        const res = await provider.handleRegister(req)
+        expect(res.status).toBe(201)
+        expect((await res.json() as Record<string, unknown>).redirect_uris).toEqual(CURSOR_REDIRECTS)
+      })
+
+      it.each([
+        'evil://anysphere.cursor-mcp/oauth/callback',
+        'cursor://evil.example/oauth/callback',
+        'cursor://anysphere.cursor-mcp/oauth/callback/',
+        'cursor://anysphere.cursor-mcp/oauth/callback?x=1',
+        'CURSOR://anysphere.cursor-mcp/oauth/callback',
+      ])('still rejects any other private-use callback: %s', async (uri) => {
+        const req = makeJsonRequest('https://id.org.ai/oauth/register', { client_name: 'Other', redirect_uris: [uri] })
+        expect((await (await provider.handleRegister(req)).json() as Record<string, unknown>).error).toBe('invalid_redirect_uri')
+      })
+
+      it('rejects the native callback for a confidential client', async () => {
+        const req = makeJsonRequest('https://id.org.ai/oauth/register', {
+          client_name: 'Conf', redirect_uris: [CURSOR], token_endpoint_auth_method: 'client_secret_basic',
+        })
+        expect((await (await provider.handleRegister(req)).json() as Record<string, unknown>).error).toBe('invalid_redirect_uri')
+      })
+
+      it('completes authorize and token at the native callback, with PKCE', async () => {
+        const { client_id } = await registerClient(provider, { client_name: 'Cursor', redirect_uris: CURSOR_REDIRECTS })
+        // Skip the consent screen (covered in consent-v2) to reach the code redirect.
+        const s = await storage.get<Record<string, unknown>>(`client:${client_id}`)
+        await storage.put(`client:${client_id}`, { ...s, trusted: true })
+        const tokens = await getAuthCodeTokens(provider, client_id as string, CURSOR, 'user-1', 'v'.repeat(64))
+        expect(tokens.access_token).toBeDefined()
+      })
+
+      it('still requires PKCE at the native callback', async () => {
+        const { client_id } = await registerClient(provider, { client_name: 'Cursor', redirect_uris: CURSOR_REDIRECTS })
+        const url = new URL('https://id.org.ai/oauth/authorize')
+        url.searchParams.set('client_id', client_id as string)
+        url.searchParams.set('redirect_uri', CURSOR)
+        url.searchParams.set('response_type', 'code')
+        const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+        const loc = new URL(res.headers.get('location')!)
+        expect(loc.protocol).toBe('cursor:')
+        expect(loc.searchParams.get('error')).toBe('invalid_request')
+        expect(loc.searchParams.get('code')).toBeNull()
+      })
+
+      it('authorize refuses a native callback the client did not register', async () => {
+        const { client_id } = await registerClient(provider, { redirect_uris: ['https://app.example.com/callback'] })
+        const url = new URL('https://id.org.ai/oauth/authorize')
+        url.searchParams.set('client_id', client_id as string)
+        url.searchParams.set('redirect_uri', CURSOR)
+        url.searchParams.set('response_type', 'code')
+        url.searchParams.set('code_challenge', 'x'.repeat(43))
+        url.searchParams.set('code_challenge_method', 'S256')
+        const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+        expect(res.status).toBe(400)
+        expect((await res.json() as Record<string, unknown>).error).toBe('invalid_request')
+      })
+    })
+
     it('allows localhost redirect URI', async () => {
       const d = await registerClient(provider, { redirect_uris: ['http://localhost:3000/cb'] })
       expect(d.client_id).toBeDefined()
