@@ -1944,6 +1944,17 @@ export class OAuthProvider {
       // Fall through to PKCE verification below.
     }
 
+    // ── Authenticate a confidential client (OAuth 2.1 §4.1.3) ───────────
+    // A client with a secret proves it here whether or not the code has
+    // PKCE: the verifier binds the code to the flow that asked for it, not
+    // to the client. Trusted-account and CIMD clients are public (no
+    // secret), so there is nothing to look up.
+    const publicByKind = this.isTrustedAccountClient(clientId) || looksLikeCimdClientId(clientId)
+    const client = publicByKind ? null : await this.getClient(clientId)
+    if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
+      return oauthError('invalid_client', 'Invalid client credentials', 401)
+    }
+
     // ── Verify PKCE (mandatory per OAuth 2.1) ───────────────────────────
     if (codeData.codeChallenge) {
       if (!codeVerifier) {
@@ -1954,18 +1965,11 @@ export class OAuthProvider {
       if (computedChallenge !== codeData.codeChallenge) {
         return oauthError('invalid_grant', 'Invalid code_verifier')
       }
-    } else if (!this.isTrustedAccountClient(clientId)) {
-      // No PKCE — confidential client must present valid secret.
-      // (Trusted-account clients always have PKCE per /authorize enforcement.)
-      const client = await this.getClient(clientId)
-      if (clientHasSecret(client) && !(await this.verifyClientSecret(client!, clientSecret))) {
-        return oauthError('invalid_client', 'Invalid client credentials', 401)
-      }
+    } else if (!this.isTrustedAccountClient(clientId) && !clientHasSecret(client)) {
       // A code without PKCE is only ever issued to a confidential client;
       // a public one (no secret, or a CIMD client) must never redeem one.
-      if (!clientHasSecret(client)) {
-        return oauthError('invalid_grant', 'code_verifier is required')
-      }
+      // (Trusted-account clients always have PKCE per /authorize enforcement.)
+      return oauthError('invalid_grant', 'code_verifier is required')
     }
 
     // ── RFC 8707 at the token endpoint: the resource, if sent, must be the
