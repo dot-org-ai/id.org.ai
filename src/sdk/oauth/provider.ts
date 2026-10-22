@@ -66,7 +66,7 @@ import {
   cimdClientIdProblem,
   cimdRedirectMatches,
   cimdTtlSeconds,
-  isLoopbackUri,
+  isHttpsOrLoopback,
   looksLikeCimdClientId,
   parseClientMetadataDocument,
 } from './cimd'
@@ -790,22 +790,14 @@ export class OAuthProvider {
   }
 
   /**
-   * Returns true if `redirectUri` parses cleanly, uses https (or localhost
-   * for dev), and its host is in the trusted-account allowlist.
+   * Returns true if `redirectUri` uses https (or http on loopback for dev),
+   * has no fragment or userinfo, and its host is in the trusted-account
+   * allowlist.
    */
   private isTrustedAccountRedirect(redirectUri: string): boolean {
     if (!this.trustedAccount) return false
-    let parsed: URL
-    try {
-      parsed = new URL(redirectUri)
-    } catch {
-      return false
-    }
-    if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
-      return false
-    }
-    if (parsed.hash) return false
-    return this.trustedAccount.allowedDomains.has(canonicalHostname(parsed.hostname))
+    if (!isHttpsOrLoopback(redirectUri)) return false
+    return this.trustedAccount.allowedDomains.has(canonicalHostname(new URL(redirectUri).hostname))
   }
 
   /**
@@ -894,20 +886,25 @@ export class OAuthProvider {
       return oauthError('invalid_client_metadata', 'redirect_uris required for authorization_code grant')
     }
 
-    // Validate redirect URIs (must be HTTPS or localhost for dev, or a known
-    // native-client callback registered by a public client)
+    // Validate redirect URIs: https, or http on a loopback host for dev (the
+    // rule CIMD applies), or a known native-client callback registered by a
+    // public client. Any other scheme on a loopback host is refused.
     for (const uri of redirectUris) {
       if (tokenEndpointAuthMethod === 'none' && NATIVE_CLIENT_REDIRECTS.has(uri)) continue
+      let parsed: URL
       try {
-        const parsed = new URL(uri)
-        if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
-          return oauthError('invalid_redirect_uri', `redirect_uri must use HTTPS: ${uri}`)
-        }
-        if (parsed.hash) {
-          return oauthError('invalid_redirect_uri', 'redirect_uri must not contain a fragment')
-        }
+        parsed = new URL(uri)
       } catch {
         return oauthError('invalid_redirect_uri', `Invalid redirect_uri: ${uri}`)
+      }
+      if (parsed.hash || uri.includes('#')) {
+        return oauthError('invalid_redirect_uri', 'redirect_uri must not contain a fragment')
+      }
+      if (parsed.username || parsed.password) {
+        return oauthError('invalid_redirect_uri', `redirect_uri must not contain a username or password: ${uri}`)
+      }
+      if (!isHttpsOrLoopback(uri)) {
+        return oauthError('invalid_redirect_uri', `redirect_uri must use HTTPS (or http on localhost, 127.0.0.1 or [::1]): ${uri}`)
       }
     }
 
@@ -1005,11 +1002,16 @@ export class OAuthProvider {
     const consentOrg = await this.consentOnRecord(identityId, existingConsent, requestedScopes, orgHint)
     const hasFullConsent = consentOrg !== null
     const consentRequired = !client.trusted || requestedScopes.some(isSbScope)
-    // A CIMD client with a loopback redirect is a public native client whose
-    // client_id is public and whose port is free: anyone can start its flow
-    // and catch the code on the Person's localhost. RFC 8252 §8.6: never
-    // approve it silently, even when consent is on record.
-    const alwaysAsk = looksLikeCimdClientId(clientId) && isLoopbackUri(redirectUri)
+    // Only an https redirect is bound to a host the client controls. Any other
+    // (a loopback port anyone can bind, a private-use scheme like cursor://
+    // any app can claim, or an older DCR record's looser redirect) is on the
+    // Person's own machine and proves nothing about who receives the code.
+    // The client_id is public (CIMD) or readable from the app's config (DCR),
+    // so anyone can start the flow with their own PKCE challenge and catch
+    // the code. RFC 8252 §8.6: never approve it silently, even when consent
+    // is on record. CIMD clients are never trusted; first-party (trusted)
+    // clients keep skipping consent.
+    const alwaysAsk = !client.trusted && !redirectUri.startsWith('https://')
 
     if ((consentRequired && !hasFullConsent) || alwaysAsk) {
       const vm = buildConsentViewModel({
