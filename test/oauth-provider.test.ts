@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { OAuthProvider } from '../src/sdk/oauth/provider'
 import type { OAuthConfig } from '../src/sdk/oauth/provider'
+import { seedDefaultClients, DEFAULT_OAUTH_CLIENTS } from '../src/sdk/oauth/clients'
 import { SigningKeyManager } from '../src/sdk/jwt/signing'
 
 // ============================================================================
@@ -417,11 +418,23 @@ describe('OAuthProvider', () => {
 
       it('completes authorize and token at the native callback, with PKCE', async () => {
         const { client_id } = await registerClient(provider, { client_name: 'Cursor', redirect_uris: CURSOR_REDIRECTS })
-        // Skip the consent screen (covered in consent-v2) to reach the code redirect.
-        const s = await storage.get<Record<string, unknown>>(`client:${client_id}`)
-        await storage.put(`client:${client_id}`, { ...s, trusted: true })
-        const tokens = await getAuthCodeTokens(provider, client_id as string, CURSOR, 'user-1', 'v'.repeat(64))
-        expect(tokens.access_token).toBeDefined()
+        // A native callback always asks (covered below), so approve it as the consent form would.
+        const codeVerifier = 'v'.repeat(64)
+        const consent = await provider.handleAuthorizeConsent(new Request('https://id.org.ai/oauth/authorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: client_id as string, redirect_uri: CURSOR, scope: 'openid profile email',
+            code_challenge: await computeS256Challenge(codeVerifier), code_challenge_method: 'S256', approved: 'true',
+          }),
+        }), 'user-1')
+        const loc = new URL(consent.headers.get('location')!)
+        expect(loc.protocol).toBe('cursor:')
+        const tokenRes = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code: loc.searchParams.get('code')!, redirect_uri: CURSOR,
+          client_id: client_id as string, code_verifier: codeVerifier,
+        }))
+        expect(((await tokenRes.json()) as Record<string, unknown>).access_token).toBeDefined()
       })
 
       it('still requires PKCE at the native callback', async () => {
@@ -890,11 +903,53 @@ describe('OAuthProvider', () => {
         expect((await authorize(cid, LOOPBACK)).status).toBe(200)
       })
 
-      it('a first-party (trusted) client at a loopback callback still skips consent', async () => {
-        const { client_id } = await registerClient(provider, { redirect_uris: [LOOPBACK] })
-        const s = await storage.get<Record<string, unknown>>(`client:${client_id}`)
-        await storage.put(`client:${client_id}`, { ...s, trusted: true })
-        expect((await authorize(client_id as string, LOOPBACK)).status).toBe(302)
+      it('a first-party (trusted) client at a loopback callback gets the consent screen too', async () => {
+        const cid = await registerWithConsent({ client_name: 'First party', redirect_uris: [LOOPBACK, HTTPS] })
+        const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+        await storage.put(`client:${cid}`, { ...s, trusted: true })
+        const res = await authorize(cid, LOOPBACK)
+        expect(res.status).toBe(200)
+        expect(res.headers.get('Content-Type')).toContain('text/html')
+        // ...and still skips it at its https callback.
+        expect((await authorize(cid, HTTPS)).status).toBe(302)
+      })
+
+      // The seeded first-party clients ship http://localhost:3000 dev redirects
+      // in production (auto_dev_web, saas_studio_dash). Their client_ids are
+      // well known, so whoever listens on :3000 could otherwise start the flow
+      // with their own PKCE challenge and get a code without the Person seeing it.
+      const seededRedirects = DEFAULT_OAUTH_CLIENTS.flatMap((c) => c.redirectUris.map((uri) => [c.id, uri] as const))
+
+      it.each(seededRedirects)('the seeded client %s at %s asks unless the callback is https', async (cid, uri) => {
+        await seedDefaultClients(storage)
+        await storage.put(`consent:user-1:${cid}`, { scopes: ['openid', 'profile', 'email'], createdAt: Date.now() })
+        const res = await authorize(cid, uri)
+        expect(res.status).toBe(uri.startsWith('https://') ? 302 : 200)
+      })
+
+      it('the seeded auto.dev client at localhost:3000 gets its code once the Person allows it, and asks again next time', async () => {
+        await seedDefaultClients(storage)
+        const dev = 'http://localhost:3000/api/v2/auth/callback/id-org-ai'
+        const page = await authorize('auto_dev_web', dev)
+        expect(page.status).toBe(200)
+        expect(await page.text()).toContain('Returns to localhost:3000')
+
+        const res = await provider.handleAuthorizeConsent(new Request('https://id.org.ai/oauth/authorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: 'auto_dev_web', redirect_uri: dev, scope: 'openid profile email', state: 'dev',
+            code_challenge: await computeS256Challenge(verifier), code_challenge_method: 'S256', approved: 'true',
+          }),
+        }), 'user-1')
+        expect(res.status).toBe(302)
+        const loc = new URL(res.headers.get('location')!)
+        expect(`${loc.origin}${loc.pathname}`).toBe(dev)
+        expect(loc.searchParams.get('code')).toBeTruthy()
+        expect(loc.searchParams.get('state')).toBe('dev')
+
+        // The consent is now on record; a loopback callback asks anyway.
+        expect((await authorize('auto_dev_web', dev)).status).toBe(200)
       })
     })
 

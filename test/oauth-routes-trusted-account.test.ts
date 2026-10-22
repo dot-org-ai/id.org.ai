@@ -251,4 +251,58 @@ describe('worker/routes/oauth — trusted-account /oauth/authorize (ADR-0007 / B
     // The original state value must NOT appear verbatim — it's CSRF-wrapped.
     expect(html).not.toContain('value="ORIGINAL_STATE"')
   })
+
+  // RFC 8252 §8.6: at an allowlisted loopback host the trusted-account client
+  // is asked like any other. Its consent form must carry the CSRF binding the
+  // POST requires, and the code must still come back with the original state.
+  it('asks at an allowlisted loopback callback with a CSRF-bound form, and returns the original state on Allow', async () => {
+    const { env: localEnv } = createMockEnv({ trustedDomains: 'startup.games,localhost' })
+    const app = mountApp(localEnv)
+    const codeChallenge = await computeS256Challenge('verifier-1234567890abcdef')
+    const redirectUri = 'http://localhost:3000/api/auth/callback/id-org-ai'
+
+    const url = new URL('https://id.org.ai/oauth/authorize')
+    url.searchParams.set('client_id', TRUSTED_ACCOUNT_CLIENT_ID)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', 'openid profile email')
+    url.searchParams.set('code_challenge', codeChallenge)
+    url.searchParams.set('code_challenge_method', 'S256')
+    url.searchParams.set('state', 'ORIGINAL_STATE')
+
+    const page = await app.fetch(
+      new Request(url.toString(), { method: 'GET', redirect: 'manual', headers: TEST_SESSION_HEADERS }),
+      localEnv,
+    )
+    expect(page.status).toBe(200)
+    const html = await page.text()
+    const wrapped = html.match(/<input type="hidden" name="state" value="([^"]+)"/)?.[1]
+    expect(wrapped).toBeTruthy()
+    expect(wrapped).not.toBe('ORIGINAL_STATE')
+    const csrfCookie = page.headers.get('set-cookie')?.match(/__csrf=([^;]+)/)?.[1]
+    expect(csrfCookie).toBeTruthy()
+
+    const res = await app.fetch(
+      new Request('https://id.org.ai/oauth/authorize', {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { ...TEST_SESSION_HEADERS, 'content-type': 'application/x-www-form-urlencoded', cookie: `__csrf=${csrfCookie}` },
+        body: new URLSearchParams({
+          client_id: TRUSTED_ACCOUNT_CLIENT_ID,
+          redirect_uri: redirectUri,
+          scope: 'openid profile email',
+          state: wrapped!,
+          code_challenge: codeChallenge,
+          code_challenge_method: 'S256',
+          approved: 'true',
+        }),
+      }),
+      localEnv,
+    )
+    expect(res.status).toBe(302)
+    const loc = new URL(res.headers.get('location')!)
+    expect(`${loc.origin}${loc.pathname}`).toBe(redirectUri)
+    expect(loc.searchParams.get('state')).toBe('ORIGINAL_STATE')
+    expect(loc.searchParams.get('code')).toMatch(/^ac_/)
+  })
 })
