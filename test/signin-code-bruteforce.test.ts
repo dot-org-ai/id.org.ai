@@ -180,5 +180,5 @@ describe('S1: guesses from one IP are capped across addresses', () => {
     expect(workos.checks).toBe(50)
     expect((await verify(flow, wrong(51), undefined, '198.51.100.8')).status).toBe(400)
     expect(workos.checks).toBe(51)
-  })
+  }, 30_000) // ~100 sequential requests: the 5 s default is too tight on a busy runner
 })

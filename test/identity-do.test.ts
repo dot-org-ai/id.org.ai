@@ -8,7 +8,7 @@
  * injecting mock ctx / env via prototype tricks.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 
 // ============================================================================
 // Mock infrastructure
@@ -113,6 +113,13 @@ async function createTestDO() {
 describe('IdentityDO', () => {
   let identity: Awaited<ReturnType<typeof createTestDO>>['identity']
   let storage: MockStorage
+
+  // The first import of the IdentityDO module graph is slow on a cold, busy
+  // runner (CI, or many parallel pools). Load it once here with room to spare
+  // so the per-test hook below keeps the default timeout.
+  beforeAll(async () => {
+    await import('../src/server/do/Identity')
+  }, 60_000)
 
   beforeEach(async () => {
     vi.clearAllMocks()
