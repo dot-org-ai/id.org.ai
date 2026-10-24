@@ -54,6 +54,12 @@ export interface SignInProps {
   continueUrl?: string
   /** Enabled providers, in order (GitHub, Google, Microsoft, Apple). */
   providers: ProviderLink[]
+  /**
+   * One provider shown first, as the primary button above the email form
+   * (/login with no login_hint leads with Google: most people have it). It is
+   * left out of `providers`' list below.
+   */
+  lead?: ProviderLink
   /** From the id_last_provider cookie: shows the "Last used" pill. */
   lastUsedProvider?: Provider
   /**
@@ -111,6 +117,12 @@ export function SignIn(p: SignInProps): JSX.Element {
         }
       >
         <Head p={p} />
+        {p.lead ? (
+          <>
+            <ProviderButton provider={p.lead.provider} href={p.lead.href} lastUsed={p.lead.provider === p.lastUsedProvider} lead />
+            <Dotted label="or" />
+          </>
+        ) : null}
         <form class="id-form" method="post" action={p.action} data-js="submit">
           <input type="hidden" name="csrf" value={p.csrf} />
           {p.continueUrl ? <input type="hidden" name="continue" value={p.continueUrl} /> : null}
@@ -128,14 +140,14 @@ export function SignIn(p: SignInProps): JSX.Element {
                 error={Boolean(p.emailError)}
               />
             </Field>
-            <Button variant="primary" block busyLabel="Sending code…">
+            <Button variant={p.lead ? 'secondary' : 'primary'} block busyLabel="Sending code…">
               Continue with email
             </Button>
           </Stack>
         </form>
         <Dotted label="or" />
         <Providers>
-          {p.providers.map((x) => (
+          {p.providers.filter((x) => x.provider !== p.lead?.provider).map((x) => (
             <ProviderButton provider={x.provider} href={x.href} lastUsed={x.provider === p.lastUsedProvider} />
           ))}
         </Providers>

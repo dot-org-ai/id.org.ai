@@ -51,6 +51,7 @@ import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, ca
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
 import { magicLinkRoutes, startMagicLink, type MagicLinkResult } from './routes/magic-link'
+import { loginEmailRoutes } from './routes/login-email'
 import { apiKeyRoutes } from './routes/api-keys'
 import { mcpRoutes } from './routes/mcp'
 import { workosRoutes } from './routes/workos'
@@ -893,6 +894,7 @@ app.route('', authRoutes)
 // Mounted before the /api/* authenticateRequest middleware: the caller
 // authenticates as an OAuth client (client_secret) or a service binding.
 app.route('', magicLinkRoutes)
+app.route('', loginEmailRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
 

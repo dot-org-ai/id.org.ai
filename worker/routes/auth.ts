@@ -10,7 +10,8 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
-import { renderProviderPicker } from '../views/provider-picker'
+import { renderSignIn } from './login-email'
+import { signInRouteFor } from '../utils/sign-in-route'
 import { renderOrgPickerPage } from '../views/org-picker'
 import {
   buildWorkOSAuthUrl,
@@ -124,14 +125,21 @@ app.get('/login', async (c) => {
   // Allow forcing a specific provider (e.g. ?provider=GitHubOAuth)
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
-  const safeProvider = provider && VALID_PROVIDERS.includes(provider) ? provider : undefined
+  let safeProvider = provider && VALID_PROVIDERS.includes(provider) ? provider : undefined
 
-  // No provider specified → show provider picker page
-  // This avoids AuthKit's built-in org selection which causes a double sign-in
-  // for users with multiple orgs. Direct providers return organization_selection_required
+  // No provider specified → our sign-in page (1a, worker/routes/login-email.ts),
+  // never AuthKit's: its built-in org selection causes a double sign-in for
+  // users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
+  //
+  // A known address (login_hint) goes the one way it signs in without a choice
+  // (worker/utils/sign-in-route.ts): a Google address straight to Google,
+  // which preselects it; anything else to the email form, filled in. Microsoft
+  // addresses get the email form too, until MicrosoftOAuth is enabled in WorkOS.
   if (!safeProvider) {
-    return renderProviderPicker(continueUrl, loginHint, promptLogin)
+    const route = loginHint ? await signInRouteFor(loginHint) : null
+    if (route === 'google') safeProvider = 'GoogleOAuth'
+    else return renderSignIn(c, { continueUrl, loginHint, promptLogin, lead: loginHint ? 'email' : 'google' })
   }
 
   const csrf = crypto.randomUUID()

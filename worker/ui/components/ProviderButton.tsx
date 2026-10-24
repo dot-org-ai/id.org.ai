@@ -16,11 +16,15 @@ export const PROVIDER_NAMES: Record<Provider, string> = {
  * (ProviderMark, where the mocks show a dashed slot), its name, and the "Last
  * used" pill.
  */
-export function ProviderButton({ provider, href, lastUsed }: { provider: Provider; href: string; lastUsed?: boolean }): JSX.Element {
+/**
+ * `lead`: the one provider the sign-in page puts first, as its primary button
+ * ("Continue with Google"), above the email form.
+ */
+export function ProviderButton({ provider, href, lastUsed, lead }: { provider: Provider; href: string; lastUsed?: boolean; lead?: boolean }): JSX.Element {
   return (
-    <a class="id-btn id-btn--secondary id-btn--provider" href={href}>
+    <a class={lead ? 'id-btn id-btn--primary id-btn--provider id-btn--lead' : 'id-btn id-btn--secondary id-btn--provider'} href={href}>
       <ProviderMark provider={provider} />
-      <span class="id-provider__name">{PROVIDER_NAMES[provider]}</span>
+      <span class="id-provider__name">{lead ? `Continue with ${PROVIDER_NAMES[provider]}` : PROVIDER_NAMES[provider]}</span>
       {lastUsed ? <Pill>Last used</Pill> : null}
     </a>
   )
