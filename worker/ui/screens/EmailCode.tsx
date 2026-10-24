@@ -33,6 +33,11 @@ export interface EmailCodeProps {
   /** Seconds until a new code can be sent (the send budget, B4). */
   resendIn: number
   error?: EmailCodeError
+  /**
+   * The email carries a link to this page (8a). False while WorkOS sends the
+   * email, which holds only the code: then the "open the link" note is left out.
+   */
+  linkInEmail?: boolean
   /** Gallery only: draw this box focused (the mock shows the 5th). */
   focusIndex?: number
 }
@@ -65,7 +70,7 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
                   Verify
                 </Button>
               </Actions>
-              <FootNote icon="mail">Or open the link in the email on this device.</FootNote>
+              {p.linkInEmail === false ? null : <FootNote icon="mail">Or open the link in the email on this device.</FootNote>}
             </CardFoot>
           }
         >

@@ -1874,3 +1874,12 @@ button.id-link[hidden] {
   align-items: center;
   gap: 12px;
 }
+
+/* ── Lead provider (1a without a login_hint: "Continue with Google" first) ── */
+
+.id-btn--lead {
+  justify-content: center;
+}
+.id-btn--lead .id-provider__name {
+  flex-grow: 0;
+}

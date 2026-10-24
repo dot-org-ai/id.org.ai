@@ -157,6 +157,19 @@ describe('1a sign in', () => {
     expect([...webauthn.querySelectorAll('a')].find((a) => text(a) === 'Sign in with a passkey')?.getAttribute('data-on')).toBe('passkey')
   })
 
+  it('a lead provider comes first as the primary button, above the email form, and leaves the list below', async () => {
+    const google = signIn.providers.find((x) => x.provider === 'google')!
+    const doc = await dom(<SignIn {...signIn} lead={google} />)
+    const lead = doc.querySelector('a.id-btn--lead')
+    expect(leaves(lead)).toBe('Continue with Google')
+    expect(lead?.getAttribute('href')).toBe(google.href)
+    expect(lead?.classList.contains('id-btn--primary')).toBe(true)
+    expect(lead!.compareDocumentPosition(doc.querySelector('form')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect([...doc.querySelectorAll('.id-providers a')].map((a) => leaves(a))).toEqual(['GitHub Last used', 'Microsoft', 'Apple'])
+    // the email button steps down to secondary next to it
+    expect(doc.querySelector('form button')?.className).toContain('id-btn--secondary')
+  })
+
   it('each provider shows its official mark, hidden from assistive tech (the name is the label)', async () => {
     const doc = await dom(<SignIn {...signIn} />)
     const providers = [...doc.querySelectorAll('.id-providers a')]
@@ -236,6 +249,11 @@ describe('1b email code', () => {
     expect(boxes.map((b) => b.getAttribute('value') ?? '')).toEqual(['4', '8', '2', '9', '', ''])
     expect(boxes.every((b) => b.getAttribute('inputmode') === 'numeric')).toBe(true)
     expect(doc.querySelector('[role="status"]')).not.toBeNull()
+  })
+
+  it('leaves out "open the link in the email" when the email carries only the code', async () => {
+    expect(text((await dom(<EmailCode {...code} />)).body)).toContain('Or open the link in the email on this device.')
+    expect(text((await dom(<EmailCode {...code} linkInEmail={false} />)).body)).not.toContain('open the link')
   })
 
   it('Verify is the code form’s default button; Resend belongs to its own form posting to /resend', async () => {
