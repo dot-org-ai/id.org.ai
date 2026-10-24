@@ -193,6 +193,8 @@ describe('1. the deck is a trusted-account client', () => {
     // 1b, then the right code: signed in, back to the authorize request.
     const codePage = await SELF.fetch(`${BASE}${codePath}`, { headers: { cookie: cookieHeader(flowCookies) } })
     expect(codePage.status).toBe(200)
+    // Verify's redirects end at the deck: the page's CSP lets the form's redirect chain reach it
+    expect(codePage.headers.get('content-security-policy')).toContain(`form-action 'self' ${PREVIEW}`)
     expect(await codePage.text()).toContain(email)
     mockCodeCheck(email, '424242', 'user_01PITCHLP')
     const r3 = await enterCode(codePath, flowCookies, '424242')
@@ -240,6 +242,18 @@ describe('1. the deck is a trusted-account client', () => {
 
     const off = await SELF.fetch(authorizeUrl('https://pitch.evil.example', challenge, 's2'), { redirect: 'manual', headers: { cookie: `auth=${session}` } })
     expect(off.status).toBe(400)
+  })
+})
+
+describe('1b. signing out to switch accounts', () => {
+  it('id.org.ai’s /logout returns to the deck’s sign-in (a trusted host), and nowhere off the list', async () => {
+    for (const origin of [PITCH, PREVIEW]) {
+      const res = await SELF.fetch(`${BASE}/logout?return_url=${encodeURIComponent(`${origin}/login`)}`, { redirect: 'manual' })
+      expect(res.status).toBe(302)
+      expect(res.headers.get('location')).toBe(`${origin}/login`)
+    }
+    const off = await SELF.fetch(`${BASE}/logout?return_url=${encodeURIComponent('https://pitch.evil.example/login')}`, { redirect: 'manual' })
+    expect(off.headers.get('location')).toBe('/')
   })
 })
 

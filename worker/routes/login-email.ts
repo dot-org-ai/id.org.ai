@@ -30,7 +30,7 @@
  */
 import { Hono, type Context } from 'hono'
 import type { Env, Variables } from '../types'
-import { renderPage } from '../ui/render'
+import { bareOrigin, renderPage } from '../ui/render'
 import { renderErrorPage } from '../ui/errors'
 import { SignIn, type ProviderLink } from '../ui/screens/SignIn'
 import { EmailCode, type EmailCodeError } from '../ui/screens/EmailCode'
@@ -177,6 +177,28 @@ async function boundFlow(c: C, flowId: string): Promise<MagicFlow | null> {
   return parseCookieValue(c.req.header('cookie') || '', flowCookieName(c)) === flowId ? flow : null
 }
 
+/**
+ * Where a signed-in Verify's redirects go beyond this origin: the continue URL's origin, and for a continue that is
+ * our own /oauth/authorize, its redirect_uri's (the code goes there next). The browser holds a form post's whole
+ * redirect chain to the page's CSP form-action, so without them Chrome stops at the first hop off id.org.ai. The
+ * continue already passed /login's policy; authorize checks the redirect_uri itself when it runs.
+ */
+export function continueOrigins(continueUrl: string, requestOrigin: string): string[] {
+  const out: string[] = []
+  try {
+    const u = new URL(continueUrl, requestOrigin)
+    if (u.origin !== requestOrigin) out.push(u.origin)
+    else if (u.pathname === '/oauth/authorize') {
+      const redirect = u.searchParams.get('redirect_uri')
+      const origin = redirect ? bareOrigin(new URL(redirect).origin) : null
+      if (origin && origin !== 'null') out.push(origin)
+    }
+  } catch {
+    // not a URL: nothing beyond 'self'
+  }
+  return out
+}
+
 function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string; error?: EmailCodeError; status?: number } = {}): Promise<Response> {
   const sentAt = flow.sentAt ?? flow.createdAt
   const q = new URLSearchParams({ continue: flow.continue })
@@ -196,7 +218,12 @@ function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string
       error: opts.error,
       linkInEmail: false,
     }),
-    { title: 'Check your email · id.org.ai', scripts: ['submit.js', 'code-input.js', 'countdown.js'], status: opts.status },
+    {
+      title: 'Check your email · id.org.ai',
+      scripts: ['submit.js', 'code-input.js', 'countdown.js'],
+      status: opts.status,
+      formActionOrigins: continueOrigins(flow.continue, requestOriginOf(c.req.url)),
+    },
   )
 }
 

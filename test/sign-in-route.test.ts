@@ -3,6 +3,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { routeForMx, signInRouteFor } from '../worker/utils/sign-in-route'
+import { continueOrigins } from '../worker/routes/login-email'
 
 /** A DoH stand-in answering MX hosts per domain, counting lookups. */
 function doh(answers: Record<string, string[]>) {
@@ -66,5 +67,16 @@ describe('routeForMx', () => {
     expect(routeForMx(['mx.notgoogle.com'])).toBeNull()
     expect(routeForMx(['google.com.evil.example'])).toBeNull()
     expect(routeForMx(['ASPMX.L.GOOGLE.COM.'])).toBe('google')
+  })
+})
+
+describe('continueOrigins (1b form-action)', () => {
+  it('adds an absolute continue’s origin, or an authorize continue’s redirect_uri origin, and nothing for a local path', () => {
+    const own = 'https://id.org.ai'
+    expect(continueOrigins('/dash/profile', own)).toEqual([])
+    expect(continueOrigins('https://headless.ly/after', own)).toEqual(['https://headless.ly'])
+    const authorize = `${own}/oauth/authorize?client_id=cid_trusted_account_v1&redirect_uri=${encodeURIComponent('https://pitch.startups.studio/auth/callback')}`
+    expect(continueOrigins(authorize, own)).toEqual(['https://pitch.startups.studio'])
+    expect(continueOrigins(`${own}/oauth/authorize?redirect_uri=javascript%3Aalert(1)`, own)).toEqual([])
   })
 })
