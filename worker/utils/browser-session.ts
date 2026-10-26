@@ -8,6 +8,7 @@
  */
 import { parseCookieValue } from './cookies'
 import { extractApiKey, extractSessionToken } from './extract'
+import { isSessionAudience } from '../../src/sdk/auth/token-class'
 
 export function isBrowserSession(request: Request): boolean {
   const authCookie = parseCookieValue(request.headers.get('cookie') ?? '', 'auth')
@@ -24,9 +25,11 @@ export function isBrowserSession(request: Request): boolean {
  * Is the `auth` cookie shaped like an id.org.ai browser-session JWT (what
  * /api/callback and magic link sign), rather than some other
  * id.org.ai-signed JWT placed there? Tenant resolution has already verified
- * its signature and issuer; this looks at its shape. A session JWT carries no
- * `aud`, `nonce` or `at_hash`; an id_token (issued to a relying party) always
- * carries `aud` and `at_hash`; an access token is typ at+jwt. So an RP that
+ * its signature and issuer; this looks at its shape. A session JWT carries
+ * no `aud` but the session audience (none at all if minted before H4; see
+ * `isSessionAudience`), and no
+ * `nonce` or `at_hash`; an id_token (issued to a relying party) always
+ * carries its client's `aud` and `at_hash`; an access token is typ at+jwt. So an RP that
  * holds a Person's id_token cannot pose as that Person's browser to grant
  * sb scopes.
  */
@@ -39,7 +42,8 @@ export function isSessionCookieJwt(jwt: string): boolean {
     const payload = dec(parts[1]!) as Record<string, unknown>
     if (typeof header.typ === 'string' && header.typ.toLowerCase().replace(/^application\//, '') !== 'jwt') return false
     if ('crit' in header) return false
-    return !('aud' in payload) && !('nonce' in payload) && !('at_hash' in payload)
+    // Since H4 a session JWT names the session audience; one minted before carries none.
+    return isSessionAudience(payload.aud) && !('nonce' in payload) && !('at_hash' in payload)
   } catch {
     return false
   }

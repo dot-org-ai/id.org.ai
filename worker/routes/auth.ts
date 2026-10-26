@@ -5,11 +5,11 @@
  * before the authenticateRequest middleware.
  */
 import { Hono } from 'hono'
-import * as jose from 'jose'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
-import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
-import { getStubForIdentity, getSigningKeyManager, resolveIdentityId, verifySessionJwt } from '../middleware/tenant'
+import { parseCookieValue, sessionCookieHeaders, clearSessionCookieHeaders } from '../utils/cookies'
+import { mintSessionJwt, verifySessionCookie, revokeSessionCookie, SESSION_TTL_SECONDS } from '../utils/session'
+import { getStubForIdentity, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
 import {
@@ -213,10 +213,7 @@ app.get('/callback', async (c) => {
   }
 
   // Set cookie on the requesting domain (e.g. apis.do)
-  const reqUrl = new URL(c.req.url)
-  const isSecure = reqUrl.protocol === 'https:'
-  const domain = getRootDomain(reqUrl.hostname)
-  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
+  const cookieHeaders = sessionCookieHeaders(c.req.url, jwt, { maxAge: SESSION_TTL_SECONDS, sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
   const redirectTo = isSafeRedirectUrl(continueUrl) ? continueUrl : '/'
   const headers = new Headers({ Location: redirectTo })
@@ -511,11 +508,13 @@ export async function finishWorkOSSignIn(
     )
   }
 
-  // Sign our own JWT for the auth cookie (camelCase claims, nested org object)
+  // Sign our own JWT for the auth cookie (camelCase claims, nested org object),
+  // backed by a session record that logout and freeze revoke (H4). Its
+  // platformRole and roles are re-read at verification, never trusted.
   const platformOrgId = c.env.PLATFORM_ORG_ID
   const isSuperadmin = !!(platformOrgId && orgId && orgId === platformOrgId)
-  const signingManager = getSigningKeyManager(c.env)
-  const jwt = await signingManager.sign(
+  const jwt = await mintSessionJwt(
+    c.env,
     {
       sub: authResult.user.id,
       email: authResult.user.email,
@@ -531,7 +530,6 @@ export async function finishWorkOSSignIn(
       ...(signInMethod.idp ? { idp: signInMethod.idp } : {}),
       auth_time: Math.floor(Date.now() / 1000),
     },
-    { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
   )
 
   const continueUrl = opts.continueUrl
@@ -565,10 +563,7 @@ export async function finishWorkOSSignIn(
   }
 
   // ── Same-origin (id.org.ai or oauth.do direct login): set cookie directly ─
-  const reqUrl = new URL(c.req.url)
-  const isSecure = reqUrl.protocol === 'https:'
-  const domain = getRootDomain(reqUrl.hostname)
-  const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
+  const cookieHeaders = sessionCookieHeaders(c.req.url, jwt, { maxAge: SESSION_TTL_SECONDS, sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
   const headers = new Headers({ Location: continueUrl })
   for (const cookie of cookieHeaders) {
@@ -590,18 +585,17 @@ app.get('/logout', async (c) => {
   } catch {
     // Non-fatal — proceed with cookie clearing
   }
+  // Revoke the session itself, not just this browser's copy of it (H4).
+  await revokeSessionCookie(c.req.raw, c.env)
 
   // Same destination policy as /login?continue= (worker/utils/relying-parties.ts):
   // a sign-out must not be a redirector either. Refused targets land on `/`.
-  const reqUrl = new URL(c.req.url)
   const returnDecision = await resolveBrowserRedirect(c.env, c.req.query('return_url'), { requestOrigin: requestOriginOf(c.req.url) })
   if (returnDecision.outcome === 'refused' || returnDecision.outcome === 'unlisted') {
     console.warn(JSON.stringify({ event: `logout.return.${returnDecision.outcome}`, host: returnDecision.host }))
   }
   const returnUrl = returnDecision.url ?? '/'
-  const isSecure = reqUrl.protocol === 'https:'
-  const domain = getRootDomain(reqUrl.hostname)
-  const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
+  const clearCookies = clearSessionCookieHeaders(c.req.url, { sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
   const headers = new Headers({ Location: returnUrl })
   for (const cookie of clearCookies) {
@@ -621,11 +615,10 @@ app.post('/logout', async (c) => {
   } catch {
     // Non-fatal — proceed with cookie clearing
   }
+  // Revoke the session itself, not just this browser's copy of it (H4).
+  await revokeSessionCookie(c.req.raw, c.env)
 
-  const reqUrl = new URL(c.req.url)
-  const isSecure = reqUrl.protocol === 'https:'
-  const domain = getRootDomain(reqUrl.hostname)
-  const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
+  const clearCookies = clearSessionCookieHeaders(c.req.url, { sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
   const headers = new Headers({ 'Content-Type': 'application/json' })
   for (const cookie of clearCookies) {
@@ -644,7 +637,9 @@ app.get('/api/me', async (c) => {
   if (!jwt) return c.json({ authenticated: false }, 200)
 
   try {
-    const payload = await verifySessionJwt(jwt, c.env)
+    // Signature, issuer, expiry, and the session record (logout, freeze: H4).
+    const payload = await verifySessionCookie(c.req.raw, c.env)
+    if (!payload) throw new Error('no live session')
 
     return c.json({
       authenticated: true,
@@ -673,7 +668,9 @@ app.get('/api/session', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const payload = await verifySessionJwt(jwt, c.env)
+    // Signature, issuer, expiry, and the session record (logout, freeze: H4).
+    const payload = await verifySessionCookie(c.req.raw, c.env)
+    if (!payload) throw new Error('no live session')
 
     const fullName = (payload.name as string) || ''
     const nameParts = fullName.trim().split(/\s+/)
@@ -686,10 +683,7 @@ app.get('/api/session', async (c) => {
     const permissions = (payload.permissions as string[]) || []
 
     // Roll cookie for sliding expiry
-    const reqUrl = new URL(c.req.url)
-    const isSecure = reqUrl.protocol === 'https:'
-    const domain = getRootDomain(reqUrl.hostname)
-    const cookieHeaders = buildAuthCookieHeaders(jwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
+    const cookieHeaders = sessionCookieHeaders(c.req.url, jwt, { maxAge: SESSION_TTL_SECONDS, sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
     const headers = new Headers({ 'Content-Type': 'application/json' })
     for (const ch of cookieHeaders) {
@@ -727,7 +721,9 @@ app.get('/api/widget-token', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const payload = await verifySessionJwt(jwt, c.env)
+    // Signature, issuer, expiry, and the session record (logout, freeze: H4).
+    const payload = await verifySessionCookie(c.req.raw, c.env)
+    if (!payload) throw new Error('no live session')
 
     if (!payload.sub) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -762,7 +758,9 @@ app.post('/api/session/organization', async (c) => {
   }
 
   try {
-    const payload = await verifySessionJwt(jwt, c.env)
+    // Signature, issuer, expiry, and the session record (logout, freeze: H4).
+    const payload = await verifySessionCookie(c.req.raw, c.env)
+    if (!payload) throw new Error('no live session')
 
     // Validate the user is a member of the target org, and take their role there:
     // roles and permissions belong to an organization, so the previous org's
@@ -787,7 +785,9 @@ app.post('/api/session/organization', async (c) => {
     // Re-mint JWT with new organizationId
     const platformOrgId = c.env.PLATFORM_ORG_ID
     const isSuperadmin = !!(platformOrgId && body.organizationId === platformOrgId)
-    const newJwt = await getSigningKeyManager(c.env).sign(
+    // Same session (same sid, same record), re-signed for the new org.
+    const newJwt = await mintSessionJwt(
+      c.env,
       {
         sub: payload.sub || '',
         email: payload.email as string | undefined,
@@ -804,14 +804,11 @@ app.post('/api/session/organization', async (c) => {
         ...(typeof payload.idp === 'string' ? { idp: payload.idp } : {}),
         ...(typeof payload.auth_time === 'number' ? { auth_time: payload.auth_time } : {}),
       },
-      { issuer: 'https://id.org.ai', expiresIn: 30 * 24 * 3600 },
+      { sid: typeof payload.sid === 'string' && payload.sid ? payload.sid : undefined },
     )
 
     // Set updated cookie
-    const reqUrl = new URL(c.req.url)
-    const isSecure = reqUrl.protocol === 'https:'
-    const domain = getRootDomain(reqUrl.hostname)
-    const cookieHeaders = buildAuthCookieHeaders(newJwt, { secure: isSecure, domain, maxAge: 30 * 24 * 3600 })
+    const cookieHeaders = sessionCookieHeaders(c.req.url, newJwt, { maxAge: SESSION_TTL_SECONDS, sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
     const headers = new Headers({ 'Content-Type': 'application/json' })
     for (const ch of cookieHeaders) {
@@ -860,11 +857,10 @@ app.post('/api/logout', async (c) => {
   } catch {
     // Non-fatal — proceed with cookie clearing
   }
+  // Revoke the session itself, not just this browser's copy of it (H4).
+  await revokeSessionCookie(c.req.raw, c.env)
 
-  const reqUrl = new URL(c.req.url)
-  const isSecure = reqUrl.protocol === 'https:'
-  const domain = getRootDomain(reqUrl.hostname)
-  const clearCookies = buildClearAuthCookieHeaders({ secure: isSecure, domain })
+  const clearCookies = clearSessionCookieHeaders(c.req.url, { sharedZones: c.env.SESSION_COOKIE_SHARED_ZONES })
 
   const headers = new Headers({ 'Content-Type': 'application/json' })
   for (const cookie of clearCookies) {

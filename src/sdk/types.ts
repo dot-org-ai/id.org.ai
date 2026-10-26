@@ -166,6 +166,41 @@ export interface AgentRegistrationInput {
 }
 
 // ============================================================================
+// Browser sessions — the record behind an `auth` cookie JWT
+// ============================================================================
+
+/** Create (or extend, on an org switch) the record for session `sid`. */
+export interface BrowserSessionInput {
+  identityId: string
+  sid: string
+  /** Epoch ms; the session JWT's `exp`. */
+  expiresAt: number
+}
+
+/**
+ * Is the session JWT still good? A JWT with a `sid` must have a live record.
+ * One minted before sids existed is checked by `tokenHash` (revoked by logout)
+ * and `iat` (revoked by freeze).
+ */
+export interface BrowserSessionCheck {
+  identityId: string
+  sid?: string
+  tokenHash?: string
+  /** The JWT's `iat`, in epoch seconds. */
+  iat?: number
+}
+
+export type BrowserSessionRefusal = 'frozen' | 'unknown' | 'revoked' | 'expired'
+
+/** Revoke one session: by `sid`, or (pre-sid JWTs) by `tokenHash` until `expiresAt`. */
+export interface BrowserSessionRevoke {
+  identityId: string
+  sid?: string
+  tokenHash?: string
+  expiresAt?: number
+}
+
+// ============================================================================
 // IdentityStub — RPC interface for IdentityDO
 // ============================================================================
 
@@ -192,6 +227,13 @@ export interface IdentityStub {
   checkRateLimit(identityId: string, level: CapabilityLevel): Promise<{ allowed: boolean; remaining: number; resetAt: number }>
   verifyClaimToken(token: string): Promise<{ valid: boolean; identityId?: string; status?: ClaimStatus; level?: CapabilityLevel; stats?: { entities: number; events: number; createdAt: number; expiresAt?: number } }>
   freezeIdentity(id: string): Promise<{ frozen: boolean; stats: { entities: number; events: number; sessions: number }; expiresAt: number }>
+
+  // Browser sessions: the server-side record behind each `auth` cookie JWT
+  // (its `sid`). See IdentityDO.putBrowserSession.
+  putBrowserSession(input: BrowserSessionInput): Promise<void>
+  checkBrowserSession(input: BrowserSessionCheck): Promise<{ valid: boolean; reason?: BrowserSessionRefusal }>
+  revokeBrowserSession(input: BrowserSessionRevoke): Promise<void>
+  revokeAllBrowserSessions(identityId: string): Promise<{ revoked: number }>
 
   // MCP
   mcpSearch(params: { identityId: string; query?: string; type?: string; filters?: Record<string, unknown>; limit?: number; offset?: number }): Promise<{ results: Array<{ type: string; id: string; data: Record<string, unknown>; score: number }>; total: number; limit: number; offset: number }>

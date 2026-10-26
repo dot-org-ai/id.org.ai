@@ -50,6 +50,7 @@ import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
 import { getCachedUser, cacheUser, invalidateCachedToken, isNegativelyCached, cacheNegativeResult } from './utils/cache'
+import { checkSessionState, claimsPrivilege, rereadPrivilege, verifySessionCookie, SESSION_CACHE_TTL_SECONDS } from './utils/session'
 import { auditRoutes } from './routes/audit'
 import { authRoutes } from './routes/auth'
 import { magicLinkRoutes, startMagicLink, type MagicLinkResult } from './routes/magic-link'
@@ -179,10 +180,16 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
     // JWT — try our own JWKS first (login flow JWTs), then WorkOS JWKS
     // WorkOS JWKS also covers oauth.do-issued JWTs (signed with WorkOS keys)
-    const ownUser = await this.verifyOwnJWT(token)
-    if (ownUser) {
-      await cacheUser(token, ownUser)
-      return { valid: true, user: ownUser }
+    const own = await this.verifyOwnJWT(token)
+    if (own === 'revoked') {
+      // Ours, validly signed, but its session was logged out or frozen (H4).
+      return { valid: false, error: 'Session revoked' }
+    }
+    if (own) {
+      // Briefly, so a logout or freeze elsewhere lands within seconds; never
+      // when it claims privilege, which is re-read from WorkOS every time.
+      if (!own.privileged) await cacheUser(token, own.user, SESSION_CACHE_TTL_SECONDS)
+      return { valid: true, user: own.user }
     }
 
     const workosUser = await this.verifyWorkOSJWT(token)
@@ -270,9 +277,10 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
   // ── isPlatformAdmin ─────────────────────────────────────────────────
   // Check if token belongs to a platform-level superadmin.
-  // This is distinct from tenant admin — reads the platformRole claim,
-  // not roles[]. Members of PLATFORM_ORG_ID get platformRole: 'superadmin'
-  // injected into their JWT.
+  // This is distinct from tenant admin — reads platformRole, not roles[].
+  // A session signed in to PLATFORM_ORG_ID carries platformRole: 'superadmin',
+  // but verifyOwnJWT keeps it only while the person is still an active member
+  // of PLATFORM_ORG_ID in WorkOS (re-read on every check, never cached).
 
   async isPlatformAdmin(token: string): Promise<boolean> {
     const user = await this.getUser(token)
@@ -358,29 +366,38 @@ export class AuthService extends WorkerEntrypoint<Env> {
   //   1. Own JWKS: JWTs issued by /callback (login flow) — signed by us
   //   2. WorkOS JWKS: JWTs issued by WorkOS AuthKit (SSO, social) OR oauth.do (auth.apis.do)
 
-  private async verifyOwnJWT(token: string): Promise<AuthUser | null> {
+  private async verifyOwnJWT(token: string): Promise<{ user: AuthUser; privileged: boolean } | 'revoked' | null> {
     // Verify JWTs signed by us using keys from DO storage directly.
     // No HTTP round-trip — avoids circular self-fetch to our own JWKS endpoint.
+    let payload: jose.JWTPayload
     try {
       // Only the sign-in session JWT is a Person credential: an id_token
-      // issued to any OAuth client, or an access token, is refused here.
-      const payload = await verifySessionJwt(token, this.env)
+      // issued to any OAuth client, or an access token, is refused here (H2).
+      payload = await verifySessionJwt(token, this.env)
+    } catch {
+      return null
+    }
 
-      const org = payload.org as { id?: string; name?: string; domains?: string[] } | undefined
-      return {
+    // A browser session must still have a live record (logout, freeze: H4).
+    if (!(await checkSessionState(this.env, payload, token))) return 'revoked'
+
+    // platformRole and admin/owner roles come from WorkOS now, not the token.
+    const privilege = await rereadPrivilege(this.env, payload)
+    const org = payload.org as { id?: string; name?: string; domains?: string[] } | undefined
+    return {
+      privileged: claimsPrivilege(payload),
+      user: {
         id: payload.sub || '',
         email: payload.email as string | undefined,
         name: payload.name as string | undefined,
         image: payload.image as string | undefined,
         organizationId: org?.id || (payload.org_id as string | undefined),
         org: org?.id || (payload.org_id as string | undefined),
-        roles: payload.roles as string[] | undefined,
-        permissions: payload.permissions as string[] | undefined,
-        platformRole: payload.platformRole === 'superadmin' ? 'superadmin' : undefined,
+        roles: privilege.roles,
+        permissions: privilege.permissions,
+        platformRole: privilege.platformRole,
         metadata: payload.metadata as Record<string, unknown> | undefined,
-      }
-    } catch {
-      return null
+      },
     }
   }
 
@@ -623,9 +640,7 @@ app.use('/dash/*', async (c, next) => {
     return c.redirect('/', 302)
   }
 
-  try {
-    await verifySessionJwt(jwt, c.env)
-  } catch {
+  if (!(await verifySessionCookie(c.req.raw, c.env))) {
     return c.redirect('/', 302)
   }
 
@@ -709,7 +724,9 @@ app.get('/me', async (c) => {
 
   // JWT — verify against our own JWKS (id.org.ai-signed)
   try {
+    // Only the sign-in session JWT (H2), and only while its session is live (H4).
     const payload = await verifySessionJwt(token, c.env)
+    if (!(await checkSessionState(c.env, payload, token))) return c.json({ error: 'Unauthorized' }, 401)
     const org = payload.org as { id?: string } | undefined
     return c.json({
       id: payload.sub || '',
@@ -971,13 +988,9 @@ app.get('/', async (c) => {
   const cookie = c.req.header('cookie')
   if (cookie) {
     const jwt = parseCookieValue(cookie, 'auth')
-    if (jwt) {
-      try {
-        await verifySessionJwt(jwt, c.env)
-        return c.redirect('/dash/profile', 302)
-      } catch {
-        // Invalid cookie — fall through to landing page
-      }
+    // A live session (not just a validly signed one) goes to the dashboard.
+    if (jwt && (await verifySessionCookie(c.req.raw, c.env))) {
+      return c.redirect('/dash/profile', 302)
     }
   }
   // Not authenticated — serve landing page

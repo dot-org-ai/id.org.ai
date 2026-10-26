@@ -198,8 +198,9 @@ describe('verifyToken (core primitive)', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('POST /auth/verify (HTTP wire surface)', () => {
-  // Inject the test JWKS so the endpoint runs without a Durable Object.
-  const app = createAuthVerifyApp(async () => jwks)
+  // Inject the test JWKS and a session check that finds every session live,
+  // so the endpoint runs without a Durable Object.
+  const app = createAuthVerifyApp(async () => jwks, async () => true)
   const env = {} as Env
 
   async function post(body: unknown): Promise<Response> {
@@ -221,6 +222,17 @@ describe('POST /auth/verify (HTTP wire surface)', () => {
     expect(json.valid).toBe(true)
     expect(json.identity?.sub).toBe('user_42')
     expect(json.identity?.scopes).toEqual(['read', 'claim'])
+  })
+
+  it('returns 401 for a validly signed session that was logged out or frozen (H4)', async () => {
+    const revokedApp = createAuthVerifyApp(async () => jwks, async () => false)
+    const token = await mint({ sub: 'user_42' })
+    const res = await revokedApp.fetch(
+      new Request('https://id.org.ai/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) }),
+      env,
+    )
+    expect(res.status).toBe(401)
+    expect(((await res.json()) as { valid: boolean }).valid).toBe(false)
   })
 
   it('returns 401 for an EXPIRED token', async () => {
