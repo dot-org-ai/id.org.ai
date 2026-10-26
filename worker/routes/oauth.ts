@@ -228,9 +228,9 @@ app.get('/oauth/authorize', async (c) => {
   // How the browser session was established → amr / idp / auth_time on the tokens
   const signIn = identityId ? await readSessionSignIn(c.req.raw, c.env) : undefined
 
-  // Skip CSRF wrapping for service binding callers — the proxy handles its own security
-  const isServiceBinding = !!c.req.header('X-Issuer')
-  // ADR-0007: also skip for the canonical trusted-account client. Trusted-
+  // CSRF wrapping is skipped only for the canonical trusted-account client
+  // (ADR-0007). No request header turns it off: an `X-Issuer` header once did,
+  // and any caller can send one. Trusted-
   // account clients have `client.trusted === true`, which makes provider.ts
   // (handleAuthorize, ~line 582) bypass the consent page and call
   // issueAuthorizationCode directly — there's no consent POST round-trip
@@ -238,25 +238,20 @@ app.get('/oauth/authorize', async (c) => {
   // leak straight through to the consumer's better-auth callback and fail
   // CSRF on that side. better-auth (and any standards-conformant OAuth
   // client) compares the returned `state` against the one it sent and
-  // rejects on mismatch. Same failure mode as 08abc13 fixed for ChatGPT
-  // via the X-Issuer path; same fix shape.
+  // rejects on mismatch.
   const clientIdParam = new URL(c.req.url).searchParams.get('client_id') || ''
   const isTrustedAccount = clientIdParam === TRUSTED_ACCOUNT_CLIENT_ID
 
-  // A request that asks for (or imitates) an sb scope never takes the
-  // X-Issuer shortcut: X-Issuer is only a header, so its consent must carry the
-  // CSRF binding like any browser consent (and the POST checks it).
-  const asksSb = mentionsSbScope(new URL(c.req.url).searchParams.getAll('scope').join(' '))
   // The consent screen binds its form to a CSRF token (the renderer stores it,
   // sets the cookie and folds it into the form's state). Only a rendered
   // consent screen carries it: a login redirect, an error redirect or an issued
   // code (consent on record) keeps the client's own state untouched.
-  const csrf = !((isServiceBinding && !asksSb) || isTrustedAccount)
+  const csrf = !isTrustedAccount
   const provider = getOAuthProvider(c, { renderConsent: (vm) => renderConsentScreen(c, vm, { csrf }) })
   return provider.handleAuthorize(c.req.raw, identityId, signIn)
 })
 
-// Authorization Consent Submission — CSRF validated (skipped for service binding)
+// Authorization Consent Submission — CSRF validated
 app.post('/oauth/authorize', async (c) => {
   const auth = c.get('auth')
   if (!auth?.authenticated || !auth.identityId) {
@@ -296,15 +291,8 @@ app.post('/oauth/authorize', async (c) => {
     return errorResponse(c, 403, ErrorCode.Forbidden, 'api.sb access can only be granted from a signed-in browser session')
   }
 
-  // Skip CSRF validation for service binding callers — the proxy handles its own security.
-  // Never for an sb consent (X-Issuer is only a header).
-  const isServiceBinding = !!c.req.header('X-Issuer')
-  if (isServiceBinding && !asksSb) {
-    const provider = getOAuthProvider(c)
-    // No CSRF check on this path, so never interactive: no sb scopes.
-    return asFetchSubmit(c, await provider.handleAuthorizeConsent(c.req.raw, auth.identityId, signIn, { interactive: false }))
-  }
-
+  // Every consent submission carries the CSRF double submit; no request
+  // header waives it (an `X-Issuer` header once did, and any caller can send one).
   // Extract CSRF token from cookie
   const cookieCSRF = extractCSRFFromCookie(c.req.raw)
 

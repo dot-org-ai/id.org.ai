@@ -24,7 +24,12 @@ verifyToken(token) -> { valid: true, identity } | { valid: false, error }
   [`src/sdk/oauth/jwt-verify.ts`](../src/sdk/oauth/jwt-verify.ts) (`verifyJWT`).
   It does **not** re-implement any check: signature (via the live JWKS),
   `exp`/`nbf`/`iat`, `iss === https://id.org.ai`, and `aud` (when an expected
-  audience is supplied) are all enforced by `verifyJWT`.
+  audience is supplied) are all enforced by `verifyJWT`. Without an expected
+  audience only the sign-in session JWT (no `aud`) verifies: an id_token issued
+  to some OAuth client is never accepted as the Person (security review H2). A
+  relying party verifying the id_token it received passes its own client_id:
+  `env.AUTH.verifyToken(token, { audience })`, or `audience` in the
+  `POST /auth/verify` body.
 - Exposed **two** ways, both thin wrappers over that one core:
   - **RPC** — `AuthIdentity` `WorkerEntrypoint` in
     [`worker/index.ts`](../worker/index.ts): `env.AUTH.verifyToken(token)`.
@@ -101,7 +106,7 @@ wrong-issuer token can never cause someone else's owned page to be served.
 | signature  | `verifyJWT` (Web Crypto, against live JWKS)   |
 | exp / iat  | `verifyJWT` (with clock tolerance)            |
 | issuer     | `verifyJWT` (`iss === https://id.org.ai`)     |
-| audience   | `verifyJWT` (only when an expected `aud` given) |
+| audience   | `verifyJWT` when an expected `aud` is given; otherwise `verify-token.ts` refuses any token that carries an `aud` |
 | subject    | `verify-token.ts` (`sub` required for identity) |
 
 On any failure the primitive returns `{ valid: false, error }` and never throws.

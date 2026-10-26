@@ -23,6 +23,7 @@
 import { verifyJWT, decodeJWT, type JWTPayload } from '../oauth/jwt-verify'
 import type { JWKS, JWKSPublicKey } from '../jwt/signing'
 import { CANONICAL_AUTH_ORIGIN } from './index'
+import { idOrgAiTokenClass } from './token-class'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public Types
@@ -76,8 +77,10 @@ export interface VerifyTokenOptions {
   issuer?: string
   /**
    * Expected audience. When supplied, verifyJWT enforces that the token's
-   * `aud` claim matches. When omitted, the audience is not constrained
-   * (matches OAuth introspection behaviour for tokens without an `aud`).
+   * `aud` claim matches: this is how a client verifies the id_token issued to
+   * it. When omitted, only a token with NO audience is accepted (the sign-in
+   * session JWT): an id_token issued to some other client, or an access token
+   * for some other resource, is never a credential here.
    */
   audience?: string | string[]
   /** Clock tolerance in seconds for exp/nbf/iat (default: verifyJWT's 60). */
@@ -117,7 +120,7 @@ export async function verifyToken(token: string, options: VerifyTokenOptions = {
         ...(options.publicKey && { publicKey: options.publicKey }),
         ...(options.jwksUrl && { jwksUrl: options.jwksUrl }),
       })
-      return projectResult(result, issuer)
+      return projectResult(result, issuer, audience)
     }
 
     // ── Path B: in-memory JWKS. Select key by kid, verify with verifyJWT. ─
@@ -146,7 +149,7 @@ export async function verifyToken(token: string, options: VerifyTokenOptions = {
 
         const result = await verifyJWT(token, { ...baseOptions, publicKey })
         if (result.valid) {
-          return projectResult(result, issuer)
+          return projectResult(result, issuer, audience)
         }
 
         // A signature failure means we picked the wrong key (rotation) — keep
@@ -156,7 +159,7 @@ export async function verifyToken(token: string, options: VerifyTokenOptions = {
           lastError = result.error
           continue
         }
-        return projectResult(result, issuer)
+        return projectResult(result, issuer, audience)
       }
 
       return { valid: false, error: lastError }
@@ -178,11 +181,18 @@ export async function verifyToken(token: string, options: VerifyTokenOptions = {
 function projectResult(
   result: Awaited<ReturnType<typeof verifyJWT>>,
   issuer: string,
+  audience: string | string[] | undefined,
 ): VerifyTokenResult {
   if (!result.valid) {
     return { valid: false, error: result.error }
   }
   const payload = result.payload
+  // A token minted for an audience (an id_token for some OAuth client, an
+  // access token for some resource) is accepted only by a caller that names
+  // that audience. Without one, only the sign-in session JWT is a credential.
+  if (audience === undefined && idOrgAiTokenClass(result.header, payload) !== 'session') {
+    return { valid: false, error: 'Not a session token: a token issued to an audience (an id_token or access token) verifies only against that audience' }
+  }
   if (!payload.sub || typeof payload.sub !== 'string') {
     // A signed token with no subject cannot identify anyone — fail closed.
     return { valid: false, error: 'Token missing subject (sub) claim' }

@@ -156,7 +156,6 @@ interface AuthorizationCode {
   state?: string
   nonce?: string
   resource?: string
-  effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
   signIn?: SignInContext       // how the person signed in (amr / idp / auth_time)
   orgId?: string               // the workspace the Person chose on consent (validated)
   expiresAt: number
@@ -215,7 +214,6 @@ interface RefreshToken {
   expiresAt: number
   createdAt: number
   resource?: string            // RFC 8707 resource indicator
-  effectiveIssuer?: string     // multi-tenant: issuer override from X-Issuer header
   /**
    * ADR-0007: the consumer's redirect_uri host at issuance time, captured for
    * trusted-account flows so `handleRefreshTokenGrant` can re-validate the
@@ -338,7 +336,6 @@ interface ConsentResumeRecord {
   nonce?: string
   resource?: string
   orgId?: string
-  effectiveIssuer: string
   createdAt: number
 }
 
@@ -711,20 +708,6 @@ export class OAuthProvider {
     return this.config.issuer
   }
 
-  /** Resolve effective issuer — respects X-Issuer header for multi-tenant MCP servers */
-  getEffectiveIssuer(request?: Request): string {
-    if (request) {
-      const xIssuer = request.headers.get('X-Issuer')
-      if (xIssuer) {
-        try {
-          new URL(xIssuer)
-          return xIssuer.replace(/\/$/, '')
-        } catch { /* invalid URL, fall through */ }
-      }
-    }
-    return this.config.issuer
-  }
-
   constructor(options: {
     storage: StorageLike
     config: OAuthConfig
@@ -962,7 +945,11 @@ export class OAuthProvider {
   async handleAuthorize(request: Request, identityId: string | null, signIn?: SignInContext): Promise<Response> {
     const url = new URL(request.url)
     const params = url.searchParams
-    const iss = this.getEffectiveIssuer(request)
+    // The issuer is pinned (config.issuer, https://id.org.ai): no request
+    // header names it. iss is what every signed token and RFC 9207 response
+    // carries, so a caller-chosen value would mint id.org.ai-signed tokens
+    // under someone else's name.
+    const iss = this.config.issuer
 
     const scope = params.get('scope') || 'openid profile email'
     const state = params.get('state') || undefined
@@ -1037,7 +1024,6 @@ export class OAuthProvider {
       nonce,
       resource,
       orgId: consentOrg || undefined,
-      effectiveIssuer: iss,
     }
     const stepUp = await this.requireFreshConsent(
       { ...grant, identityId, clientId }, signIn, params.get('prompt') === 'none',
@@ -1218,7 +1204,7 @@ export class OAuthProvider {
    */
   async handleAuthorizeConsent(request: Request, identityId: string, signIn?: SignInContext, context: ConsentContext = { interactive: false }): Promise<Response> {
     const { fields: body, repeated } = await parseBodyWithRepeats(request)
-    const iss = this.getEffectiveIssuer(request)
+    const iss = this.config.issuer // pinned, as in handleAuthorize
 
     // RFC 6749 §3.1: a parameter sent twice is refused, so no reader of this
     // form can see a different value from the one granted.
@@ -1291,7 +1277,6 @@ export class OAuthProvider {
       nonce,
       resource,
       orgId,
-      effectiveIssuer: iss,
     }, signIn)
     if (stepUp) return stepUp
 
@@ -1306,7 +1291,6 @@ export class OAuthProvider {
       state,
       nonce,
       resource,
-      effectiveIssuer: iss,
       signIn,
       orgId,
     })
@@ -1323,7 +1307,7 @@ export class OAuthProvider {
     }
     // OIDC prompt=none cannot start an interactive step-up or park a resume record.
     if (noInteraction) {
-      return this.redirectError(grant.redirectUri, 'login_required', 'Sign in again to continue.', grant.state, grant.effectiveIssuer)
+      return this.redirectError(grant.redirectUri, 'login_required', 'Sign in again to continue.', grant.state, this.config.issuer)
     }
     const resumeId = generateId('rsm_')
     await this.storage.put(
@@ -1364,7 +1348,6 @@ export class OAuthProvider {
       state: rec.state,
       nonce: rec.nonce,
       resource: rec.resource,
-      effectiveIssuer: rec.effectiveIssuer,
       signIn,
       orgId: rec.orgId,
     })
@@ -1998,7 +1981,6 @@ export class OAuthProvider {
       nonce: codeData.nonce,
       resource: codeData.resource,
       accessResource: target.resource,
-      effectiveIssuer: codeData.effectiveIssuer,
       consumerHost,
       signIn: codeData.signIn,
       grantedAt: codeData.createdAt,
@@ -2106,7 +2088,6 @@ export class OAuthProvider {
       family: tokenData.family,
       resource: tokenData.resource,
       accessResource: target.resource,
-      effectiveIssuer: tokenData.effectiveIssuer,
       // Propagate the consumer host through rotation so subsequent refreshes
       // can keep enforcing the allowlist (ADR-0007).
       consumerHost: tokenData.consumerHost,
@@ -2322,7 +2303,6 @@ export class OAuthProvider {
       state?: string
       nonce?: string
       resource?: string
-      effectiveIssuer?: string
       signIn?: SignInContext
       /** The workspace the Person chose, already validated as one of theirs. */
       orgId?: string
@@ -2342,7 +2322,6 @@ export class OAuthProvider {
       state: params.state,
       nonce: params.nonce,
       resource: params.resource,
-      effectiveIssuer: params.effectiveIssuer,
       ...(params.signIn && { signIn: params.signIn }),
       ...(params.orgId !== undefined && { orgId: params.orgId }),
       expiresAt: now + AUTH_CODE_TTL * 1000,
@@ -2378,8 +2357,8 @@ export class OAuthProvider {
     }
     // RFC 9207: name the issuer, so a client talking to several authorization
     // servers can tell which one answered (mix-up defence). The same value the
-    // metadata's `issuer` carries for this request.
-    redirectUrl.searchParams.set('iss', params.effectiveIssuer || this.config.issuer)
+    // metadata's `issuer` carries: the pinned issuer.
+    redirectUrl.searchParams.set('iss', this.config.issuer)
 
     return Response.redirect(redirectUrl.toString(), 302)
   }
@@ -2426,7 +2405,6 @@ export class OAuthProvider {
     family?: string
     nonce?: string
     resource?: string
-    effectiveIssuer?: string
     /**
      * ADR-0007: consumer's redirect_uri host. Stored on the refresh-token
      * record so `handleRefreshTokenGrant` can re-validate against the
@@ -2452,7 +2430,7 @@ export class OAuthProvider {
      */
     orgId?: string
   }): Promise<Response> {
-    const { clientId, identityId, scopes, family, nonce, effectiveIssuer, consumerHost, signIn, orgId } = options
+    const { clientId, identityId, scopes, family, nonce, consumerHost, signIn, orgId } = options
     const grantedAt = options.grantedAt ?? Date.now()
     const resource = options.resource
     const tokenAudience = options.accessResource ?? resource
@@ -2460,7 +2438,7 @@ export class OAuthProvider {
     const accessTokenId = generateId('at_')
     const refreshTokenId = generateId('rt_')
     const tokenFamily = family || crypto.randomUUID()
-    const issuer = effectiveIssuer || this.config.issuer
+    const issuer = this.config.issuer
 
     // An access token for api.sb is an RFC 9068 JWT, which api.sb verifies
     // against the JWKS with no call back here. Every other access token stays
@@ -2504,7 +2482,6 @@ export class OAuthProvider {
       expiresAt: now + REFRESH_TOKEN_TTL * 1000,
       createdAt: now,
       ...(resource !== undefined && { resource }),
-      ...(effectiveIssuer !== undefined && { effectiveIssuer }),
       ...(consumerHost !== undefined && { consumerHost }),
       ...(signIn && { signIn }),
       grantedAt,
@@ -2573,7 +2550,7 @@ export class OAuthProvider {
         claims.at_hash = btoa(atHashBinary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 
         idToken = await signJWT(key, claims as AccessTokenClaims, {
-          issuer: effectiveIssuer || this.config.issuer,
+          issuer: this.config.issuer,
           audience: clientId,
           expiresIn: 3600,
         })

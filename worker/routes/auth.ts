@@ -9,7 +9,7 @@ import * as jose from 'jose'
 import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
-import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
+import { getStubForIdentity, getSigningKeyManager, resolveIdentityId, verifySessionJwt } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
 import { renderOrgPickerPage } from '../views/org-picker'
 import {
@@ -640,10 +640,7 @@ app.get('/api/me', async (c) => {
   if (!jwt) return c.json({ authenticated: false }, 200)
 
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwks = await manager.getJWKS()
-    const localJwks = jose.createLocalJWKSet(jwks)
-    const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, c.env)
 
     return c.json({
       authenticated: true,
@@ -672,10 +669,7 @@ app.get('/api/session', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwks = await manager.getJWKS()
-    const localJwks = jose.createLocalJWKSet(jwks)
-    const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, c.env)
 
     const fullName = (payload.name as string) || ''
     const nameParts = fullName.trim().split(/\s+/)
@@ -729,10 +723,7 @@ app.get('/api/widget-token', async (c) => {
   if (!jwt) return c.json({ error: 'Unauthorized' }, 401)
 
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwks = await manager.getJWKS()
-    const localJwks = jose.createLocalJWKSet(jwks)
-    const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, c.env)
 
     if (!payload.sub) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -767,10 +758,7 @@ app.post('/api/session/organization', async (c) => {
   }
 
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwks = await manager.getJWKS()
-    const localJwks = jose.createLocalJWKSet(jwks)
-    const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, c.env)
 
     // Validate the user is a member of the target org, and take their role there:
     // roles and permissions belong to an organization, so the previous org's
@@ -795,7 +783,7 @@ app.post('/api/session/organization', async (c) => {
     // Re-mint JWT with new organizationId
     const platformOrgId = c.env.PLATFORM_ORG_ID
     const isSuperadmin = !!(platformOrgId && body.organizationId === platformOrgId)
-    const newJwt = await manager.sign(
+    const newJwt = await getSigningKeyManager(c.env).sign(
       {
         sub: payload.sub || '',
         email: payload.email as string | undefined,

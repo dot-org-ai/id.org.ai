@@ -432,24 +432,28 @@ describe('review round 3 regressions', () => {
     const idToken = t.body.id_token as string
     expect(idToken).toBeTruthy()
 
-    // It poses as the browser: auth=<id_token>, gets the CSRF pair, posts sb:do.
+    // It poses as the browser: auth=<id_token>. An id_token is not a sign-in
+    // session (security review H2), so it is not signed in at all…
     const other = await register({ client_name: 'Accomplice', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none' })
     const p2 = await pkce()
     const url = authorizeUrl(other.client_id, MCP_REDIRECT, p2.challenge, 's', { scope: 'sb:do', resource: 'https://api.sb' })
     const page = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: `auth=${idToken}` } })
-    expect(page.status).toBe(200)
-    const csrf = setCookies(page).__csrf!
+    expect(page.status).toBe(302)
+    expect(new URL(page.headers.get('location')!).pathname).toBe('/login')
+    // …and with a real CSRF pair (from the Person's own consent page) the sb:do post is still refused.
+    const real = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    const csrf = setCookies(real).__csrf!
     const res = await SELF.fetch(`${BASE}/oauth/authorize`, {
       method: 'POST',
       redirect: 'manual',
       headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ auth: idToken, __csrf: csrf }) },
-      body: new URLSearchParams({ ...consentFields(await page.text()), approved: 'true' }).toString(),
+      body: new URLSearchParams({ ...consentFields(await real.text()), approved: 'true' }).toString(),
     })
-    expect(res.status).toBe(403)
+    expect([401, 403]).toContain(res.status)
     expect(res.headers.get('location')).toBeNull()
   })
 
-  it('N-1: an X-Issuer proxy client with a scope like usb:read keeps the no-CSRF path', async () => {
+  it('N-1: an X-Issuer header waives no CSRF check, whatever the scope (security review M1)', async () => {
     const client = await register({ client_name: 'usb proxy', redirect_uris: [MCP_REDIRECT], token_endpoint_auth_method: 'none', scope: 'openid usb:read' })
     const { challenge } = await pkce()
     const cookies = await signIn()
@@ -459,7 +463,7 @@ describe('review round 3 regressions', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader(cookies), 'X-Issuer': 'https://oauth.do' },
       body: new URLSearchParams({ client_id: client.client_id, redirect_uri: MCP_REDIRECT, scope: 'openid usb:read', code_challenge: challenge, code_challenge_method: 'S256', approved: 'true' }).toString(),
     })
-    expect(res.status).toBe(302)
-    expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeTruthy()
+    expect(res.status).toBe(403)
+    expect(res.headers.get('location')).toBeNull()
   })
 })

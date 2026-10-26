@@ -13,6 +13,8 @@ import { parseCookieValue } from '../utils/cookies'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
 import { workosUrl } from '../../src/sdk/workos/base'
+import { CANONICAL_AUTH_ORIGIN } from '../../src/sdk/auth'
+import { isIdOrgAiSessionToken } from '../../src/sdk/auth/token-class'
 
 /**
  * Get a DO stub for a specific identity shard.
@@ -73,6 +75,22 @@ export function getDlvpSigningKeyManager(env: Env): SigningKeyManager {
 }
 
 /**
+ * Verify the id.org.ai sign-in session JWT (the `auth` cookie, or that JWT
+ * presented as a bearer) and return its claims; throws when it is not one.
+ *
+ * The issuer is pinned, and only the session class passes: an id_token (it
+ * carries the `aud` of the client it was issued to, and any client can get
+ * one for a Person who signs into it) or an access token (`typ: at+jwt`) is
+ * never the Person's own credential, though all three share one signing key.
+ */
+export async function verifySessionJwt(jwt: string, env: Env): Promise<jose.JWTPayload> {
+  const jwks = await getSigningKeyManager(env).getJWKS()
+  const { payload, protectedHeader } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks as jose.JSONWebKeySet), { issuer: CANONICAL_AUTH_ORIGIN })
+  if (!isIdOrgAiSessionToken(protectedHeader, payload)) throw new Error('Not an id.org.ai session token')
+  return payload
+}
+
+/**
  * Resolve the identity ID (shard key) from the request's auth credentials.
  * Returns null for anonymous/L0 requests that don't need a DO.
  */
@@ -97,10 +115,7 @@ export async function resolveIdentityId(request: Request, env: Env): Promise<str
     const jwt = parseCookieValue(cookie, 'auth')
     if (jwt) {
       try {
-        const manager = getSigningKeyManager(env)
-        const jwks = await manager.getJWKS()
-        const localJwks = jose.createLocalJWKSet(jwks)
-        const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+        const payload = await verifySessionJwt(jwt, env)
         if (payload.sub) {
           return `human:${payload.sub}`
         }
@@ -128,9 +143,7 @@ export async function readSessionSignIn(
   const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
   if (!jwt) return undefined
   try {
-    const manager = getSigningKeyManager(env)
-    const jwks = await manager.getJWKS()
-    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, env)
     const amr = Array.isArray(payload.amr) ? payload.amr.filter((x): x is string => typeof x === 'string') : undefined
     const idp = typeof payload.idp === 'string' ? payload.idp : undefined
     const authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined
@@ -150,8 +163,7 @@ export async function readSessionOrgId(request: Request, env: Env): Promise<stri
   const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
   if (!jwt) return undefined
   try {
-    const jwks = await getSigningKeyManager(env).getJWKS()
-    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(jwt, env)
     const org = payload.org as { id?: unknown } | undefined
     return typeof org?.id === 'string' ? org.id : undefined
   } catch {

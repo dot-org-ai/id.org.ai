@@ -112,8 +112,6 @@ export interface OAuthAuthorizationCode {
   state?: string
   /** Server's upstream state for validating upstream provider callback */
   upstreamState?: string
-  /** Effective issuer for multi-tenant scenarios (stored from X-Issuer header) */
-  effectiveIssuer?: string
   /** RFC 8707 resource indicator — the resource server this code was requested for */
   resource?: string
   /** Temporary storage for access token JWT during platform exchange flow */
@@ -333,8 +331,6 @@ export interface OAuthDeviceCode {
   authorized?: boolean
   /** Whether the user denied authorization */
   denied?: boolean
-  /** Effective issuer for multi-tenant scenarios */
-  effectiveIssuer?: string
   /** Last time the client polled for token (for slow_down enforcement) */
   lastPollTime?: number
 }
