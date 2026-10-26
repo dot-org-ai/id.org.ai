@@ -269,8 +269,10 @@ describe('step-up before granting act permissions (FEATURE_STEP_UP)', () => {
     expect(storage.store.get(key)).toMatchObject({
       identityId: PERSON, clientId, redirectUri: REDIRECT, state, nonce: 'new-nonce',
       scopes: ['openid', 'sb:read', 'sb:do'], resource: SB.resource,
-      codeChallenge: await s256(VERIFIER), effectiveIssuer: issuer,
+      codeChallenge: await s256(VERIFIER),
     })
+    // An X-Issuer header is not stored: the issuer is pinned (security review M1).
+    expect(storage.store.get(key)).not.toHaveProperty('effectiveIssuer')
     expect((storage.store.get(key) as { orgId?: string }).orgId).toBe(orgId)
     expect([...storage.store.keys()].filter((k) => k.startsWith('code:'))).toEqual(before)
     expect(response.headers.get('set-cookie')).toBeNull()
@@ -282,10 +284,10 @@ describe('step-up before granting act permissions (FEATURE_STEP_UP)', () => {
     const back = new URL(done.headers.get('location')!)
     expect(back.origin + back.pathname).toBe(REDIRECT)
     expect(back.searchParams.get('state')).toBe(state)
-    expect(back.searchParams.get('iss')).toBe(issuer)
+    expect(back.searchParams.get('iss')).toBe('https://id.org.ai')
     expect(storage.store.get(`code:${codeOf(done)}`)).toMatchObject({
       resource: SB.resource, nonce: 'new-nonce', codeChallenge: await s256(VERIFIER),
-      codeChallengeMethod: 'S256', effectiveIssuer: issuer, signIn: FRESH,
+      codeChallengeMethod: 'S256', signIn: FRESH,
     })
     const tokens = await redeem(provider, clientId, codeOf(done))
     expect(tokens.scope.split(' ')).toContain('sb:do')

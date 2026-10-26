@@ -36,6 +36,7 @@ import {
   getStubForIdentity,
   getSigningKeyManager,
   identityStubMiddleware,
+  verifySessionJwt,
 } from './middleware/tenant'
 import { oauthRoutes, getOAuthProvider, createOAuthProvider } from './routes/oauth'
 import { grantRoutes } from './routes/grants'
@@ -43,7 +44,8 @@ import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import type { VerifyTokenResult } from '../src/sdk/auth'
-import { authVerifyRoutes, verifyIdentityTokenWithEnv } from './routes/auth-verify'
+import { isIdOrgAiSessionToken } from '../src/sdk/auth/token-class'
+import { authVerifyRoutes, verifyIdentityTokenWithEnv, type VerifyIdentityOptions } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
 import { errorResponse, ErrorCode, errorMessage } from '../src/sdk/errors'
@@ -360,12 +362,9 @@ export class AuthService extends WorkerEntrypoint<Env> {
     // Verify JWTs signed by us using keys from DO storage directly.
     // No HTTP round-trip — avoids circular self-fetch to our own JWKS endpoint.
     try {
-      const manager = getSigningKeyManager(this.env)
-      const jwksData = await manager.getJWKS()
-      const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
-      const { payload } = await jose.jwtVerify(token, localJWKS, {
-        issuer: 'https://id.org.ai',
-      })
+      // Only the sign-in session JWT is a Person credential: an id_token
+      // issued to any OAuth client, or an access token, is refused here.
+      const payload = await verifySessionJwt(token, this.env)
 
       const org = payload.org as { id?: string; name?: string; domains?: string[] } | undefined
       return {
@@ -452,13 +451,18 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
   private async verifyOAuthDoJWT(token: string): Promise<AuthUser | null> {
     // Verifies JWTs signed by the legacy oauth.do compatibility surface.
+    // oauth.do serves the same published key set as id.org.ai, so the issuer
+    // alone does not tell a Person's session from an id_token issued (under
+    // the old X-Issuer override) to some OAuth client: as in verifyOwnJWT,
+    // only the session class (no `aud`, no `crit`, `typ` JWT) is the Person.
     const jwksUri = LEGACY_JWKS_URL
 
     try {
       const jwks = getJwksVerifier(jwksUri)
-      const { payload } = await jose.jwtVerify(token, jwks, {
+      const { payload, protectedHeader } = await jose.jwtVerify(token, jwks, {
         issuer: LEGACY_AUTH_ORIGIN,
       })
+      if (!isIdOrgAiSessionToken(protectedHeader, payload)) return null
 
       return {
         id: payload.sub || '',
@@ -504,9 +508,13 @@ export class AuthIdentity extends WorkerEntrypoint<Env> {
    * Verify an id.org.ai-issued JWT and return the projected identity.
    * Never throws — a malformed/expired/tampered/wrong-issuer token yields
    * `{ valid: false, error }`.
+   *
+   * Without options only the sign-in session JWT verifies. A relying party
+   * checking the id_token it received at its callback passes its own
+   * client_id as `audience`; an id_token issued to any other client is refused.
    */
-  async verifyToken(token: string): Promise<VerifyTokenResult> {
-    return verifyIdentityTokenWithEnv(token, this.env)
+  async verifyToken(token: string, options?: VerifyIdentityOptions): Promise<VerifyTokenResult> {
+    return verifyIdentityTokenWithEnv(token, this.env, undefined, options ?? {})
   }
 }
 
@@ -616,10 +624,7 @@ app.use('/dash/*', async (c, next) => {
   }
 
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwks = await manager.getJWKS()
-    const localJwks = jose.createLocalJWKSet(jwks)
-    await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+    await verifySessionJwt(jwt, c.env)
   } catch {
     return c.redirect('/', 302)
   }
@@ -704,10 +709,7 @@ app.get('/me', async (c) => {
 
   // JWT — verify against our own JWKS (id.org.ai-signed)
   try {
-    const manager = getSigningKeyManager(c.env)
-    const jwksData = await manager.getJWKS()
-    const localJWKS = jose.createLocalJWKSet(jwksData as jose.JSONWebKeySet)
-    const { payload } = await jose.jwtVerify(token, localJWKS, { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionJwt(token, c.env)
     const org = payload.org as { id?: string } | undefined
     return c.json({
       id: payload.sub || '',
@@ -751,8 +753,9 @@ app.get('/me', async (c) => {
 
 app.get('/.well-known/openid-configuration', (c) => {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  // Pinned: no request header names the issuer (it would be echoed into
+  // publicly cached metadata and point clients at a foreign token endpoint).
+  const issuer = provider.issuer
   return c.json({
     issuer,
     authorization_endpoint: `${issuer}/oauth/authorize`,
@@ -782,8 +785,9 @@ app.get('/.well-known/openid-configuration', (c) => {
 
 app.get('/.well-known/oauth-authorization-server', (c) => {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  // Pinned: no request header names the issuer (it would be echoed into
+  // publicly cached metadata and point clients at a foreign token endpoint).
+  const issuer = provider.issuer
   return c.json(
     {
       issuer,
@@ -848,8 +852,9 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 // authorization server is this origin's issuer.
 function protectedResourceMetadata(c: any) {
   const provider = getOAuthProvider(c)
-  const xIssuer = c.req.header('X-Issuer')
-  const issuer = xIssuer ? xIssuer.replace(/\/$/, '') : provider.issuer
+  // Pinned: no request header names the issuer (it would be echoed into
+  // publicly cached metadata and point clients at a foreign token endpoint).
+  const issuer = provider.issuer
   const origin = requestOriginOf(c.req.url)
   return c.json({
     resource: mcpResourceUri(origin),
@@ -968,10 +973,7 @@ app.get('/', async (c) => {
     const jwt = parseCookieValue(cookie, 'auth')
     if (jwt) {
       try {
-        const manager = getSigningKeyManager(c.env)
-        const jwks = await manager.getJWKS()
-        const localJwks = jose.createLocalJWKSet(jwks)
-        await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
+        await verifySessionJwt(jwt, c.env)
         return c.redirect('/dash/profile', 302)
       } catch {
         // Invalid cookie — fall through to landing page

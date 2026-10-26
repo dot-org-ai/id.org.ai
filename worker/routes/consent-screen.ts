@@ -7,8 +7,7 @@
  * (single use, 30 minutes), set as the `__csrf` cookie and folded into the
  * form's `state` (`encodeStateWithCSRF`). POST /oauth/authorize checks the
  * double submit and hands the provider the client's original state back.
- * Service-binding (X-Issuer) and trusted-account requests render without it,
- * as before.
+ * Only the canonical trusted-account client's requests render without it.
  */
 import type { Context } from 'hono'
 import type { Env, Variables } from '../types'
