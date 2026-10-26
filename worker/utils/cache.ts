@@ -36,13 +36,13 @@ export async function getCachedUser(token: string): Promise<AuthUser | null> {
   }
 }
 
-export async function cacheUser(token: string, user: AuthUser): Promise<void> {
+export async function cacheUser(token: string, user: AuthUser, ttlSeconds: number = TOKEN_CACHE_TTL): Promise<void> {
   try {
     const hash = await hashToken(token)
     const cacheKey = new Request(`${CACHE_URL_PREFIX}${hash}`)
-    const data = { user, expiresAt: Date.now() + TOKEN_CACHE_TTL * 1000 }
+    const data = { user, expiresAt: Date.now() + ttlSeconds * 1000 }
     const response = new Response(JSON.stringify(data), {
-      headers: { 'Cache-Control': `max-age=${TOKEN_CACHE_TTL}` },
+      headers: { 'Cache-Control': `max-age=${ttlSeconds}` },
     })
     await caches.default.put(cacheKey, response)
   } catch {

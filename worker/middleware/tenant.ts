@@ -9,7 +9,7 @@
 import * as jose from 'jose'
 import type { IdentityStub } from '../../src/server/do/Identity'
 import { SigningKeyManager } from '../../src/sdk/jwt/signing'
-import { parseCookieValue } from '../utils/cookies'
+import { verifySessionCookie } from '../utils/session'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
 import { workosUrl } from '../../src/sdk/workos/base'
@@ -91,23 +91,11 @@ export async function resolveIdentityId(request: Request, env: Env): Promise<str
     return identityId
   }
 
-  // 3. JWT auth cookie → verify and extract identity
-  const cookie = request.headers.get('cookie')
-  if (cookie) {
-    const jwt = parseCookieValue(cookie, 'auth')
-    if (jwt) {
-      try {
-        const manager = getSigningKeyManager(env)
-        const jwks = await manager.getJWKS()
-        const localJwks = jose.createLocalJWKSet(jwks)
-        const { payload } = await jose.jwtVerify(jwt, localJwks, { issuer: 'https://id.org.ai' })
-        if (payload.sub) {
-          return `human:${payload.sub}`
-        }
-      } catch (err) {
-        console.error('[resolveIdentityId] JWT verification failed:', err instanceof Error ? err.message : err)
-      }
-    }
+  // 3. JWT auth cookie → verify (signature, and the session record: a
+  //    logged-out or frozen session resolves to nobody) and extract identity
+  const payload = await verifySessionCookie(request, env)
+  if (payload?.sub) {
+    return `human:${payload.sub}`
   }
 
   // 4. No credentials → anonymous (no DO needed)
@@ -124,13 +112,9 @@ export async function readSessionSignIn(
   request: Request,
   env: Env,
 ): Promise<{ amr?: string[]; idp?: string; authTime?: number } | undefined> {
-  const cookie = request.headers.get('cookie')
-  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
-  if (!jwt) return undefined
   try {
-    const manager = getSigningKeyManager(env)
-    const jwks = await manager.getJWKS()
-    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionCookie(request, env)
+    if (!payload) return undefined
     const amr = Array.isArray(payload.amr) ? payload.amr.filter((x): x is string => typeof x === 'string') : undefined
     const idp = typeof payload.idp === 'string' ? payload.idp : undefined
     const authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined
@@ -146,12 +130,9 @@ export async function readSessionSignIn(
  * verified like readSessionSignIn. Consent preselects it when the request names none.
  */
 export async function readSessionOrgId(request: Request, env: Env): Promise<string | undefined> {
-  const cookie = request.headers.get('cookie')
-  const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
-  if (!jwt) return undefined
   try {
-    const jwks = await getSigningKeyManager(env).getJWKS()
-    const { payload } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks), { issuer: 'https://id.org.ai' })
+    const payload = await verifySessionCookie(request, env)
+    if (!payload) return undefined
     const org = payload.org as { id?: unknown } | undefined
     return typeof org?.id === 'string' ? org.id : undefined
   } catch {

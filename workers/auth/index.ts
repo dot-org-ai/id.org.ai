@@ -332,6 +332,15 @@ async function verifyToken(token: string, env: Env): Promise<VerifyResult> {
     result = await delegateToOAuth(token, env)
   } else if (token.includes('.')) {
     result = await verifyJWT(token, env)
+    // An id.org.ai browser session (the `auth` cookie JWT): whether it was
+    // logged out or frozen, and the privilege it still has, live in id.org.ai
+    // (security review H4). Ask it, and don't cache its answer here: it
+    // caches briefly itself, and never when privilege is claimed.
+    if (result.valid && isIdOrgAiSession(token)) {
+      if (env.OAUTH) return await delegateToOAuth(token, env)
+      // Unbound: the signature is good, but privilege can't be confirmed.
+      return { valid: true, user: withoutPrivilege(result.user) }
+    }
   } else if (env.ADMIN_TOKEN) {
     result = await verifyAdminToken(token, env)
   } else {
@@ -343,6 +352,29 @@ async function verifyToken(token: string, env: Env): Promise<VerifyResult> {
 
   await cacheResult(token, result)
   return result
+}
+
+/** The `aud` id.org.ai gives a browser-session JWT (worker/utils/session.ts SESSION_AUDIENCE). */
+const ID_ORG_AI_SESSION_AUDIENCE = 'urn:id.org.ai:session'
+
+/** Is this (already verified) JWT an id.org.ai browser session, current or minted before `aud` existed? */
+function isIdOrgAiSession(token: string): boolean {
+  try {
+    const payload = jose.decodeJwt(token)
+    if (payload.iss !== 'https://id.org.ai') return false
+    return payload.aud === undefined || payload.aud === ID_ORG_AI_SESSION_AUDIENCE
+  } catch {
+    return false
+  }
+}
+
+/** Drop the claims id.org.ai re-reads from WorkOS: platformRole and admin/owner roles. */
+function withoutPrivilege(user: AuthUser): AuthUser {
+  return {
+    ...user,
+    platformRole: undefined,
+    roles: user.roles?.filter((r) => r !== 'admin' && r !== 'owner'),
+  }
 }
 
 /**

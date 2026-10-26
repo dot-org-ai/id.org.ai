@@ -59,7 +59,7 @@ export type {
 
 export type { Agent, AgentInfo, AgentStatus, AgentMode, RegisterAgentInput } from '../services/agents'
 
-import type { Identity, CapabilityLevel, ClaimStatus, IdentityType } from '../../sdk/types'
+import type { Identity, CapabilityLevel, ClaimStatus, IdentityType, BrowserSessionInput, BrowserSessionCheck, BrowserSessionRevoke, BrowserSessionRefusal } from '../../sdk/types'
 
 export interface IdentityEnv {
   // KV for sessions
@@ -81,6 +81,18 @@ export interface IdentityEnv {
 // ============================================================================
 // IdentityDO
 // ============================================================================
+
+const BROWSER_SESSION_PREFIX = 'browser-session:'
+const BROWSER_SESSION_REVOKED_PREFIX = 'browser-session-revoked:'
+const BROWSER_SESSIONS_NOT_BEFORE_PREFIX = 'browser-sessions-not-before:'
+
+interface BrowserSessionRecord {
+  identityId: string
+  createdAt: number
+  /** Epoch ms; the JWT's `exp`. */
+  expiresAt: number
+  revokedAt?: number
+}
 
 export class IdentityDO extends DurableObject<IdentityEnv> {
   readonly ns = 'https://id.org.ai'
@@ -375,6 +387,8 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
 
     // Session cleanup delegated to SessionService (Phase 6)
     const sessionCount = await this.sessionService.deleteAllForIdentity(id)
+    // And every browser session (`auth` cookie JWT), with or without a sid.
+    await this.revokeAllBrowserSessions(id)
 
     // Stats counting stays in DO (cross-domain concern)
     const entityEntries = await this.ctx.storage.list({ prefix: `entity:${id}:` })
@@ -388,6 +402,90 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
         sessions: sessionCount,
       },
       expiresAt: result.data.frozenAt! + 30 * 24 * 60 * 60 * 1000,
+    }
+  }
+
+  // ─── Browser Sessions (the `auth` cookie JWT) ──────────────────────────
+  //
+  // Each session JWT /api/callback signs carries a `sid`; its record lives
+  // here, in the Person's own DO. Logout revokes one record, freeze revokes
+  // them all, and every verification asks checkBrowserSession. A JWT minted
+  // before sids existed has no record: it is accepted until it expires
+  // unless logout listed its hash or freeze moved the not-before line past
+  // its `iat`. DO storage has no TTL, so expired rows are swept on write.
+
+  async putBrowserSession(input: BrowserSessionInput): Promise<void> {
+    const key = `${BROWSER_SESSION_PREFIX}${input.sid}`
+    const existing = (await this.ctx.storage.get(key)) as BrowserSessionRecord | undefined
+    // An org switch re-signs the same session: extend it, never revive one.
+    if (existing && (existing.identityId !== input.identityId || existing.revokedAt)) return
+    const now = Date.now()
+    await this.ctx.storage.put(key, {
+      identityId: input.identityId,
+      createdAt: existing?.createdAt ?? now,
+      expiresAt: input.expiresAt,
+    } satisfies BrowserSessionRecord)
+    await this.sweepBrowserSessions(now)
+  }
+
+  async checkBrowserSession(input: BrowserSessionCheck): Promise<{ valid: boolean; reason?: BrowserSessionRefusal }> {
+    const identity = (await this.ctx.storage.get(`identity:${input.identityId}`)) as { frozen?: unknown } | undefined
+    if (identity?.frozen === true) return { valid: false, reason: 'frozen' }
+    const now = Date.now()
+    if (input.sid) {
+      const rec = (await this.ctx.storage.get(`${BROWSER_SESSION_PREFIX}${input.sid}`)) as BrowserSessionRecord | undefined
+      if (!rec || rec.identityId !== input.identityId) return { valid: false, reason: 'unknown' }
+      if (rec.revokedAt) return { valid: false, reason: 'revoked' }
+      if (rec.expiresAt <= now) return { valid: false, reason: 'expired' }
+      return { valid: true }
+    }
+    const notBefore = (await this.ctx.storage.get(`${BROWSER_SESSIONS_NOT_BEFORE_PREFIX}${input.identityId}`)) as number | undefined
+    if (typeof notBefore === 'number' && (typeof input.iat !== 'number' || input.iat * 1000 <= notBefore)) {
+      return { valid: false, reason: 'revoked' }
+    }
+    if (input.tokenHash && (await this.ctx.storage.get(`${BROWSER_SESSION_REVOKED_PREFIX}${input.tokenHash}`))) {
+      return { valid: false, reason: 'revoked' }
+    }
+    return { valid: true }
+  }
+
+  async revokeBrowserSession(input: BrowserSessionRevoke): Promise<void> {
+    const now = Date.now()
+    if (input.sid) {
+      const key = `${BROWSER_SESSION_PREFIX}${input.sid}`
+      const rec = (await this.ctx.storage.get(key)) as BrowserSessionRecord | undefined
+      if (rec && rec.identityId === input.identityId && !rec.revokedAt) {
+        await this.ctx.storage.put(key, { ...rec, revokedAt: now } satisfies BrowserSessionRecord)
+      }
+      return
+    }
+    if (input.tokenHash) {
+      const expiresAt = typeof input.expiresAt === 'number' ? input.expiresAt : now + 30 * 24 * 60 * 60 * 1000
+      await this.ctx.storage.put(`${BROWSER_SESSION_REVOKED_PREFIX}${input.tokenHash}`, { expiresAt })
+    }
+  }
+
+  async revokeAllBrowserSessions(identityId: string): Promise<{ revoked: number }> {
+    const now = Date.now()
+    // Pre-sid JWTs: everything signed up to now is refused, even after unfreeze.
+    await this.ctx.storage.put(`${BROWSER_SESSIONS_NOT_BEFORE_PREFIX}${identityId}`, now)
+    const rows = await this.ctx.storage.list<BrowserSessionRecord>({ prefix: BROWSER_SESSION_PREFIX })
+    let revoked = 0
+    for (const [key, rec] of rows) {
+      if (rec.identityId !== identityId || rec.revokedAt) continue
+      await this.ctx.storage.put(key, { ...rec, revokedAt: now } satisfies BrowserSessionRecord)
+      revoked++
+    }
+    return { revoked }
+  }
+
+  /** Delete session rows and revoked-token hashes whose JWT has expired anyway. */
+  private async sweepBrowserSessions(now: number): Promise<void> {
+    for (const prefix of [BROWSER_SESSION_PREFIX, BROWSER_SESSION_REVOKED_PREFIX]) {
+      const rows = await this.ctx.storage.list<{ expiresAt?: number }>({ prefix })
+      const stale = [...rows].filter(([, v]) => typeof v?.expiresAt === 'number' && v.expiresAt <= now).map(([k]) => k)
+      // storage.delete takes at most 128 keys per call.
+      for (let i = 0; i < stale.length; i += 128) await this.ctx.storage.delete(stale.slice(i, i + 128))
     }
   }
 
