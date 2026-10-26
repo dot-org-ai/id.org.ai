@@ -1,6 +1,9 @@
 import { execSync } from 'child_process'
 import { writeClaimWorkflow } from '../claim/workflow-fs'
-import { getClaimStatus } from '../claim/client'
+import { isClaimToken } from '../claim/workflow'
+import { bindClaimRepository, getClaimStatus } from '../claim/client'
+import type { ClaimStatusResult } from '../claim/client'
+import { githubRepoFromRemote, isGitBranchName } from '../claim/policy'
 import type { ProvisionStorage } from './provision-storage'
 import { cleanText, terminalSafeJson } from './untrusted'
 
@@ -28,6 +31,30 @@ function isGitRepo(exec: GitExec): boolean {
   }
 }
 
+/** Runs a git command; returns its output, or undefined when it fails. */
+function tryGit(exec: GitExec, command: string): string | undefined {
+  try {
+    return exec(command) || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The remote's default branch as git last saw it (`origin/HEAD`), if known. */
+function remoteDefaultBranch(exec: GitExec): string | undefined {
+  const head = tryGit(exec, 'git symbolic-ref --short refs/remotes/origin/HEAD')
+  const branch = head?.startsWith('origin/') ? head.slice('origin/'.length) : undefined
+  return branch && isGitBranchName(branch) ? branch : undefined
+}
+
+function warnUnbound(repo: string, reason: string): void {
+  console.log('')
+  console.log(`  Warning: the claim is not bound to ${repo} (${reason}).`)
+  console.log('  The claim token is public once pushed. Until your first push runs the claim')
+  console.log('  workflow, anyone who copies it from the commit can claim this tenant first.')
+  console.log('')
+}
+
 export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
   const exec = opts.exec ?? runGit
   try {
@@ -44,6 +71,52 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
       process.exit(1)
     }
 
+    // Refuse a malformed token before anything is sent, written or committed.
+    if (!isClaimToken(claimToken)) {
+      console.error('Invalid claim token: expected clm_ followed by letters, digits, - or _')
+      process.exit(1)
+    }
+
+    // H1: the claim token is public once pushed, so bind it to this
+    // repository first, over the session token, which is never committed.
+    const remote = tryGit(exec, 'git remote get-url origin')
+    const repo = remote ? githubRepoFromRemote(remote) : null
+    if (!repo) {
+      console.error(
+        'No GitHub remote named origin. Add one (git remote add origin https://github.com/<owner>/<repo>) so the claim can be bound to that repository before the token is published.',
+      )
+      process.exit(1)
+    }
+    const defaultBranch = remoteDefaultBranch(exec)
+    const sessionToken = provisionData && provisionData.claimToken === claimToken ? provisionData.sessionToken : undefined
+
+    let bound = false
+    if (!sessionToken) {
+      warnUnbound(repo, 'no stored session for this claim token')
+    } else {
+      const result = await bindClaimRepository(sessionToken, repo, { defaultBranch, baseUrl: opts.baseUrl })
+      if (result.success) {
+        bound = true
+        console.log(`  Bound the claim to ${repo}`)
+      } else if (result.status === 400 || result.status === 409) {
+        // The server refused this repository: a push would not claim either.
+        console.error(`Cannot bind the claim to ${repo}: ${cleanText(result.error ?? `HTTP ${result.status}`)}`)
+        process.exit(1)
+      } else {
+        // Expired session (401), a server without the endpoint (404), or the
+        // network: fall back to binding on first use, and say so.
+        warnUnbound(repo, cleanText(result.error ?? `HTTP ${result.status}`))
+      }
+    }
+
+    const branch = tryGit(exec, 'git rev-parse --abbrev-ref HEAD')
+    const target = defaultBranch ?? 'main'
+    const onDefault = !!branch && (defaultBranch ? branch === defaultBranch : branch === 'main' || branch === 'master')
+    if (branch && !onDefault) {
+      console.log(`  On branch ${cleanText(branch)}, not ${cleanText(target)}: the push binds the claim (pending);`)
+      console.log(`  merging it to ${cleanText(target)} finalises it.`)
+    }
+
     const repoRoot = exec('git rev-parse --show-toplevel')
 
     const filePath = await writeClaimWorkflow(claimToken, repoRoot)
@@ -56,6 +129,7 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
     if (opts.noPush) {
       console.log('')
       console.log('  Skipping push (--no-push). Push manually to trigger the claim.')
+      if (opts.json) console.log(terminalSafeJson({ claimToken, repo, bound, status: 'unclaimed', level: 1 }))
       return
     }
 
@@ -63,18 +137,22 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
     console.log('  Pushed to origin')
 
     console.log('  Waiting for claim confirmation...')
-    const confirmed = await pollForClaim(claimToken, opts.baseUrl)
+    // Off the default branch the claim can only reach 'pending'.
+    const status = await pollForClaim(claimToken, opts.baseUrl, onDefault ? ['claimed'] : ['claimed', 'pending'])
 
-    if (confirmed) {
+    if (status === 'claimed') {
       console.log('  Tenant claimed! Upgraded to Level 2')
       await opts.storage.removeProvisionData()
+    } else if (status === 'pending') {
+      console.log(`  Claim pending: bound to your GitHub account. Merge to ${cleanText(target)} to finalise it.`)
     } else {
       console.log('  Push succeeded but claim not confirmed yet. Check GitHub Actions tab.')
     }
 
     if (opts.json) {
       // JSON.stringify leaves C1 and bidi characters raw; the claim token may have come from a server.
-      console.log(terminalSafeJson({ claimToken, confirmed, level: confirmed ? 2 : 1 }))
+      const confirmed = status === 'claimed'
+      console.log(terminalSafeJson({ claimToken, repo, bound, status, confirmed, level: confirmed ? 2 : 1 }))
     }
   } catch (err) {
     if (err instanceof Error && err.message === 'exit') throw err
@@ -83,16 +161,22 @@ export async function claimCommand(opts: ClaimCommandOptions): Promise<void> {
   }
 }
 
-async function pollForClaim(claimToken: string, baseUrl: string, timeoutMs = 60_000): Promise<boolean> {
+async function pollForClaim(
+  claimToken: string,
+  baseUrl: string,
+  until: Array<ClaimStatusResult['status']>,
+  timeoutMs = 60_000,
+): Promise<ClaimStatusResult['status']> {
   const start = Date.now()
   const interval = 3_000
+  let last: ClaimStatusResult['status'] = 'unclaimed'
 
   while (Date.now() - start < timeoutMs) {
     const result = await getClaimStatus(claimToken, baseUrl)
-    if (result.status === 'claimed') return true
-    if (result.status === 'expired') return false
+    last = result.status
+    if (until.includes(result.status) || result.status === 'expired') return result.status
     await new Promise((r) => setTimeout(r, interval))
   }
 
-  return false
+  return last
 }

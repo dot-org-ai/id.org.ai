@@ -270,10 +270,14 @@ describe('IdentityDO', () => {
   // ──────────────────────────────────────────────────────────────────────
 
   describe('claim()', () => {
+    // Every claim is bound to a repository (H1): the verified OIDC claims or
+    // the signed push webhook supply it.
+    const REPO = { repo: 'org/repo', repositoryId: '1001', repositoryOwnerId: '2001' }
     it('upgrades identity to claimed (level 2) on main branch', async () => {
       const { claimToken, identity: anon } = await identity.provisionAnonymous()
       const result = await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-123',
         githubUsername: 'alice',
         githubEmail: 'alice@gh.com',
@@ -289,6 +293,7 @@ describe('IdentityDO', () => {
       const { claimToken } = await identity.provisionAnonymous()
       const result = await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-456',
         githubUsername: 'bob',
         branch: 'feature/test',
@@ -302,6 +307,7 @@ describe('IdentityDO', () => {
       const { claimToken } = await identity.provisionAnonymous()
       const result = await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-789',
         githubUsername: 'charlie',
         branch: 'master',
@@ -316,6 +322,7 @@ describe('IdentityDO', () => {
       const { claimToken, identity: anon } = await identity.provisionAnonymous()
       await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-123',
         githubUsername: 'alice',
         githubEmail: 'alice@gh.com',
@@ -333,9 +340,9 @@ describe('IdentityDO', () => {
 
     it('rejects already-claimed tenant', async () => {
       const { claimToken } = await identity.provisionAnonymous()
-      await identity.claim({ claimToken, githubUserId: 'gh-1', githubUsername: 'first', branch: 'main' })
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'first', branch: 'main' })
 
-      const result = await identity.claim({ claimToken, githubUserId: 'gh-2', githubUsername: 'second', branch: 'main' })
+      const result = await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-2', githubUsername: 'second', branch: 'main' })
       expect(result.success).toBe(false)
       expect(result.error).toContain('already claimed')
     })
@@ -355,6 +362,7 @@ describe('IdentityDO', () => {
       const { claimToken, identity: anon } = await identity.provisionAnonymous()
       await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-100',
         githubUsername: 'dev',
         githubEmail: 'dev@gh.com',
@@ -374,6 +382,7 @@ describe('IdentityDO', () => {
       const { claimToken, identity: anon } = await identity.provisionAnonymous()
       await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-1',
         githubUsername: 'user',
         githubEmail: 'new@email.com',
@@ -403,6 +412,7 @@ describe('IdentityDO', () => {
 
       await identity.claim({
         claimToken,
+        ...REPO,
         githubUserId: 'gh-1',
         githubUsername: 'user',
         branch: 'main',
@@ -410,6 +420,185 @@ describe('IdentityDO', () => {
 
       const fetched = await identity.getIdentity(provisionedId)
       expect(fetched!.email).toBe('original@test.com')
+    })
+
+    // ── H1: the claim token is bound to the first repository that uses it ──
+
+    it('refuses a claim that names no repository', async () => {
+      const { claimToken } = await identity.provisionAnonymous()
+      const result = await identity.claim({ claimToken, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('repository')
+    })
+
+    it('binds the claim to the repository and owner of the first claim', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      const binding = await storage.get<any>(`claim-binding:${anon.id}`)
+      expect(binding).toMatchObject({ repositoryId: '1001', repositoryOwnerId: '2001', repo: 'org/repo' })
+    })
+
+    it('refuses a claim from another repository once bound (the copied-token attack)', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      // The rightful owner's first push, on a feature branch: pending, bound.
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-owner', githubUsername: 'owner', branch: 'feature/x' })
+
+      // An attacker copies clm_… from the public commit into their own repo.
+      const result = await identity.claim({
+        claimToken,
+        repo: 'mallory/fork',
+        repositoryId: '9999',
+        repositoryOwnerId: '6666',
+        githubUserId: 'gh-mallory',
+        githubUsername: 'mallory',
+        branch: 'main',
+      })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('bound to another repository')
+
+      const stored = await storage.get<any>(`identity:${anon.id}`)
+      expect(stored.claimStatus).toBe('pending')
+      expect(stored.level).toBe(1)
+      expect(stored.githubUserId).toBe('gh-owner')
+      expect(await storage.get<string>('idx:github:gh-mallory')).toBeUndefined()
+    })
+
+    it('refuses a same-named repository with a different id (deleted and re-created)', async () => {
+      const { claimToken } = await identity.provisionAnonymous()
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      const result = await identity.claim({ claimToken, ...REPO, repositoryId: '1002', githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('bound to another repository')
+    })
+
+    it('refuses the bound repository under a different owner id', async () => {
+      const { claimToken } = await identity.provisionAnonymous()
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      const result = await identity.claim({ claimToken, ...REPO, repositoryOwnerId: '6666', githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('bound to another repository')
+    })
+
+    it('finalises a pending claim from the bound repository, by any actor in it', async () => {
+      const { claimToken } = await identity.provisionAnonymous()
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      const result = await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-2', githubUsername: 'bob', branch: 'main' })
+      expect(result.success).toBe(true)
+      expect(result.identity!.claimStatus).toBe('claimed')
+      expect(result.identity!.level).toBe(2)
+    })
+
+    it('binds a claim left pending before the binding existed to the repository it recorded', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      // A pending claim from before this change: a linked account carries the
+      // repo name, and there is no claim-binding record.
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      await storage.delete(`claim-binding:${anon.id}`)
+
+      const attacker = await identity.claim({ claimToken, repo: 'mallory/fork', repositoryId: '9999', repositoryOwnerId: '6666', githubUserId: 'gh-m', githubUsername: 'mallory', branch: 'main' })
+      expect(attacker.success).toBe(false)
+      expect(attacker.error).toContain('bound to another repository')
+
+      const owner = await identity.claim({ claimToken, ...REPO, repo: 'Org/Repo', githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(owner.success).toBe(true)
+      expect(owner.identity!.claimStatus).toBe('claimed')
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repositoryId: '1001' })
+    })
+  })
+
+  describe('bindClaim()', () => {
+    const REPO = { repo: 'org/repo', repositoryId: '1001', repositoryOwnerId: '2001' }
+    const MALLORY = { repo: 'mallory/fork', repositoryId: '9999', repositoryOwnerId: '6666', githubUserId: 'gh-m', githubUsername: 'mallory' }
+
+    it('pre-binds the token by name, before any claim', async () => {
+      const { identity: anon } = await identity.provisionAnonymous()
+      const result = await identity.bindClaim({ identityId: anon.id, repo: 'org/repo' })
+      expect(result.success).toBe(true)
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repo: 'org/repo', preBound: true })
+    })
+
+    // The remaining H1 window, closed: an attacker who copies the token and
+    // claims FIRST, from their own repo, is refused when the owner pre-bound.
+    it('refuses an attacker who claims first when the owner pre-bound the token', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.bindClaim({ identityId: anon.id, repo: 'org/repo' })
+
+      const attack = await identity.claim({ claimToken, ...MALLORY, branch: 'main' })
+      expect(attack.success).toBe(false)
+      expect(attack.error).toContain('bound to another repository')
+      const stored = await storage.get<any>(`identity:${anon.id}`)
+      expect(stored.claimStatus).toBe('unclaimed')
+      expect(stored.level).toBe(1)
+      expect(await storage.get<string>('idx:github:gh-m')).toBeUndefined()
+
+      // The owner's claim from the bound repo upgrades the binding to ids.
+      const owner = await identity.claim({ claimToken, ...REPO, repo: 'Org/Repo', githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(owner.success).toBe(true)
+      expect(owner.identity!.claimStatus).toBe('claimed')
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repo: 'Org/Repo', repositoryId: '1001', repositoryOwnerId: '2001', preBound: true })
+    })
+
+    // Legacy path, pinned: a token nobody pre-bound is bound by whoever uses
+    // it first. id.org.ai claim always pre-binds; the claim page, older CLIs
+    // and hand-written workflows do not.
+    it('legacy: an unbound token is bound by the first claim, even an attacker\'s', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      const attack = await identity.claim({ claimToken, ...MALLORY, branch: 'main' })
+      expect(attack.success).toBe(true)
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repositoryId: '9999' })
+      expect((await storage.get<any>(`claim-binding:${anon.id}`)).preBound).toBeUndefined()
+    })
+
+    it('finalises on the default branch the owner named at bind time', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.bindClaim({ identityId: anon.id, repo: 'org/repo', defaultBranch: 'trunk' })
+      const onMain = await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      expect(onMain.identity!.claimStatus).toBe('pending')
+      const onTrunk = await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'trunk' })
+      expect(onTrunk.identity!.claimStatus).toBe('claimed')
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ defaultBranch: 'trunk', repositoryId: '1001' })
+    })
+
+    it('lets a claim\'s own default branch (the signed webhook) win over the bound one', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.bindClaim({ identityId: anon.id, repo: 'org/repo', defaultBranch: 'trunk' })
+      const result = await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'develop', defaultBranch: 'develop' })
+      expect(result.identity!.claimStatus).toBe('claimed')
+    })
+
+    it('re-binds to another repository only while no claim has used the token', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.bindClaim({ identityId: anon.id, repo: 'org/old' })
+      expect((await identity.bindClaim({ identityId: anon.id, repo: 'org/repo' })).success).toBe(true)
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repo: 'org/repo' })
+
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'feature/x' })
+      const rebind = await identity.bindClaim({ identityId: anon.id, repo: 'org/other' })
+      expect(rebind.success).toBe(false)
+      expect(rebind.error).toContain('bound to another repository')
+      // The same repository again is fine, and may set the default branch.
+      const same = await identity.bindClaim({ identityId: anon.id, repo: 'ORG/repo', defaultBranch: 'trunk' })
+      expect(same.success).toBe(true)
+      expect(await storage.get<any>(`claim-binding:${anon.id}`)).toMatchObject({ repo: 'org/repo', repositoryId: '1001', defaultBranch: 'trunk' })
+    })
+
+    it('refuses to re-bind a token an attacker already used (legacy path)', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      await identity.claim({ claimToken, ...MALLORY, branch: 'feature/x' })
+      const result = await identity.bindClaim({ identityId: anon.id, repo: 'org/repo' })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('bound to another repository')
+    })
+
+    it('refuses a claimed tenant, a malformed repo or branch, and a non-tenant identity', async () => {
+      const { claimToken, identity: anon } = await identity.provisionAnonymous()
+      expect((await identity.bindClaim({ identityId: anon.id, repo: 'not a repo' })).success).toBe(false)
+      expect((await identity.bindClaim({ identityId: anon.id, repo: 'org/repo', defaultBranch: 'a..b' })).success).toBe(false)
+      expect((await identity.bindClaim({ identityId: 'nope', repo: 'org/repo' })).success).toBe(false)
+      await identity.claim({ claimToken, ...REPO, githubUserId: 'gh-1', githubUsername: 'alice', branch: 'main' })
+      const after = await identity.bindClaim({ identityId: anon.id, repo: 'org/repo' })
+      expect(after.success).toBe(false)
+      expect(after.error).toBe('Tenant already claimed')
     })
   })
 
