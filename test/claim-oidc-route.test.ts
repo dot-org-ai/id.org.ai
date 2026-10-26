@@ -57,11 +57,19 @@ async function oidcToken(repo: Repo, actor: { actor: string; actor_id: string },
     .sign(privateKey)
 }
 
-async function provision(): Promise<{ claimToken: string; identityId: string }> {
+async function provision(): Promise<{ claimToken: string; identityId: string; sessionToken: string }> {
   const res = await SELF.fetch(`${BASE}/api/provision`, { method: 'POST' })
   expect(res.status).toBe(201)
-  const body = (await res.json()) as { claimToken: string; identityId: string }
+  const body = (await res.json()) as { claimToken: string; identityId: string; sessionToken: string }
   return body
+}
+
+async function bind(sessionToken: string | null, body: Record<string, unknown>): Promise<Response> {
+  return SELF.fetch(`${BASE}/api/claim/bind`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(sessionToken ? { authorization: `Bearer ${sessionToken}` } : {}) },
+    body: JSON.stringify(body),
+  })
 }
 
 async function postClaim(token: string, body: Record<string, unknown>): Promise<Response> {
@@ -150,5 +158,73 @@ describe('POST /api/claim (GitHub OIDC)', () => {
     const res = await postClaim(token, { claimToken, githubUserId: '501', repo: 'alice/app', branch: 'main' })
     expect(res.status).toBe(401)
     expect((await stored(claimToken)).claimStatus).toBe('unclaimed')
+  })
+
+  it('refuses a run started by an event an outsider can trigger (event_name)', async () => {
+    const { claimToken } = await provision()
+    for (const event_name of ['pull_request_target', 'workflow_run', 'issue_comment']) {
+      const res = await postClaim(await oidcToken(OWNER_REPO, MALLORY, 'refs/heads/main', { event_name }), { claimToken })
+      expect(res.status, event_name).toBe(403)
+    }
+    expect((await stored(claimToken)).claimStatus).toBe('unclaimed')
+  })
+})
+
+describe('POST /api/claim/bind (bind before publishing)', () => {
+  // The remaining H1 window: the token is public before the owner's first
+  // claim runs (a feature-branch push, --no-push, Actions disabled, a race).
+  // An attacker who claims FIRST from their own repo must lose.
+  it('refuses an attacker who claims first once the owner bound the repository', async () => {
+    const { claimToken, sessionToken } = await provision()
+    const bound = await bind(sessionToken, { repo: 'alice/app' })
+    expect(bound.status).toBe(200)
+    expect(await bound.json()).toMatchObject({ success: true, repo: 'alice/app' })
+
+    const attack = await postClaim(await oidcToken(ATTACKER_REPO, MALLORY, 'refs/heads/main'), { claimToken, repo: 'alice/app' })
+    expect(attack.status).toBe(400)
+    expect(((await attack.json()) as { error: string }).error).toContain('bound to another repository')
+    expect((await stored(claimToken)).claimStatus).toBe('unclaimed')
+
+    const owner = await postClaim(await oidcToken(OWNER_REPO, ALICE, 'refs/heads/main'), { claimToken })
+    expect(owner.status).toBe(200)
+    const record = await stored(claimToken)
+    expect(record.claimStatus).toBe('claimed')
+    expect(record.githubUserId).toBe('501')
+  })
+
+  it('finalises on the default branch named at bind time (OIDC carries none)', async () => {
+    const { claimToken, sessionToken } = await provision()
+    expect((await bind(sessionToken, { repo: 'alice/app', defaultBranch: 'trunk' })).status).toBe(200)
+    await postClaim(await oidcToken(OWNER_REPO, ALICE, 'refs/heads/main'), { claimToken })
+    expect((await stored(claimToken)).claimStatus).toBe('pending')
+    await postClaim(await oidcToken(OWNER_REPO, ALICE, 'refs/heads/trunk'), { claimToken })
+    expect((await stored(claimToken)).claimStatus).toBe('claimed')
+  })
+
+  it('requires the tenant\'s own valid session token', async () => {
+    const { claimToken } = await provision()
+    expect((await bind(null, { repo: 'alice/app' })).status).toBe(401)
+    expect((await bind('ses_not_a_real_session', { repo: 'alice/app' })).status).toBe(401)
+    // The claim token is public; it is not a credential for binding.
+    expect((await bind(claimToken, { repo: 'mallory/fork' })).status).toBe(401)
+  })
+
+  it('refuses a malformed repo, and a different repo once a claim has used the token', async () => {
+    const { claimToken, sessionToken } = await provision()
+    expect((await bind(sessionToken, {})).status).toBe(400)
+    expect((await bind(sessionToken, { repo: 'https://github.com/alice/app' })).status).toBe(400)
+    await postClaim(await oidcToken(OWNER_REPO, ALICE, 'refs/heads/feature/x'), { claimToken })
+    expect((await bind(sessionToken, { repo: 'alice/other' })).status).toBe(409)
+    expect((await bind(sessionToken, { repo: 'alice/app' })).status).toBe(200)
+  })
+
+  // Legacy path, pinned so it is a visible decision rather than an accident:
+  // a token nobody bound is bound by whoever claims first. `id.org.ai claim`
+  // always binds first; the /claim/:token page and older clients do not.
+  it('legacy: without a binding, the first claim wins, even an attacker\'s', async () => {
+    const { claimToken } = await provision()
+    const attack = await postClaim(await oidcToken(ATTACKER_REPO, MALLORY, 'refs/heads/main'), { claimToken })
+    expect(attack.status).toBe(200)
+    expect((await stored(claimToken)).githubUserId).toBe('666')
   })
 })

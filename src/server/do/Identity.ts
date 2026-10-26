@@ -41,7 +41,7 @@ import { seedDefaultClients } from '../../sdk/oauth/clients'
 import type { SessionData as AuthSessionData } from '../services/auth/types'
 import { refreshWorkOSAccessToken } from '../../sdk/workos'
 import { configureWorkOSBase } from '../../sdk/workos/base'
-import { isClaimedBranch, matchClaimBinding } from '../../sdk/claim/policy'
+import { isClaimedBranch, isGitBranchName, isGitHubRepoName, matchClaimBinding } from '../../sdk/claim/policy'
 import type { ClaimBinding } from '../../sdk/claim/policy'
 
 // ============================================================================
@@ -275,9 +275,12 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return { success: false, error: 'Tenant already claimed' }
     }
 
-    // H1: the claim token is public once committed, so it is bound to the
-    // repository that first uses it. A claim from any other repository — say
-    // a workflow in an attacker's repo carrying a copied token — is refused.
+    // H1: the claim token is public once committed, so every claim must come
+    // from the repository it is bound to. The owner binds it before publishing
+    // (bindClaim); a token nobody bound is bound by the first claim that uses
+    // it (the legacy path, see ClaimBinding). A claim from any other
+    // repository, such as a workflow in an attacker's repo carrying a copied
+    // token, is refused.
     const bindingKey = `claim-binding:${target.id}`
     const recorded = (await this.ctx.storage.get<ClaimBinding>(bindingKey)) ?? null
     const bound = recorded ?? (await this.legacyClaimBinding(target.id))
@@ -289,7 +292,9 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return { success: false, error: 'Claim token is bound to another repository' }
     }
 
-    const claimed = isClaimedBranch(data.branch, data.defaultBranch)
+    // GitHub's OIDC token carries no default branch; the signed webhook does,
+    // and the owner may have named it at bind time.
+    const claimed = isClaimedBranch(data.branch, data.defaultBranch ?? bound?.defaultBranch)
     const claimStatus: ClaimStatus = claimed ? 'claimed' : 'pending'
 
     const updateResult = await this.identityService.update(target.id, {
@@ -303,10 +308,12 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
       return { success: false, error: updateResult.error.message }
     }
 
-    // Record the binding on first use, or turn a recovered legacy binding (or
-    // a name-only one) into a record carrying the stable ids.
+    // Record the binding on first use, or turn a name-only one (pre-bound by
+    // the owner, or recovered from a legacy pending claim) into a record
+    // carrying the stable ids.
     if (!recorded?.repositoryId) {
       const binding: ClaimBinding = {
+        ...bound,
         repo: data.repo ?? bound?.repo ?? '',
         repositoryId: data.repositoryId,
         repositoryOwnerId: data.repositoryOwnerId,
@@ -328,6 +335,59 @@ export class IdentityDO extends DurableObject<IdentityEnv> {
     })
 
     return { success: true, identity: updateResult.data }
+  }
+
+  /**
+   * Bind a tenant's claim token to the GitHub repository it will be claimed
+   * from, before the token is published (H1). The caller is the tenant itself,
+   * authenticated by its session token, which is never committed; the route
+   * (`POST /api/claim/bind`) checks that. Writes a name-only binding that the
+   * first claim from that repository upgrades to its stable ids.
+   *
+   * Re-binding is allowed only while no claim has used the token: once a claim
+   * has bound repository ids, or the tenant is pending or claimed, a different
+   * repository is refused. Binding the same repository again is a no-op apart
+   * from updating `defaultBranch`.
+   */
+  async bindClaim(data: { identityId: string; repo: string; defaultBranch?: string }): Promise<{
+    success: boolean
+    binding?: ClaimBinding
+    error?: string
+  }> {
+    if (!isGitHubRepoName(data.repo)) {
+      return { success: false, error: 'repo must be a GitHub owner/name' }
+    }
+    if (data.defaultBranch !== undefined && !isGitBranchName(data.defaultBranch)) {
+      return { success: false, error: 'defaultBranch is not a valid branch name' }
+    }
+    const target = await this.getIdentity(data.identityId)
+    if (!target || target.type !== 'tenant') {
+      return { success: false, error: 'No claimable tenant for this session' }
+    }
+    const status = target.claimStatus ?? 'unclaimed'
+    if (status === 'claimed') {
+      return { success: false, error: 'Tenant already claimed' }
+    }
+    if (status !== 'unclaimed' && status !== 'pending') {
+      return { success: false, error: `Tenant cannot be claimed (${status})` }
+    }
+
+    const bindingKey = `claim-binding:${target.id}`
+    const recorded = (await this.ctx.storage.get<ClaimBinding>(bindingKey)) ?? null
+    const bound = recorded ?? (await this.legacyClaimBinding(target.id))
+    const sameRepo = !!bound && bound.repo.toLowerCase() === data.repo.toLowerCase()
+    const used = !!bound?.repositoryId || status !== 'unclaimed'
+    if (bound && !sameRepo && used) {
+      return { success: false, error: 'Claim token is bound to another repository' }
+    }
+
+    const binding: ClaimBinding =
+      bound && sameRepo
+        ? { ...bound, defaultBranch: data.defaultBranch ?? bound.defaultBranch }
+        : { repo: data.repo, defaultBranch: data.defaultBranch, preBound: true, boundAt: Date.now() }
+    if (binding.defaultBranch === undefined) delete binding.defaultBranch
+    await this.ctx.storage.put(bindingKey, binding)
+    return { success: true, binding }
   }
 
   /**

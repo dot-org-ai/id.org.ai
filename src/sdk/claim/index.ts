@@ -14,8 +14,8 @@ export type { ProvisionResult, FreezeResult, TenantStatus } from './provision'
 export { verifyClaim } from './verify'
 export type { ClaimStatus } from './verify'
 export { buildClaimWorkflow } from './workflow'
-export { provision, getClaimStatus } from './client'
-export type { ClaimStatusResult } from './client'
+export { provision, getClaimStatus, bindClaimRepository } from './client'
+export type { ClaimStatusResult, BindClaimResult } from './client'
 export { writeClaimWorkflow } from './workflow-fs'
 
 // Pure state machine — single source of truth for the upgrade-path table
@@ -25,5 +25,6 @@ export {
   upgradeUrl,
   isClaimedBranch,
   parseGitHubOIDC,
+  githubRepoFromRemote,
 } from './policy'
 export type { UpgradePath, GitHubClaim } from './policy'

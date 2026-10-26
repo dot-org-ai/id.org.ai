@@ -76,6 +76,7 @@ export const AUDIT_EVENTS = {
   CLAIM_COMPLETED: 'claim.completed',
   CLAIM_FAILED: 'claim.failed',
   CLAIM_VERIFIED: 'claim.verified',
+  CLAIM_BOUND: 'claim.bound',
 
   // Authentication
   AUTH_SESSION_CREATED: 'auth.session.created',

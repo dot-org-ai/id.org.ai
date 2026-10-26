@@ -5,15 +5,22 @@
  */
 const CLAIM_TOKEN = /^clm_[A-Za-z0-9_-]{1,128}$/
 
+export function isClaimToken(value: unknown): value is string {
+  return typeof value === 'string' && CLAIM_TOKEN.test(value)
+}
+
 export function buildClaimWorkflow(claimToken: string): string {
-  if (!claimToken || !CLAIM_TOKEN.test(claimToken)) {
+  if (!isClaimToken(claimToken)) {
     throw new Error('Invalid claim token: expected clm_ followed by letters, digits, - or _')
   }
 
+  // Every branch: the first push, wherever it lands, claims (pending) and so
+  // binds the token to this repository before anyone who copies it can (H1).
+  // A push to the default branch finalises the claim.
   return `name: Claim headless.ly tenant
 on:
   push:
-    branches: [main, master]
+    branches: ['**']
 permissions:
   id-token: write
   contents: read

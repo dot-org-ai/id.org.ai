@@ -404,9 +404,9 @@ describe('buildClaimWorkflow', () => {
     expect(yaml).toContain('name: Claim headless.ly tenant')
   })
 
-  it('triggers on push to main and master', () => {
+  it('triggers on push to every branch', () => {
     const yaml = buildClaimWorkflow('clm_xyz')
-    expect(yaml).toContain('branches: [main, master]')
+    expect(yaml).toContain("branches: ['**']")
   })
 
   it('requests id-token: write permission', () => {
