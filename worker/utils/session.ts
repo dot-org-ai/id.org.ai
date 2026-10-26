@@ -24,7 +24,7 @@ import * as jose from 'jose'
 import type { Env } from '../types'
 import type { AccessTokenClaims } from '../../src/sdk/jwt/signing'
 import { getStubForIdentity, getSigningKeyManager, verifySessionJwt as verifySessionClassJwt } from '../middleware/tenant'
-import { ID_ORG_AI_SESSION_AUDIENCE } from '../../src/sdk/auth/token-class'
+import { ID_ORG_AI_SESSION_AUDIENCE, isSessionAudience } from '../../src/sdk/auth/token-class'
 import { parseCookieValue } from './cookies'
 import { invalidateCachedToken } from './cache'
 import { listUserOrgMemberships } from '../../src/sdk/workos/upstream'
@@ -68,10 +68,7 @@ export async function mintSessionJwt(env: Env, claims: AccessTokenClaims, opts: 
 
 /** Is this verified id.org.ai payload a browser session (ours, or one minted before `aud` existed)? */
 export function isSessionPayload(payload: jose.JWTPayload): boolean {
-  const aud = payload.aud
-  if (aud === undefined) return true
-  if (aud === SESSION_AUDIENCE) return true
-  return Array.isArray(aud) && aud.length === 1 && aud[0] === SESSION_AUDIENCE
+  return isSessionAudience(payload.aud)
 }
 
 /**

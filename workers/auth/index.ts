@@ -17,7 +17,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as jose from 'jose'
-import { isIdOrgAiSessionToken, ID_ORG_AI_SESSION_AUDIENCE } from '../../src/sdk/auth/token-class'
+import { isIdOrgAiSessionToken, isSessionAudience } from '../../src/sdk/auth/token-class'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -396,8 +396,7 @@ function isIdOrgAiSession(token: string): boolean {
   try {
     const payload = jose.decodeJwt(token)
     if (payload.iss !== 'https://id.org.ai') return false
-    const aud = payload.aud
-    return aud === undefined || aud === ID_ORG_AI_SESSION_AUDIENCE || (Array.isArray(aud) && aud.length === 1 && aud[0] === ID_ORG_AI_SESSION_AUDIENCE)
+    return isSessionAudience(payload.aud)
   } catch {
     return false
   }

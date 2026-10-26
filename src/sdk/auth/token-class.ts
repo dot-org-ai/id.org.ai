@@ -27,11 +27,22 @@
  */
 export const ID_ORG_AI_SESSION_AUDIENCE = 'urn:id.org.ai:session'
 
-/** Is `aud` the session audience (alone), or absent as on a pre-H4 session? */
-function isSessionAudience(aud: unknown): boolean {
-  if (aud === undefined || aud === null) return true
-  if (aud === ID_ORG_AI_SESSION_AUDIENCE) return true
-  return Array.isArray(aud) && aud.length === 1 && aud[0] === ID_ORG_AI_SESSION_AUDIENCE
+/**
+ * THE session-audience rule: is `aud` that of an id.org.ai sign-in session?
+ * True only when `aud` is absent (a session minted before H4) or exactly the
+ * string `urn:id.org.ai:session` (what `mintSessionJwt` signs). Anything else
+ * names some other audience and is not a session: `null`, `''`, any array
+ * (even `[urn:id.org.ai:session]`; we never sign one), and case or whitespace
+ * variants.
+ *
+ * Every id.org.ai check of the session audience calls this one function (the
+ * classifier below, `isSessionPayload`, `isSessionCookieJwt`, and the `auth`
+ * worker's `isIdOrgAiSession`). The `orgai_auth_identity` edge snippet
+ * (dot-do/snippets `src/auth-identity.ts`) carries a copy, since it cannot
+ * import this; change both together.
+ */
+export function isSessionAudience(aud: unknown): boolean {
+  return aud === undefined || aud === ID_ORG_AI_SESSION_AUDIENCE
 }
 
 export type IdOrgAiTokenClass = 'session' | 'id_token' | 'access_token' | 'other'

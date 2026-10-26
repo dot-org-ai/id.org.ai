@@ -28,7 +28,7 @@ export type { WrapDenialBody } from './wrap'
 export { verifyToken } from './verify-token'
 export type { VerifiedIdentity, VerifyTokenResult, VerifyTokenOptions } from './verify-token'
 // Which kind of id.org.ai JWT a verified token is (session, id_token, access token).
-export { idOrgAiTokenClass, isIdOrgAiSessionToken, ID_ORG_AI_SESSION_AUDIENCE } from './token-class'
+export { idOrgAiTokenClass, isIdOrgAiSessionToken, isSessionAudience, ID_ORG_AI_SESSION_AUDIENCE } from './token-class'
 export type { IdOrgAiTokenClass } from './token-class'
 
 export const CANONICAL_AUTH_ORIGIN = 'https://id.org.ai'
