@@ -44,6 +44,7 @@ import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
 import { claimRoutes } from './routes/claim'
 import { LEGACY_AUTH_ORIGIN, LEGACY_JWKS_URL, LEGACY_WORKOS_BRIDGE_ISSUER } from '../src/sdk/auth'
 import type { VerifyTokenResult } from '../src/sdk/auth'
+import { isIdOrgAiSessionToken } from '../src/sdk/auth/token-class'
 import { authVerifyRoutes, verifyIdentityTokenWithEnv, type VerifyIdentityOptions } from './routes/auth-verify'
 import { validateWorkOSApiKey } from '../src/sdk/workos/apikey'
 import { configureWorkOSBase, workosUrl } from '../src/sdk/workos/base'
@@ -450,13 +451,18 @@ export class AuthService extends WorkerEntrypoint<Env> {
 
   private async verifyOAuthDoJWT(token: string): Promise<AuthUser | null> {
     // Verifies JWTs signed by the legacy oauth.do compatibility surface.
+    // oauth.do serves the same published key set as id.org.ai, so the issuer
+    // alone does not tell a Person's session from an id_token issued (under
+    // the old X-Issuer override) to some OAuth client: as in verifyOwnJWT,
+    // only the session class (no `aud`, no `crit`, `typ` JWT) is the Person.
     const jwksUri = LEGACY_JWKS_URL
 
     try {
       const jwks = getJwksVerifier(jwksUri)
-      const { payload } = await jose.jwtVerify(token, jwks, {
+      const { payload, protectedHeader } = await jose.jwtVerify(token, jwks, {
         issuer: LEGACY_AUTH_ORIGIN,
       })
+      if (!isIdOrgAiSessionToken(protectedHeader, payload)) return null
 
       return {
         id: payload.sub || '',

@@ -287,6 +287,37 @@ describe('H2: an id_token issued to a third-party client is not a Person credent
   })
 })
 
+describe('H2: the legacy oauth.do issuer path admits only a session', () => {
+  // oauth.do, id.org.ai and auth.headless.ly publish the same key set, so a
+  // JWT on the id.org.ai key with `iss` https://oauth.do verifies against
+  // oauth.do's JWKS. Before M1, `X-Issuer: https://oauth.do` minted id_tokens
+  // with exactly that issuer.
+  const LEGACY = 'https://oauth.do'
+  const sign = (claims: Record<string, unknown>, audience?: string) =>
+    getSigningKeyManager(env as unknown as Env).sign({ sub: 'human:user_01VICTIM', email: 'victim@example.com', ...claims }, { issuer: LEGACY, audience, expiresIn: 600 })
+
+  beforeAll(async () => {
+    const published = await (await SELF.fetch(`${BASE}/.well-known/jwks.json`)).text()
+    fetchMock.get(LEGACY).intercept({ path: '/.well-known/jwks.json' }).reply(200, published, { headers: { 'content-type': 'application/json' } }).persist()
+  })
+
+  it('an audience-bound token with iss https://oauth.do is refused by verifyToken, getUser and authenticate', async () => {
+    const idToken = await sign({}, 'cid_attacker')
+    const svc = authService()
+    expect((await svc.verifyToken(idToken)).valid).toBe(false)
+    expect(await svc.getUser(idToken)).toBeNull()
+    expect((await svc.authenticate(`Bearer ${idToken}`)).ok).toBe(false)
+    expect((await svc.authenticate(null, `auth=${idToken}`)).ok).toBe(false)
+  })
+
+  it('a legacy oauth.do session (no aud) still verifies', async () => {
+    const session = await sign({ sub: 'user_01LEGACY', email: 'legacy@example.com' })
+    const r = await authService().verifyToken(session)
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.user.id).toBe('user_01LEGACY')
+  })
+})
+
 describe('H2: the auth worker pins the issuer and refuses id_tokens', () => {
   const AUTH_ENV = { WORKOS_CLIENT_ID: 'client_h2m1' }
   const verify = async (t: string) =>
