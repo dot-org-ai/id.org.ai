@@ -163,6 +163,10 @@ async function handlePushWithSharding(
       githubUsername: push.sender.login,
       githubEmail: push.sender.email,
       repo: push.repository.full_name,
+      // The signed webhook names the repo the push landed in; the DO binds
+      // the claim token to it (H1).
+      repositoryId: push.repository.id !== undefined ? String(push.repository.id) : undefined,
+      repositoryOwnerId: push.repository.owner?.id !== undefined ? String(push.repository.owner.id) : undefined,
       branch,
     })
 

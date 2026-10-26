@@ -10,7 +10,7 @@ import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tena
 import { ClaimService } from '../../src/sdk/claim/provision'
 import { verifyClaim } from '../../src/sdk/claim/verify'
 import { buildClaimWorkflow } from '../../src/sdk/claim/workflow'
-import { parseGitHubOIDC } from '../../src/sdk/claim/policy'
+import { bodyClaimMismatches, missingGitHubOIDCClaims, parseGitHubOIDC } from '../../src/sdk/claim/policy'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 import { requestOriginOf } from '../../src/sdk/csrf'
@@ -169,6 +169,15 @@ app.post('/api/claim', async (c) => {
     return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token verification failed: ${errorMessage(err)}`)
   }
 
+  // Identity comes only from the verified OIDC claims (H1). The body may name
+  // the claim token; any GitHub fields it carries are ignored, and a
+  // disagreement is recorded in the audit event.
+  const github = parseGitHubOIDC(oidcPayload)
+  const missing = missingGitHubOIDCClaims(github)
+  if (missing.length > 0) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token is missing required claims: ${missing.join(', ')}`)
+  }
+
   // Parse request body
   const body = (await c.req.json().catch(() => ({}))) as {
     claimToken?: string
@@ -191,15 +200,20 @@ app.post('/api/claim', async (c) => {
 
   const stub = getStubForIdentity(c.env, identityId)
 
-  // Extract GitHub identity from OIDC token claims or request body
-  const { githubUserId, githubUsername, repo, branch, defaultBranch } = parseGitHubOIDC(oidcPayload, body)
+  const { githubUserId, githubUsername, repo, repositoryId, repositoryOwnerId, branch, defaultBranch } = github
+  const ignoredBodyFields = bodyClaimMismatches(github, body)
+  const auditExtra = ignoredBodyFields.length > 0 ? { ignoredBodyFields } : {}
 
   try {
+    // The DO refuses a claim from any repository other than the one the
+    // token is bound to (bound by the first claim that uses it).
     const result = await stub.claim({
       claimToken,
       githubUserId,
       githubUsername,
       repo,
+      repositoryId,
+      repositoryOwnerId,
       branch,
       defaultBranch,
     })
@@ -209,7 +223,7 @@ app.post('/api/claim', async (c) => {
         event: AUDIT_EVENTS.CLAIM_FAILED,
         actor: githubUsername,
         target: identityId,
-        metadata: { claimToken, repo, branch, error: result.error },
+        metadata: { claimToken, repo, repositoryId, branch, error: result.error, ...auditExtra },
       })
       return c.json({ success: false, error: result.error ?? 'claim_failed' }, 400)
     }
@@ -218,7 +232,7 @@ app.post('/api/claim', async (c) => {
       event: AUDIT_EVENTS.CLAIM_COMPLETED,
       actor: githubUsername,
       target: result.identity?.id ?? identityId,
-      metadata: { claimToken, repo, branch, githubUserId, level: result.identity?.level },
+      metadata: { claimToken, repo, repositoryId, branch, githubUserId, level: result.identity?.level, ...auditExtra },
     })
 
     return c.json({

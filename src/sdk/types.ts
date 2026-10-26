@@ -180,7 +180,7 @@ export interface IdentityStub {
   // Identity
   getIdentity(id: string): Promise<Identity | null>
   provisionAnonymous(presetIdentityId?: string): Promise<{ identity: Identity; sessionToken: string; claimToken: string }>
-  claim(data: { claimToken: string; githubUserId: string; githubUsername: string; githubEmail?: string; repo?: string; branch?: string; defaultBranch?: string }): Promise<{ success: boolean; identity?: Identity; error?: string }>
+  claim(data: { claimToken: string; githubUserId: string; githubUsername: string; githubEmail?: string; repo?: string; repositoryId?: string; repositoryOwnerId?: string; branch?: string; defaultBranch?: string }): Promise<{ success: boolean; identity?: Identity; error?: string }>
 
   // Auth
   getSession(token: string): Promise<{ valid: boolean; identityId?: string; level?: CapabilityLevel; expiresAt?: number }>
