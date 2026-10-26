@@ -103,7 +103,7 @@ describe('S3: POST /api/magic-link callers', () => {
   it('a listed client is served (202); a listed client with a wrong secret is still 401', async () => {
     const sends = countSends((e) => e.endsWith('@listed.example'))
     const c = await allowlistedClient()
-    const ok = await sendMagicLink({ email: 'ada@listed.example', continue: 'https://waitlist.example/welcome' }, basic(c))
+    const ok = await sendMagicLink({ email: 'ada@listed.example', continue: CB }, basic(c))
     expect(ok.status).toBe(202)
     expect(sends.n).toBe(1)
     const wrong = await sendMagicLink({ email: 'ada@listed.example' }, basic({ id: c.id, secret: 'cs_wrong' }))

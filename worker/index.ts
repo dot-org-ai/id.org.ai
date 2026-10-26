@@ -309,8 +309,8 @@ export class AuthService extends WorkerEntrypoint<Env> {
   // An RPC method is reachable only through a service binding to this
   // entrypoint, never from the public internet, so the binding is the
   // credential (POST /api/magic-link, the public door, takes only listed
-  // confidential clients). `clientId` (optional) lends a registered client's
-  // redirect origins to `continue`; `origin` (optional) is the calling
+  // confidential clients). `clientId` (optional) lets `continue` be one of
+  // that registered client's redirect_uris, by exact match; `origin` (optional) is the calling
   // worker's own origin, on which `continue` may also land. The magic-link
   // path's per-address send budget (`code-send:ml:<email>`, shared with HTTP)
   // and the hourly caps apply as on HTTP.

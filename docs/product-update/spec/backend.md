@@ -366,7 +366,7 @@ Storage today is key/value in Durable Objects (the `oauth` shard of `IdentityDO`
 - `GET/POST /logout` and `POST /api/logout` clear the cookies and the stored WorkOS refresh token.
 - They don't log out the WorkOS session, and they don't revoke OAuth tokens.
 - There is no `end_session_endpoint`.
-- `GET /logout?return_url=` goes through `resolveBrowserRedirect`. **Prod runs `LOGIN_CONTINUE_POLICY=report`, so unlisted URLs are still followed** (B13).
+- `GET /logout?return_url=` goes through `resolveBrowserRedirect`. Prod runs `LOGIN_CONTINUE_POLICY=enforce` (H3), so an unlisted URL falls back to `/`.
 
 **Build**
 - `GET /signout` renders 6b; `POST /signout {scope: 'app'|'browser'|'everywhere', client_id?, return_url?}`:
@@ -490,9 +490,8 @@ Storage today is key/value in Durable Objects (the `oauth` shard of `IdentityDO`
 
 Found during the audit. These must be fixed before or with the redesign, because new pages build on them:
 
-1. **Continue policy is in report mode in prod** (`LOGIN_CONTINUE_POLICY=report` in `worker/wrangler.jsonc`), so `/login?continue=` and `/logout?return_url=` still follow unlisted URLs.
-   - Default here: switch to `enforce` once the report logs show no legitimate misses.
-   - The new screens must use `resolveBrowserRedirect` in enforce mode regardless.
+1. **Continue policy was in report mode in prod**, so `/login?continue=` and `/logout?return_url=` followed unlisted URLs. Fixed by H3: `enforce` in `worker/wrangler.jsonc`, and a self-registered client's redirect origin no longer counts.
+   - The new screens must use `resolveBrowserRedirectStrict` regardless.
 2. **Unauthenticated routes**: `/admin-portal`, `/fga/*` and `/pipes/*` (`worker/routes/workos.ts`) sit outside `authenticateRequest`.
    - Add auth plus org authorisation. Service-binding callers (the `AUTH_HTTP` / `OAUTH` bindings from estate workers) authenticate as they do on other protected routes.
    - Add an escape hatch, `LEGACY_OPEN_WORKOS_ROUTES=1`, which restores the old behaviour if an unknown caller breaks. It defaults to `0` (secure).

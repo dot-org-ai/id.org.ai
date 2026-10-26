@@ -15,7 +15,6 @@ import {
   canonicalHostname,
 } from '../../src/sdk/csrf'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
-import { indexClientOrigins } from '../utils/relying-parties'
 import { mentionsSbScope } from '../../src/sdk/oauth/delegation'
 import { fetchClientMetadataDocument } from '../utils/client-metadata'
 import type { ConsentRenderer } from '../../src/sdk/oauth/provider'
@@ -193,22 +192,11 @@ app.use('/device', authenticateRequest)
 app.use('/device/*', authenticateRequest)
 
 // ── Dynamic Client Registration (RFC 7591) ──────────────────────────────────
+// Registration is open, so it grants no /login?continue= or /logout?return_url=
+// target (H3, worker/utils/relying-parties.ts).
 app.post('/oauth/register', async (c) => {
   const provider = getOAuthProvider(c)
-  const response = await provider.handleRegister(c.req.raw)
-  // Remember the client's redirect origins so /login?continue= may return there
-  // (worker/utils/relying-parties.ts). Best effort: registration never fails on it.
-  if (response.status === 201) {
-    try {
-      const registered = (await response.clone().json()) as { client_id?: string; redirect_uris?: string[] }
-      if (registered.client_id && Array.isArray(registered.redirect_uris)) {
-        await indexClientOrigins(c.env, registered.client_id, registered.redirect_uris)
-      }
-    } catch (err) {
-      console.error('[oauth/register] origin index failed:', err instanceof Error ? err.message : err)
-    }
-  }
-  return response
+  return provider.handleRegister(c.req.raw)
 })
 
 // Authorization Endpoint — CSRF protected

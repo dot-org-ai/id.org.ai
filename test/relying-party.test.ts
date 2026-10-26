@@ -352,21 +352,11 @@ describe('fix 2: /login?continue= is not an open redirect', () => {
     })
   }
 
-  it("accepts a registered client's redirect origin, and nothing else on that host's neighbours", async () => {
+  it("H3: a registered client's redirect origin is not a continue target (registration is open)", async () => {
     await register({ client_name: 'Waitlist', redirect_uris: ['https://waitlist.example/auth/cb'], token_endpoint_auth_method: 'none' })
-    expect(await loginContinue('https://waitlist.example/welcome')).toBe('https://waitlist.example/welcome')
+    expect(await loginContinue('https://waitlist.example/welcome')).toBe('/dash/profile')
+    expect(await loginContinue('https://waitlist.example/auth/cb')).toBe('/dash/profile')
     expect(await loginContinue('https://evil.waitlist.example/welcome')).toBe('/dash/profile')
-    expect(await loginContinue('http://waitlist.example/welcome')).toBe('/dash/profile')
-  })
-
-  it('accepts a client registered before the origin index existed (one-time backfill)', async () => {
-    const oauth = env.IDENTITY.get(env.IDENTITY.idFromName('oauth')) as unknown as { oauthStorageOp(op: unknown): Promise<unknown> }
-    await oauth.oauthStorageOp({
-      op: 'put',
-      key: 'client:cid_legacy',
-      value: { id: 'cid_legacy', name: 'Legacy', redirectUris: ['https://legacy.example/cb'], grantTypes: ['authorization_code'], responseTypes: ['code'], scopes: ['openid'], trusted: false, tokenEndpointAuthMethod: 'none', createdAt: 0 },
-    })
-    expect(await loginContinue('https://legacy.example/home')).toBe('https://legacy.example/home')
   })
 
   it('an already signed-in visitor is not bounced off-site either', async () => {
@@ -503,7 +493,7 @@ describe('fix 4: POST /api/magic-link', () => {
     const c = await confidentialClient()
     const sentTo: string[] = []
     mockMagicAuthCreate(201, (e) => sentTo.push(e))
-    const r1 = await sendMagicLink({ email: 'New.Person@Example.com', continue: 'https://waitlist.example/welcome', client_id: c.id }, { authorization: c.basic })
+    const r1 = await sendMagicLink({ email: 'New.Person@Example.com', continue: WAITLIST_CB, client_id: c.id }, { authorization: c.basic })
     expect(r1.status).toBe(202)
     const j1 = (await r1.json()) as Record<string, unknown>
     expect(new Set(sentTo)).toEqual(new Set(['new.person@example.com']))
@@ -521,7 +511,8 @@ describe('fix 4: POST /api/magic-link', () => {
 
   it('validates continue like /login', async () => {
     const c = await confidentialClient()
-    for (const bad of ['https://evil.com', '//evil.com', 'javascript:alert(1)']) {
+    // H3: the calling client's redirect URIs count by exact match, never by origin.
+    for (const bad of ['https://evil.com', '//evil.com', 'javascript:alert(1)', 'https://waitlist.example/welcome', `${WAITLIST_CB}?next=/x`]) {
       const r = await sendMagicLink({ email: 'a@example.com', continue: bad, client_id: c.id }, { authorization: c.basic })
       expect(r.status).toBe(400)
     }
@@ -556,7 +547,7 @@ describe('fix 4: POST /api/magic-link', () => {
   it('clicking through signs the person in (L2, amr magic_link) and continues; the flow works once', async () => {
     const c = await confidentialClient()
     mockMagicAuthCreate()
-    const sent = (await (await sendMagicLink({ email: 'grace@example.com', continue: 'https://waitlist.example/welcome', client_id: c.id }, { authorization: c.basic })).json()) as { verify_url: string }
+    const sent = (await (await sendMagicLink({ email: 'grace@example.com', continue: WAITLIST_CB, client_id: c.id }, { authorization: c.basic })).json()) as { verify_url: string }
     const path = new URL(sent.verify_url).pathname
 
     const pageRes = await SELF.fetch(`${BASE}${path}?code=654321`)
@@ -580,7 +571,7 @@ describe('fix 4: POST /api/magic-link', () => {
       body: 'code=654321',
     })
     expect(done.status).toBe(302)
-    expect(done.headers.get('location')).toBe('https://waitlist.example/welcome')
+    expect(done.headers.get('location')).toBe(WAITLIST_CB)
     const session = decodeJwt(setCookies(done).auth!)
     expect(session.sub).toBe('user_01GRACE')
     expect(session.amr).toEqual(['magic_link'])
