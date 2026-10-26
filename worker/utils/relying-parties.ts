@@ -2,17 +2,27 @@
  * Relying-party helpers: where a sign-in may send the browser afterwards, and
  * who is calling.
  *
- * `/login?continue=` (and POST /api/magic-link's `continue`) used to accept any
- * http(s) URL: an open redirect on the estate's identity provider. The policy
- * here accepts only
+ * `/login?continue=`, `/logout?return_url=` and POST /api/magic-link's
+ * `continue` accept only
  *
  *   1. a relative path on the host that served the request;
  *   2. id.org.ai's own origins, and the origin that served the request;
- *   3. the trusted-account domains (ADR-0007, TRUSTED_ACCOUNT_DOMAINS) and the
- *      hosts named by LOGIN_CONTINUE_HOSTS (config; `*.` suffix entries);
- *   4. the origin of a registered OAuth client's redirect_uri.
+ *   3. an explicit first-party allowlist: the trusted-account domains
+ *      (ADR-0007, TRUSTED_ACCOUNT_DOMAINS) and the hosts named by
+ *      LOGIN_CONTINUE_HOSTS (config; `*.` suffix entries);
+ *   4. a redirect_uri of the client in the flow, by exact match, and only when
+ *      the caller has established that client (`clientRedirectUris`): an
+ *      operator-seeded trusted client on the browser routes
+ *      (flowClientRedirectUris), an authenticated, listed client on
+ *      /api/magic-link.
  *
  * Anything else is refused and the caller falls back to a safe default.
+ *
+ * Never trusted (H3): the origin of whatever client happens to be registered.
+ * Registration (RFC 7591) is open, so "some registered client's redirect
+ * origin" is any origin an attacker cares to register, and a client_id in a
+ * browser query string is whatever the attacker wrote there. The rp-origin:*
+ * index that once backed that rule is no longer read.
  *
  * Every host is compared in its canonical spelling (lowercase, no trailing
  * dot; canonicalHostname): Cloudflare serves public traffic on `id.org.ai.`
@@ -21,12 +31,6 @@
  * ever inferred from the host a request arrived on: callers inside the
  * account use the AuthService RPC entrypoint (worker/index.ts), which a public
  * request cannot reach.
- *
- * Registration (RFC 7591) is open, so (4) is only as strong as registration:
- * whoever registers a client can already have /oauth/authorize redirect to its
- * redirect_uri (error redirects need no consent). This policy adds no target an
- * OAuth client could not already reach; it removes every target nobody
- * registered.
  */
 import type { Env } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
@@ -45,6 +49,17 @@ export const OWN_ORIGINS: readonly string[] = [
 
 export { canonicalHostname, canonicalOrigin, requestOriginOf }
 
+export interface ContinueOptions {
+  /** Origin of the request being served (the flow's own host). */
+  requestOrigin: string
+  /**
+   * Redirect URIs of the client in the flow, already established by the
+   * caller (an authenticated client, or flowClientRedirectUris). Matched
+   * exactly; never a registered client's whole origin.
+   */
+  clientRedirectUris?: readonly string[]
+}
+
 type StorageOp = (op: {
   op: 'get' | 'put' | 'delete' | 'list'
   key?: string
@@ -57,76 +72,18 @@ function oauthStorage(env: Env): StorageOp {
   return (op) => stub.oauthStorageOp(op)
 }
 
-const ORIGIN_INDEX_PREFIX = 'rp-origin:'
-const ORIGIN_INDEX_MARKER = 'rp-origin-index:v1'
-const MAX_CLIENTS_PER_ORIGIN = 20
-
-function originOf(url: string): string | null {
+/** The canonical href of an http(s) URL (host in its canonical spelling), or null. */
+function canonicalHref(url: string): string | null {
   try {
     const u = new URL(url)
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
-    return canonicalOrigin(u.href)
+    const host = canonicalHostname(u.hostname)
+    if (!host) return null
+    if (host !== u.hostname) u.hostname = host
+    return u.href
   } catch {
     return null
   }
-}
-
-/** Record the origins of a client's redirect_uris so `/login?continue=` can accept them. */
-export async function indexClientOrigins(env: Env, clientId: string, redirectUris: readonly string[]): Promise<void> {
-  const storage = oauthStorage(env)
-  const origins = new Set(redirectUris.map(originOf).filter((o): o is string => !!o))
-  for (const origin of origins) {
-    const key = `${ORIGIN_INDEX_PREFIX}${origin}`
-    const existing = (await storage({ op: 'get', key })).value as { clientIds?: string[] } | undefined
-    const clientIds = existing?.clientIds ?? []
-    if (clientIds.includes(clientId)) continue
-    await storage({
-      op: 'put',
-      key,
-      value: { clientIds: [...clientIds, clientId].slice(-MAX_CLIENTS_PER_ORIGIN), updatedAt: Date.now() },
-    })
-  }
-}
-
-/**
- * One-time backfill of the origin index from every stored client, for clients
- * registered before the index existed. Runs at most once (guarded by a marker),
- * so a stream of refused continues cannot turn into repeated full scans.
- */
-async function backfillOriginIndex(env: Env): Promise<void> {
-  const storage = oauthStorage(env)
-  const marker = (await storage({ op: 'get', key: ORIGIN_INDEX_MARKER })).value
-  if (marker) return
-  await storage({ op: 'put', key: ORIGIN_INDEX_MARKER, value: { startedAt: Date.now() } })
-  const listed = (await storage({ op: 'list', options: { prefix: 'client:' } })).entries as Array<[string, unknown]> | undefined
-  const byOrigin = new Map<string, string[]>()
-  for (const [, value] of listed ?? []) {
-    const client = value as { id?: string; redirectUris?: string[] } | undefined
-    if (!client?.id || !Array.isArray(client.redirectUris)) continue
-    for (const uri of client.redirectUris) {
-      const origin = originOf(uri)
-      if (!origin) continue
-      const ids = byOrigin.get(origin) ?? []
-      if (!ids.includes(client.id)) ids.push(client.id)
-      byOrigin.set(origin, ids)
-    }
-  }
-  for (const [origin, ids] of byOrigin) {
-    const key = `${ORIGIN_INDEX_PREFIX}${origin}`
-    const existing = (await storage({ op: 'get', key })).value as { clientIds?: string[] } | undefined
-    const merged = Array.from(new Set([...(existing?.clientIds ?? []), ...ids])).slice(-MAX_CLIENTS_PER_ORIGIN)
-    await storage({ op: 'put', key, value: { clientIds: merged, updatedAt: Date.now() } })
-  }
-  await storage({ op: 'put', key: ORIGIN_INDEX_MARKER, value: { completedAt: Date.now(), origins: byOrigin.size } })
-}
-
-/** Is `origin` the origin of some registered client's redirect_uri? */
-export async function isRegisteredClientOrigin(env: Env, origin: string): Promise<boolean> {
-  const storage = oauthStorage(env)
-  const key = `${ORIGIN_INDEX_PREFIX}${origin}`
-  if ((await storage({ op: 'get', key })).value) return true
-  await backfillOriginIndex(env)
-  return !!(await storage({ op: 'get', key })).value
 }
 
 /**
@@ -158,7 +115,12 @@ export function isListedContinueHost(env: Env, hostname: string): boolean {
   return exact.has(host) || suffixes.some((s) => host.endsWith(s))
 }
 
-/** `report` only when explicitly configured; anything else enforces. */
+/**
+ * `enforce` unless LOGIN_CONTINUE_POLICY is explicitly `report` (production
+ * config enforces since H3). `report` is a break-glass for an estate caller
+ * found broken after a deploy: it re-opens the redirect to any https URL, so
+ * list the caller's host in LOGIN_CONTINUE_HOSTS instead wherever possible.
+ */
 export function continuePolicy(env: Env): 'enforce' | 'report' {
   return (env.LOGIN_CONTINUE_POLICY ?? '').trim().toLowerCase() === 'report' ? 'report' : 'enforce'
 }
@@ -173,7 +135,7 @@ export function continuePolicy(env: Env): 'enforce' | 'report' {
 export async function resolveBrowserRedirect(
   env: Env,
   raw: string | null | undefined,
-  opts: { requestOrigin: string; clientId?: string },
+  opts: ContinueOptions,
 ): Promise<{ url: string | null; outcome: 'none' | 'accepted' | 'unlisted' | 'refused'; host?: string }> {
   if (!raw) return { url: null, outcome: 'none' }
   const accepted = await resolveContinue(env, raw, opts)
@@ -188,13 +150,13 @@ export async function resolveBrowserRedirect(
 /**
  * resolveBrowserRedirect for the redesigned screens (spec/security.md#redirects):
  * always enforce, whatever LOGIN_CONTINUE_POLICY says, so a new route never
- * follows an unlisted target even while the legacy routes run in `report`
- * (D10 leaves the global switch to the owners).
+ * follows an unlisted target even if the `report` break-glass is switched on
+ * for the legacy routes.
  */
 export async function resolveBrowserRedirectStrict(
   env: Env,
   raw: string | null | undefined,
-  opts: { requestOrigin: string; clientId?: string },
+  opts: ContinueOptions,
 ): Promise<{ url: string | null; outcome: 'none' | 'accepted' | 'refused'; host?: string }> {
   if (!raw) return { url: null, outcome: 'none' }
   const accepted = await resolveContinue(env, raw, opts)
@@ -214,13 +176,26 @@ export function hostForLog(url: string): string {
 export async function getRegisteredClient(
   env: Env,
   clientId: string,
-): Promise<{ id: string; secret?: string; secretHash?: string; redirectUris: string[]; tokenEndpointAuthMethod?: string; name?: string } | null> {
+): Promise<{ id: string; secret?: string; secretHash?: string; redirectUris: string[]; tokenEndpointAuthMethod?: string; name?: string; trusted?: boolean } | null> {
   if (!clientId) return null
   const value = (await oauthStorage(env)({ op: 'get', key: `client:${clientId}` })).value as
-    | { id: string; secret?: string; secretHash?: string; redirectUris?: string[]; tokenEndpointAuthMethod?: string; name?: string }
+    | { id: string; secret?: string; secretHash?: string; redirectUris?: string[]; tokenEndpointAuthMethod?: string; name?: string; trusted?: boolean }
     | undefined
   if (!value?.id) return null
   return { ...value, redirectUris: Array.isArray(value.redirectUris) ? value.redirectUris : [] }
+}
+
+/**
+ * The redirect URIs a browser route (`/login?client_id=`) may honour for the
+ * client it names: those of an operator-seeded trusted client
+ * (src/sdk/oauth/clients.ts), none for a self-registered one. The client_id
+ * in a browser query is unauthenticated and registration is open, so a
+ * self-registered client's redirect_uri is never a continue target (H3).
+ */
+export async function flowClientRedirectUris(env: Env, clientId: string | null | undefined): Promise<string[] | undefined> {
+  if (!clientId) return undefined
+  const client = await getRegisteredClient(env, clientId)
+  return client?.trusted === true ? client.redirectUris : undefined
 }
 
 /** Rewrite a client record's legacy plaintext secret as its hash (B13.5). */
@@ -237,14 +212,15 @@ export async function rehashLegacyClientSecret(env: Env, clientId: string): Prom
  * comes back normalised), or `null` when the target is not allowed, in which
  * case the caller uses its safe default.
  *
- * @param requestOrigin  origin of the request being served (the flow's own host)
- * @param clientId       when the caller names a client, its redirect_uri
- *                       origins are accepted without the index lookup
+ * @param requestOrigin       origin of the request being served (the flow's own host)
+ * @param clientRedirectUris  redirect URIs of the client in the flow, which the
+ *                            caller has established (authenticated, or trusted);
+ *                            a target equal to one of them is accepted
  */
 export async function resolveContinue(
   env: Env,
   raw: string | null | undefined,
-  opts: { requestOrigin: string; clientId?: string },
+  opts: ContinueOptions,
 ): Promise<string | null> {
   if (!raw || raw.length > 4096 || !isSafeRedirectUrl(raw)) return null
   const requestOrigin = canonicalOrigin(opts.requestOrigin)
@@ -280,12 +256,8 @@ export async function resolveContinue(
   //    ...and the estate hosts named in config (LOGIN_CONTINUE_HOSTS).
   if (resolved.protocol === 'https:' && isListedContinueHost(env, resolved.hostname)) return resolved.href
 
-  // 4. A registered client's redirect_uri origin.
-  if (opts.clientId) {
-    const client = await getRegisteredClient(env, opts.clientId)
-    if (client?.redirectUris.some((u) => originOf(u) === origin)) return resolved.href
-  }
-  if (await isRegisteredClientOrigin(env, origin)) return resolved.href
+  // 4. A redirect_uri of the client in the flow, by exact match.
+  if (opts.clientRedirectUris?.some((u) => canonicalHref(u) === resolved.href)) return resolved.href
 
   return null
 }

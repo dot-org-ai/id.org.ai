@@ -34,8 +34,8 @@
  * The code travels only through the person's mailbox: the flow id alone signs
  * nobody in, so handing `verify_url` to the relying party is safe. `continue`
  * is held server-side with the flow and validated like /login?continue=
- * (worker/utils/relying-parties.ts), plus the calling client's own redirect
- * origins.
+ * (worker/utils/relying-parties.ts), plus the calling client's own
+ * redirect_uris (exact match).
  *
  * Limits: 5 sends per email per hour (the magic-link path's own counter,
  * `code-send:ml:<email>`, shared by listed clients and service bindings,
@@ -184,7 +184,7 @@ export type MagicLinkCaller =
   | { kind: 'client'; clientId: string }
   /**
    * A worker calling AuthService.sendMagicLink over a service binding. It may
-   * name a registered client (for its redirect origins) and its own origin
+   * name a registered client (for its redirect_uris) and its own origin
    * (where `continue` may land); neither is needed.
    */
   | { kind: 'binding'; clientId?: string; origin?: string }
@@ -213,7 +213,7 @@ export type MagicLinkResult =
 export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: MagicLinkCaller): Promise<MagicLinkResult> {
   const apiKey = env.WORKOS_API_KEY!
 
-  // A binding may name a client for its redirect origins; it must exist.
+  // A binding may name a client for its redirect_uris; it must exist.
   const client = caller.clientId ? await getRegisteredClient(env, caller.clientId) : null
   if (caller.clientId && !client) {
     return { ok: false, status: 400, error: 'invalid_client', error_description: 'Unknown client_id' }
@@ -232,7 +232,9 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
   const rawContinue = typeof req.continue === 'string' ? req.continue : ''
   let continueUrl = DEFAULT_CONTINUE
   if (rawContinue) {
-    let accepted = await resolveContinue(env, rawContinue, { requestOrigin: CANONICAL_ORIGIN, clientId: client?.id })
+    // The client here is authenticated (a listed confidential client, or one a
+    // service binding names), so its redirect_uris count, by exact match (H3).
+    let accepted = await resolveContinue(env, rawContinue, { requestOrigin: CANONICAL_ORIGIN, clientRedirectUris: client?.redirectUris })
     // A binding may also continue to its own origin.
     if (!accepted && bindingOrigin && !rawContinue.startsWith('/')) {
       accepted = await resolveContinue(env, rawContinue, { requestOrigin: bindingOrigin })
@@ -242,7 +244,7 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
         ok: false,
         status: 400,
         error: 'invalid_request',
-        error_description: "continue must be a relative path, an id.org.ai origin, or one of the client's registered redirect origins",
+        error_description: "continue must be a relative path, an id.org.ai origin, or one of the client's registered redirect_uris",
       }
     }
     continueUrl = accepted

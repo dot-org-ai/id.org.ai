@@ -29,7 +29,7 @@ import {
 import type { OrgSelectionError, WorkOSAuthResult } from '../../src/sdk/workos/upstream'
 import { isSafeRedirectUrl } from '../../src/sdk/csrf'
 import { describeWorkOSSignIn } from '../../src/sdk/workos/upstream'
-import { resolveBrowserRedirect, requestOriginOf, canonicalOrigin } from '../utils/relying-parties'
+import { resolveBrowserRedirect, flowClientRedirectUris, requestOriginOf, canonicalOrigin } from '../utils/relying-parties'
 import { isLocalStubOrigin } from '../../src/sdk/workos/base'
 
 /** Where a sign-in lands when no acceptable `continue` was given. */
@@ -91,17 +91,20 @@ app.get('/login', async (c) => {
   }
 
   // Only relative paths, id.org.ai's own origins, trusted-account domains,
-  // LOGIN_CONTINUE_HOSTS and registered clients' redirect origins are accepted
+  // LOGIN_CONTINUE_HOSTS, and the exact redirect_uris of a trusted
+  // (operator-seeded) client named by client_id are accepted
   // (worker/utils/relying-parties.ts). Anything else — //evil.com,
-  // https://evil.com, javascript:, encoded tricks — falls back to the default
-  // rather than becoming an open redirect. Under LOGIN_CONTINUE_POLICY=report
-  // a syntactically safe absolute target outside the policy is still followed
-  // and logged, so estate callers can be listed before enforcing.
+  // https://evil.com, a self-registered client's redirect origin (H3),
+  // javascript:, encoded tricks — falls back to the default rather than
+  // becoming an open redirect. Only the LOGIN_CONTINUE_POLICY=report
+  // break-glass still follows (and logs) a syntactically safe unlisted target.
   const reqOrigin = requestOriginOf(c.req.url)
   const rawContinue = c.req.query('continue') || c.req.query('redirect_uri')
+  const flowClientId = c.req.query('client_id') || undefined
+  const clientRedirectUris = await flowClientRedirectUris(c.env, flowClientId)
   const continueDecision = await resolveBrowserRedirect(c.env, rawContinue, {
     requestOrigin: reqOrigin,
-    clientId: c.req.query('client_id') || undefined,
+    clientRedirectUris,
   })
   if (continueDecision.outcome === 'refused' || continueDecision.outcome === 'unlisted') {
     console.warn(JSON.stringify({ event: `login.continue.${continueDecision.outcome}`, host: continueDecision.host }))
@@ -131,7 +134,8 @@ app.get('/login', async (c) => {
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    return renderProviderPicker(continueUrl, loginHint, promptLogin)
+    // Keep the flow's client on the picker links only when it is what let the continue through.
+    return renderProviderPicker(continueUrl, loginHint, promptLogin, clientRedirectUris ? flowClientId : undefined)
   }
 
   const csrf = crypto.randomUUID()

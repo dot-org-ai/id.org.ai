@@ -38,15 +38,14 @@ export default defineWorkersConfig({
           compatibilityFlags: ['nodejs_compat'],
           // Test-only stand-in for the WORKOS_API_KEY secret so login/callback
           // routes don't 503; the WorkOS API itself is mocked via fetchMock.
-          // LOGIN_CONTINUE_POLICY: production runs `report` (worker/wrangler.jsonc)
-          // while estate callers are listed; the suite pins `enforce`, the
-          // policy's end state. test/continue-policy.test.ts covers `report`.
+          // LOGIN_CONTINUE_POLICY is left at production's value
+          // (worker/wrangler.jsonc: `enforce`, H3); test/continue-policy.test.ts
+          // asserts it and covers the opt-in `report` escape hatch.
           // MAGIC_LINK_CLIENTS: the ids tests seed as allowlisted magic-link
           // callers (test/relying-party.test.ts, test/magic-link-callers.test.ts).
           bindings: {
             ...neutralizeLocalEnv(),
             WORKOS_API_KEY: 'sk_test_vitest_placeholder',
-            LOGIN_CONTINUE_POLICY: 'enforce',
             // DLVP is off in production (unset); the suite exercises it.
             // test/dlvp-token-separation.test.ts covers the off state.
             DLVP_ENABLED: 'true',
