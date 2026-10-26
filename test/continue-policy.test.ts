@@ -236,7 +236,7 @@ describe('H3: no open redirect on /login?continue= and /logout?return_url=', () 
     expect(continuePolicy({ ...baseEnv, LOGIN_CONTINUE_POLICY: '' } as Env)).toBe('enforce')
   })
 
-  it('the finding: https://id.org.ai/login?continue=https://evil.example/fake-consent lands on the safe default', async () => {
+  it('an unlisted absolute target lands on the safe default', async () => {
     expect(await loginContinue('https://evil.example/fake-consent')).toBe('/dash/profile')
     expect(await logoutTo('https://evil.example/fake-consent')).toBe('/')
   })
