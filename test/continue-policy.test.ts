@@ -7,8 +7,9 @@
  *     reported, so estate callers can be listed before enforcing.
  *   - /logout?return_url= goes through the same policy as /login?continue=.
  *
- * The suite runs with LOGIN_CONTINUE_POLICY=enforce (vitest.config.ts);
- * `report` is exercised by passing an env override to the route module.
+ * The suite runs with production's LOGIN_CONTINUE_POLICY (worker/wrangler.jsonc,
+ * `enforce` since H3); `report`, the opt-in escape hatch, is exercised by
+ * passing an env override to the route module.
  */
 import { describe, it, expect } from 'vitest'
 import { SELF, env } from 'cloudflare:test'
@@ -129,14 +130,20 @@ describe('/logout?return_url= uses the same policy', () => {
     expect(await logoutTo(undefined)).toBe('/')
   })
 
-  it("a registered client's redirect origin is a valid sign-out target (api.sb's ?everywhere)", async () => {
+  it("api.sb's ?everywhere sign-out returns to api.sb (listed in LOGIN_CONTINUE_HOSTS)", async () => {
+    expect(await logoutTo('https://api.sb/')).toBe('https://api.sb/')
+    expect(await logoutTo('https://mcp.sb/')).toBe('https://mcp.sb/')
+  })
+
+  it("H3: a self-registered client's redirect origin is NOT a sign-out target", async () => {
     const reg = await SELF.fetch(`${BASE}/oauth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_name: 'logout-rp', redirect_uris: ['https://logout-rp.example/auth/callback'] }),
     })
     expect(reg.status).toBe(201)
-    expect(await logoutTo('https://logout-rp.example/')).toBe('https://logout-rp.example/')
+    expect(await logoutTo('https://logout-rp.example/')).toBe('/')
+    expect(await logoutTo('https://logout-rp.example/auth/callback')).toBe('/')
   })
 
   it('refuses open-redirect targets under enforce', async () => {
@@ -177,5 +184,128 @@ describe('resolveBrowserRedirectStrict (the redesigned screens)', () => {
       expect((await resolveBrowserRedirectStrict(reportEnv, bad, opts)).outcome, bad).toBe('refused')
     }
     expect(await resolveBrowserRedirectStrict(reportEnv, '', opts)).toEqual({ url: null, outcome: 'none' })
+  })
+})
+
+// ── H3: the open redirect on /login?continue= and /logout?return_url= ────────
+//
+// Production ran LOGIN_CONTINUE_POLICY=report (any https URL followed), and
+// even `enforce` accepted the origin of ANY registered client's redirect_uri,
+// while registration (RFC 7591) is open. Now: enforce in code and config, and
+// a client's redirect URIs count only for the client in the flow, by exact
+// match, and only when that client is established (an operator-seeded trusted
+// client on the browser routes; an authenticated, listed client on
+// /api/magic-link). Never any registered client's origin.
+describe('H3: no open redirect on /login?continue= and /logout?return_url=', () => {
+  const oauth = () => env.IDENTITY.get(env.IDENTITY.idFromName('oauth')) as unknown as { oauthStorageOp(op: unknown): Promise<unknown> }
+
+  async function register(redirectUris: string[]): Promise<string> {
+    const res = await SELF.fetch(`${BASE}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_name: 'h3-attacker', redirect_uris: redirectUris, token_endpoint_auth_method: 'none' }),
+    })
+    expect(res.status).toBe(201)
+    return ((await res.json()) as { client_id: string }).client_id
+  }
+
+  async function putClient(id: string, redirectUris: string[], trusted: boolean): Promise<void> {
+    await oauth().oauthStorageOp({
+      op: 'put',
+      key: `client:${id}`,
+      value: { id, name: id, redirectUris, grantTypes: ['authorization_code'], responseTypes: ['code'], scopes: ['openid'], trusted, tokenEndpointAuthMethod: 'none', createdAt: 0 },
+    })
+  }
+
+  /** The continue /login binds into the WorkOS state (what /api/callback follows). */
+  async function loginContinue(cont: string, extra = ''): Promise<string> {
+    const res = await SELF.fetch(`${BASE}/login?provider=GitHubOAuth&continue=${encodeURIComponent(cont)}${extra}`, { redirect: 'manual' })
+    expect(res.status).toBe(302)
+    return decodeState(new URL(res.headers.get('location')!).searchParams.get('state')!).continue
+  }
+
+  async function logoutTo(returnUrl: string): Promise<string | null> {
+    const res = await SELF.fetch(`${BASE}/logout?return_url=${encodeURIComponent(returnUrl)}`, { redirect: 'manual' })
+    expect(res.status).toBe(302)
+    return res.headers.get('location')
+  }
+
+  it('production config enforces (worker/wrangler.jsonc), and so does the code default', () => {
+    expect(continuePolicy(baseEnv)).toBe('enforce')
+    expect(continuePolicy({ ...baseEnv, LOGIN_CONTINUE_POLICY: undefined } as Env)).toBe('enforce')
+    expect(continuePolicy({ ...baseEnv, LOGIN_CONTINUE_POLICY: '' } as Env)).toBe('enforce')
+  })
+
+  it('an unlisted absolute target lands on the safe default', async () => {
+    expect(await loginContinue('https://evil.example/fake-consent')).toBe('/dash/profile')
+    expect(await logoutTo('https://evil.example/fake-consent')).toBe('/')
+  })
+
+  it("registering a client no longer allowlists its redirect origin, on /login or /logout", async () => {
+    await register(['https://h3-attacker.example/cb'])
+    expect(await loginContinue('https://h3-attacker.example/fake-consent')).toBe('/dash/profile')
+    expect(await loginContinue('https://h3-attacker.example/cb')).toBe('/dash/profile')
+    expect(await logoutTo('https://h3-attacker.example/')).toBe('/')
+  })
+
+  it("naming the self-registered client in the flow does not help either, even with its exact redirect_uri", async () => {
+    const id = await register(['https://h3-named.example/cb'])
+    expect(await loginContinue('https://h3-named.example/cb', `&client_id=${id}`)).toBe('/dash/profile')
+  })
+
+  it('a client registered before the fix (legacy origin index) is not followed', async () => {
+    await putClient('cid_h3_legacy', ['https://h3-legacy.example/cb'], false)
+    await oauth().oauthStorageOp({ op: 'put', key: 'rp-origin:https://h3-legacy.example', value: { clientIds: ['cid_h3_legacy'] } })
+    expect(await loginContinue('https://h3-legacy.example/cb')).toBe('/dash/profile')
+    expect(await logoutTo('https://h3-legacy.example/cb')).toBe('/')
+  })
+
+  it("a trusted (operator-seeded) client in the flow continues to its exact redirect_uri, and nowhere else", async () => {
+    await putClient('cid_h3_first_party', ['https://h3-first-party.example/auth/callback'], true)
+    const extra = '&client_id=cid_h3_first_party'
+    expect(await loginContinue('https://h3-first-party.example/auth/callback', extra)).toBe('https://h3-first-party.example/auth/callback')
+    // Same origin, other path / extra query / other scheme: refused (exact match only).
+    expect(await loginContinue('https://h3-first-party.example/elsewhere', extra)).toBe('/dash/profile')
+    expect(await loginContinue('https://h3-first-party.example/auth/callback?next=/x', extra)).toBe('/dash/profile')
+    expect(await loginContinue('http://h3-first-party.example/auth/callback', extra)).toBe('/dash/profile')
+    // Without the client in the flow, its redirect_uri is just another unlisted host.
+    expect(await loginContinue('https://h3-first-party.example/auth/callback')).toBe('/dash/profile')
+    // Another client's id does not lend its redirect_uris.
+    expect(await loginContinue('https://h3-first-party.example/auth/callback', '&client_id=cid_unknown')).toBe('/dash/profile')
+  })
+
+  it('the provider picker keeps the flow client so a client-bound continue survives the click', async () => {
+    await putClient('cid_h3_picker', ['https://h3-picker.example/auth/callback'], true)
+    const html = await (await SELF.fetch(`${BASE}/login?client_id=cid_h3_picker&continue=${encodeURIComponent('https://h3-picker.example/auth/callback')}`)).text()
+    expect(html).toContain('client_id=cid_h3_picker')
+    expect(html).toContain(encodeURIComponent('https://h3-picker.example/auth/callback'))
+  })
+
+  it('still accepts: same-origin relative paths, own origins, the request origin, and the explicit estate allowlist', async () => {
+    expect(await loginContinue('/dash/keys')).toBe('/dash/keys')
+    expect(await loginContinue('/oauth/authorize?client_id=x&state=y')).toBe('/oauth/authorize?client_id=x&state=y')
+    for (const own of ['https://id.org.ai/dash', 'https://oauth.do/x', 'https://auth.org.ai/y', 'https://auth.headless.ly/z']) {
+      expect(await loginContinue(own), own).toBe(own)
+    }
+    for (const listed of ['https://startup.games/after-login', 'https://management.studio/api/auth/callback', 'https://sdb.dotdo.workers.dev/', 'https://api.sb/', 'https://mcp.sb/']) {
+      expect(await loginContinue(listed), listed).toBe(listed)
+      expect(await logoutTo(listed), listed).toBe(listed)
+    }
+    // A request served on another of this worker's hosts may continue on that host.
+    const res = await SELF.fetch(`https://auth.headless.ly/logout?return_url=${encodeURIComponent('https://auth.headless.ly/after')}`, { redirect: 'manual' })
+    expect(res.headers.get('location')).toBe('https://auth.headless.ly/after')
+  })
+
+  it('unit: resolveContinue never consults the registered-client origin index', async () => {
+    await putClient('cid_h3_unit', ['https://h3-unit.example/cb'], false)
+    await oauth().oauthStorageOp({ op: 'put', key: 'rp-origin:https://h3-unit.example', value: { clientIds: ['cid_h3_unit'] } })
+    expect(await resolveBrowserRedirect(baseEnv, 'https://h3-unit.example/cb', { requestOrigin: BASE })).toEqual({ url: null, outcome: 'refused', host: 'h3-unit.example' })
+    // Exact-match redirect URIs handed in by the caller (an established client) are accepted.
+    expect(
+      await resolveBrowserRedirect(baseEnv, 'https://h3-unit.example/cb', { requestOrigin: BASE, clientRedirectUris: ['https://h3-unit.example/cb'] }),
+    ).toEqual({ url: 'https://h3-unit.example/cb', outcome: 'accepted' })
+    expect(
+      (await resolveBrowserRedirect(baseEnv, 'https://h3-unit.example/other', { requestOrigin: BASE, clientRedirectUris: ['https://h3-unit.example/cb'] })).outcome,
+    ).toBe('refused')
   })
 })

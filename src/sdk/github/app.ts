@@ -18,8 +18,10 @@ export interface PushEvent {
     id: number
   }
   repository: {
+    id?: number
     full_name: string
     default_branch: string
+    owner?: { id: number; login?: string }
   }
   sender: {
     id: number

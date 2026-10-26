@@ -5,7 +5,8 @@
  * It only uses jose for JWT verification - no heavy SDK dependencies.
  *
  * Features:
- * - JWT verification with JWKS (WorkOS)
+ * - JWT verification with JWKS: id.org.ai sign-in sessions (issuer pinned,
+ *   id_tokens and access tokens refused) and WorkOS
  * - API key verification with hashing and caching
  * - Cookie-based session validation
  * - Cache API for token caching (5 min TTL)
@@ -16,6 +17,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as jose from 'jose'
+import { isIdOrgAiSessionToken, ID_ORG_AI_SESSION_AUDIENCE } from '../../src/sdk/auth/token-class'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -105,9 +107,16 @@ const TOKEN_CACHE_TTL = 5 * 60 // 5 minutes for valid tokens
 const NEGATIVE_CACHE_TTL = 60 // 60 seconds for invalid tokens
 const CACHE_URL_PREFIX = 'https://auth.oauth.do/_cache/'
 
-// JWKS — module memory (warm) or Cache API (cold start)
-const JWKS_CACHE_KEY = 'https://auth.oauth.do/_jwks/all'
-let jwks: jose.JWTVerifyGetKey | null = null
+// JWKS — module memory (warm) or Cache API (cold start). Two key sets, never
+// merged: a token is checked against the id.org.ai keys under id.org.ai's
+// rules, and against the WorkOS keys under WorkOS's.
+const JWKS_CACHE_KEY = 'https://auth.oauth.do/_jwks/v2'
+const ID_ORG_AI_ISSUER = 'https://id.org.ai'
+interface KeySets {
+  idOrgAi: jose.JWTVerifyGetKey
+  workos: jose.JWTVerifyGetKey
+}
+let jwks: KeySets | null = null
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Utilities
@@ -169,14 +178,15 @@ async function cacheResult(token: string, result: VerifyResult): Promise<void> {
   }
 }
 
-async function getJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
+async function getJwks(clientId: string): Promise<KeySets> {
   if (jwks) return jwks
 
   // Try Cache API
   try {
     const cached = await caches.default.match(new Request(JWKS_CACHE_KEY))
     if (cached) {
-      jwks = jose.createLocalJWKSet({ keys: (await cached.json()) as jose.JWK[] })
+      const sets = (await cached.json()) as { idOrgAi: jose.JWK[]; workos: jose.JWK[] }
+      jwks = keySets(sets.idOrgAi, sets.workos)
       return jwks
     }
   } catch { /* fall through */ }
@@ -187,25 +197,51 @@ async function getJwks(clientId: string): Promise<jose.JWTVerifyGetKey> {
     fetch('https://auth.headless.ly/.well-known/jwks.json', cfCache).then((r) => r.json()).then((j: { keys: jose.JWK[] }) => j.keys).catch(() => []),
     fetch(`https://api.workos.com/sso/jwks/${clientId}`, cfCache).then((r) => r.json()).then((j: { keys: jose.JWK[] }) => j.keys).catch(() => []),
   ])
-  const seen = new Set<string>()
-  const allKeys = [...(idKeys as jose.JWK[]), ...(workosKeys as jose.JWK[])].filter((k) => {
-    if (!k.kid || seen.has(k.kid)) return false
-    seen.add(k.kid)
-    return true
-  })
-  console.log(`[auth] JWKS fetched: ${allKeys.length} keys`)
+  const idOrgAi = withKid(idKeys as jose.JWK[])
+  const workos = withKid(workosKeys as jose.JWK[])
+  console.log(`[auth] JWKS fetched: ${idOrgAi.length} id.org.ai + ${workos.length} WorkOS keys`)
 
-  jwks = jose.createLocalJWKSet({ keys: allKeys })
+  jwks = keySets(idOrgAi, workos)
 
   // Cache for 24h
   try {
     await caches.default.put(
       new Request(JWKS_CACHE_KEY),
-      new Response(JSON.stringify(allKeys), { headers: { 'Cache-Control': 'max-age=86400' } }),
+      new Response(JSON.stringify({ idOrgAi, workos }), { headers: { 'Cache-Control': 'max-age=86400' } }),
     )
   } catch { /* non-fatal */ }
 
   return jwks
+}
+
+function withKid(keys: jose.JWK[]): jose.JWK[] {
+  return Array.isArray(keys) ? keys.filter((k) => !!k?.kid) : []
+}
+
+function keySets(idOrgAi: jose.JWK[], workos: jose.JWK[]): KeySets {
+  return { idOrgAi: jose.createLocalJWKSet({ keys: idOrgAi }), workos: jose.createLocalJWKSet({ keys: workos }) }
+}
+
+/** An id.org.ai-signed token that verified but is not a sign-in session. */
+class NotASessionToken extends Error {}
+
+/**
+ * Verify against each key set under its own rules:
+ *   - id.org.ai keys: `iss` must be https://id.org.ai, and only the sign-in
+ *     session JWT passes. An id_token (issued to some OAuth client, `aud` =
+ *     that client) or an access token (`typ: at+jwt`) is never the Person here.
+ *   - WorkOS keys (published for this WorkOS client only): as before.
+ */
+async function verifyWithKeySets(token: string, sets: KeySets): Promise<jose.JWTPayload> {
+  try {
+    const { payload, protectedHeader } = await jose.jwtVerify(token, sets.idOrgAi, { issuer: ID_ORG_AI_ISSUER })
+    if (!isIdOrgAiSessionToken(protectedHeader, payload)) throw new NotASessionToken('not an id.org.ai session token')
+    return payload
+  } catch (err) {
+    if (err instanceof NotASessionToken) throw err
+  }
+  const { payload } = await jose.jwtVerify(token, sets.workos)
+  return payload
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -216,18 +252,19 @@ async function verifyJWT(token: string, env: Env): Promise<VerifyResult> {
   const t0 = performance.now()
   try {
     const keys = await getJwks(env.WORKOS_CLIENT_ID)
-    const { payload } = await jose.jwtVerify(token, keys)
+    const payload = await verifyWithKeySets(token, keys)
     const ms = Math.round(performance.now() - t0)
     if (ms > 5) console.log(`[auth] JWT verified in ${ms}ms`)
     return { valid: true, user: jwtPayloadToUser(payload) }
   } catch (err) {
-    // On failure, clear cache and retry once (key rotation)
-    if (jwks) {
+    // On failure, clear cache and retry once (key rotation). A verified token
+    // of the wrong kind is final: no key refresh changes what it is.
+    if (jwks && !(err instanceof NotASessionToken)) {
       jwks = null
       try { await caches.default.delete(new Request(JWKS_CACHE_KEY)) } catch { /* */ }
       try {
         const keys = await getJwks(env.WORKOS_CLIENT_ID)
-        const { payload } = await jose.jwtVerify(token, keys)
+        const payload = await verifyWithKeySets(token, keys)
         const ms = Math.round(performance.now() - t0)
         console.log(`[auth] JWT verified after refresh in ${ms}ms`)
         return { valid: true, user: jwtPayloadToUser(payload) }
@@ -354,15 +391,13 @@ async function verifyToken(token: string, env: Env): Promise<VerifyResult> {
   return result
 }
 
-/** The `aud` id.org.ai gives a browser-session JWT (worker/utils/session.ts SESSION_AUDIENCE). */
-const ID_ORG_AI_SESSION_AUDIENCE = 'urn:id.org.ai:session'
-
 /** Is this (already verified) JWT an id.org.ai browser session, current or minted before `aud` existed? */
 function isIdOrgAiSession(token: string): boolean {
   try {
     const payload = jose.decodeJwt(token)
     if (payload.iss !== 'https://id.org.ai') return false
-    return payload.aud === undefined || payload.aud === ID_ORG_AI_SESSION_AUDIENCE
+    const aud = payload.aud
+    return aud === undefined || aud === ID_ORG_AI_SESSION_AUDIENCE || (Array.isArray(aud) && aud.length === 1 && aud[0] === ID_ORG_AI_SESSION_AUDIENCE)
   } catch {
     return false
   }

@@ -26,6 +26,17 @@ export type JwksResolver = (env: Env) => Promise<JWKS>
 /** Production resolver — reads the live JWKS from the signing-key manager. */
 export const defaultJwksResolver: JwksResolver = (env) => getSigningKeyManager(env).getJWKS()
 
+/** What a caller may add: the audience it is (to verify the id_token issued to it). */
+export interface VerifyIdentityOptions {
+  /**
+   * The caller's own OAuth client_id (or resource). Supplied, a token issued
+   * to that audience verifies (the id_token a client got at its callback).
+   * Omitted, only the sign-in session JWT verifies: an id_token issued to any
+   * other client is never accepted as the Person.
+   */
+  audience?: string | string[]
+}
+
 /**
  * Is a verified token's browser session still live (H4)? Production asks the
  * session record in the Person's IdentityDO; tests inject a stand-in.
@@ -41,6 +52,7 @@ export async function verifyIdentityTokenWithEnv(
   token: string,
   env: Env,
   resolveJwks: JwksResolver = defaultJwksResolver,
+  options: VerifyIdentityOptions = {},
   checkSession: SessionChecker = checkSessionState,
 ): Promise<VerifyTokenResult> {
   // Separate a SERVER-side failure (JWKS/signing-key manager unavailable) from a
@@ -55,7 +67,9 @@ export async function verifyIdentityTokenWithEnv(
     console.error('[auth/verify] JWKS resolution failed:', err instanceof Error ? err.message : err)
     return { valid: false, error: 'jwks_unavailable' }
   }
-  const result = await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN })
+  const audience = audienceOption(options.audience)
+  if (audience === null) return { valid: false, error: 'Invalid audience option' }
+  const result = await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN, ...(audience !== undefined && { audience }) })
   if (!result.valid) return result
   // The signature is good; a browser session must also still be live: not
   // logged out, not frozen (security review H4). Other token kinds pass.
@@ -73,9 +87,9 @@ export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResol
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
   app.post('/auth/verify', async (c) => {
-    let body: { token?: unknown }
+    let body: { token?: unknown; audience?: unknown }
     try {
-      body = (await c.req.json()) as { token?: unknown }
+      body = (await c.req.json()) as { token?: unknown; audience?: unknown }
     } catch {
       return c.json({ valid: false, error: 'Invalid JSON body' } satisfies VerifyTokenResult, 400)
     }
@@ -85,7 +99,11 @@ export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResol
       return c.json({ valid: false, error: 'Missing or empty token' } satisfies VerifyTokenResult, 400)
     }
 
-    const result = await verifyIdentityTokenWithEnv(token, c.env, resolveJwks, checkSession)
+    const audience = audienceOption(body?.audience)
+    if (audience === null) {
+      return c.json({ valid: false, error: 'audience must be a non-empty string or array of strings' } satisfies VerifyTokenResult, 400)
+    }
+    const result = await verifyIdentityTokenWithEnv(token, c.env, resolveJwks, { audience }, checkSession)
     if (!result.valid && result.error === 'jwks_unavailable') {
       // Server-side verification substrate is down — 503, not a token 401, and
       // a generic client message (the real cause is already logged).
@@ -99,3 +117,11 @@ export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResol
 
 /** Production mount used by worker/index.ts. */
 export const authVerifyRoutes = createAuthVerifyApp()
+
+/** A usable audience option: undefined (none), the audience, or null (malformed). */
+function audienceOption(value: unknown): string | string[] | undefined | null {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') return value !== '' ? value : null
+  if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === 'string' && v !== '')) return value as string[]
+  return null
+}

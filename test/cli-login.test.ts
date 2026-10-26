@@ -1591,9 +1591,15 @@ describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
     const { join } = await import('node:path')
     const repo = await mkdtemp(join(tmpdir(), 'id-claim-json-'))
     const commands: string[] = []
+    const answers: Record<string, string> = {
+      'git rev-parse --show-toplevel': repo,
+      'git remote get-url origin': 'https://github.com/alice/app.git',
+      'git symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main',
+      'git rev-parse --abbrev-ref HEAD': 'main',
+    }
     const exec = (command: string) => {
       commands.push(command)
-      return command === 'git rev-parse --show-toplevel' ? repo : 'true'
+      return answers[command] ?? 'true'
     }
     vi.stubGlobal('fetch', vi.fn(async () => json(200, { status: 'claimed', level: 2 })))
     // A hostile token is refused before it reaches the workflow (next test); a
@@ -1622,6 +1628,9 @@ describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
     }
     expect(commands).toEqual([
       'git rev-parse --is-inside-work-tree',
+      'git remote get-url origin',
+      'git symbolic-ref --short refs/remotes/origin/HEAD',
+      'git rev-parse --abbrev-ref HEAD',
       'git rev-parse --show-toplevel',
       `git add "${join(repo, '.github', 'workflows', 'headlessly.yml')}"`,
       'git commit -m "Claim headless.ly tenant"',
@@ -1629,7 +1638,8 @@ describe('--json output is terminal-safe and lossless (re-review N-a)', () => {
     ])
     const out = lines.at(-1)!
     expect(out).not.toMatch(TERMINAL_UNSAFE)
-    expect(JSON.parse(out)).toEqual({ claimToken, confirmed: true, level: 2 })
+    // No stored session for this --token, so the claim is not pre-bound (H1).
+    expect(JSON.parse(out)).toEqual({ claimToken, repo: 'alice/app', bound: false, status: 'claimed', confirmed: true, level: 2 })
   })
 
   it('claim refuses a hostile token before anything is written, committed or pushed', async () => {

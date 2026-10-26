@@ -23,14 +23,15 @@
 import * as jose from 'jose'
 import type { Env } from '../types'
 import type { AccessTokenClaims } from '../../src/sdk/jwt/signing'
-import { getStubForIdentity, getSigningKeyManager } from '../middleware/tenant'
+import { getStubForIdentity, getSigningKeyManager, verifySessionJwt as verifySessionClassJwt } from '../middleware/tenant'
+import { ID_ORG_AI_SESSION_AUDIENCE } from '../../src/sdk/auth/token-class'
 import { parseCookieValue } from './cookies'
 import { invalidateCachedToken } from './cache'
 import { listUserOrgMemberships } from '../../src/sdk/workos/upstream'
 
 export const SESSION_ISSUER = 'https://id.org.ai'
 /** The `aud` of a browser-session JWT. A URN, so no resource server can be registered under it. */
-export const SESSION_AUDIENCE = 'urn:id.org.ai:session'
+export const SESSION_AUDIENCE = ID_ORG_AI_SESSION_AUDIENCE
 /** The JWT's lifetime. Privilege inside it is re-read at every verification. */
 export const SESSION_TTL_SECONDS = 30 * 24 * 3600
 /** How long AuthService may cache an unprivileged session verification. Privileged ones are never cached. */
@@ -99,21 +100,23 @@ export async function checkSessionState(env: Env, payload: jose.JWTPayload, toke
   }
 }
 
+/**
+ * Signature, issuer and expiry, and the session class (security review H2):
+ * an id_token or access token placed in the cookie is never a session.
+ */
 async function verifySignature(env: Env, token: string): Promise<jose.JWTPayload | null> {
   try {
-    const jwks = await getSigningKeyManager(env).getJWKS()
-    const { payload } = await jose.jwtVerify(token, jose.createLocalJWKSet(jwks), { issuer: SESSION_ISSUER })
-    return payload
+    return await verifySessionClassJwt(token, env)
   } catch {
     return null
   }
 }
 
 /**
- * Verify an id.org.ai-signed JWT (signature, issuer, expiry) and, when it is a
- * browser session, its session record. Null when any check fails.
+ * Verify an id.org.ai browser-session JWT (signature, issuer, expiry, session
+ * class) and its session record. Null when any check fails.
  */
-export async function verifySessionJwt(env: Env, token: string): Promise<jose.JWTPayload | null> {
+export async function verifyLiveSessionJwt(env: Env, token: string): Promise<jose.JWTPayload | null> {
   const payload = await verifySignature(env, token)
   if (!payload) return null
   return (await checkSessionState(env, payload, token)) ? payload : null
@@ -130,7 +133,7 @@ export function verifySessionCookie(request: Request, env: Env): Promise<jose.JW
   if (!verdict) {
     const cookie = request.headers.get('cookie')
     const jwt = cookie ? parseCookieValue(cookie, 'auth') : null
-    verdict = jwt ? verifySessionJwt(env, jwt) : Promise.resolve(null)
+    verdict = jwt ? verifyLiveSessionJwt(env, jwt) : Promise.resolve(null)
     cookieVerdicts.set(request, verdict)
   }
   return verdict

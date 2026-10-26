@@ -61,7 +61,8 @@ The primary claim mechanism uses GitHub as the identity bridge — via both a **
 ### The Flow
 
 1. Agent operates headless.ly anonymously → gets sandbox tenant `anon_7kx9m2` with claim token `clm_abc123`
-2. Agent decides the product is useful → creates a workflow file:
+2. Agent decides the product is useful → **binds the claim to its repository** (`POST /api/claim/bind {repo}` with its session token, which is never committed). The claim token is public once pushed; after binding, only a workflow in that repository can claim it. `id.org.ai claim` does this from `git remote get-url origin`. An unbound token is bound by whichever claim uses it first (legacy path).
+3. Agent creates a workflow file:
 
 ```yaml
 # .github/workflows/headlessly.yml
@@ -76,12 +77,12 @@ jobs:
           tenant: clm_abc123
 ```
 
-3. Agent commits this to the repo (main OR a branch)
-4. **The commit itself IS the claim** — GitHub authenticates who pushed
-5. Two things happen simultaneously:
+4. Agent commits this to the repo (main OR a branch)
+5. **The commit itself IS the claim** — GitHub authenticates who pushed
+6. Two things happen simultaneously:
    - **GitHub App** (`dot-org-ai/id`) receives the push webhook → sees the workflow file → links the GitHub identity to the anonymous tenant
    - **GitHub Action** (`dot-org-ai/id@v1`) runs → registers the repo's identity with id.org.ai → confirms the claim
-6. Tenant is now claimed. The agent's next MCP request sees upgraded capabilities.
+7. Tenant is now claimed. The agent's next MCP request sees upgraded capabilities.
 
 ### Why Branches Work
 
@@ -89,7 +90,8 @@ jobs:
 - The GitHub App still receives the push webhook on the branch
 - The human can review the PR before merging to main
 - Even on a branch, the push is authenticated — GitHub knows who pushed
-- Claim is "pending" on a branch, "confirmed" on main merge
+- Claim is "pending" on a branch, "confirmed" on a push to the default branch (from the webhook, or as named at bind time; otherwise main or master). GitHub's Actions OIDC token does not carry the default branch.
+- Only `push` and `workflow_dispatch` runs can claim: events an outsider can start (`pull_request_target`, `workflow_run`, `issue_comment`) are refused.
 
 ### The Identity Chain
 

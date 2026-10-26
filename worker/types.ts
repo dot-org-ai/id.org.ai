@@ -47,10 +47,10 @@ export interface Env {
   /**
    * `enforce` (the default when unset): a `/login` continue or `/logout`
    * return_url outside the policy falls back to the default landing.
-   * `report`: it is still followed (the pre-policy behaviour), and logged as
-   * `login.continue.unlisted` / `logout.return.unlisted` so the estate's
-   * callers can be found and listed before switching to `enforce`.
-   * POST /api/magic-link always enforces.
+   * Production enforces (worker/wrangler.jsonc, H3). `report` is a
+   * break-glass only: an unlisted target is still followed (an open
+   * redirect) and logged as `login.continue.unlisted` /
+   * `logout.return.unlisted`. POST /api/magic-link always enforces.
    */
   LOGIN_CONTINUE_POLICY?: string
   /**

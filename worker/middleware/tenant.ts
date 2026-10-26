@@ -13,6 +13,8 @@ import { verifySessionCookie } from '../utils/session'
 import { isApiKeyPrefix, extractApiKey, extractSessionToken } from '../utils/extract'
 import type { Env } from '../types'
 import { workosUrl } from '../../src/sdk/workos/base'
+import { CANONICAL_AUTH_ORIGIN } from '../../src/sdk/auth'
+import { isIdOrgAiSessionToken } from '../../src/sdk/auth/token-class'
 
 /**
  * Get a DO stub for a specific identity shard.
@@ -70,6 +72,22 @@ export function getDlvpSigningKeyManager(env: Env): SigningKeyManager {
     cachedDlvpKeyManager = new SigningKeyManager((op) => getStubForIdentity(dlvpKeyManagerEnv!, 'oauth').oauthStorageOp(op), 'dlvp-signing-keys')
   }
   return cachedDlvpKeyManager
+}
+
+/**
+ * Verify the id.org.ai sign-in session JWT (the `auth` cookie, or that JWT
+ * presented as a bearer) and return its claims; throws when it is not one.
+ *
+ * The issuer is pinned, and only the session class passes: an id_token (it
+ * carries the `aud` of the client it was issued to, and any client can get
+ * one for a Person who signs into it) or an access token (`typ: at+jwt`) is
+ * never the Person's own credential, though all three share one signing key.
+ */
+export async function verifySessionJwt(jwt: string, env: Env): Promise<jose.JWTPayload> {
+  const jwks = await getSigningKeyManager(env).getJWKS()
+  const { payload, protectedHeader } = await jose.jwtVerify(jwt, jose.createLocalJWKSet(jwks as jose.JSONWebKeySet), { issuer: CANONICAL_AUTH_ORIGIN })
+  if (!isIdOrgAiSessionToken(protectedHeader, payload)) throw new Error('Not an id.org.ai session token')
+  return payload
 }
 
 /**

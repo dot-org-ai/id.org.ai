@@ -109,7 +109,7 @@ describe('B1: HTTP POST /api/magic-link never infers trust from the host', () =>
   it('a listed client is served on the trailing-dot host too (the credential decides, not the host)', async () => {
     const sends = countSends((e) => e.endsWith('@listed-host.example'))
     const c = await confidentialClient(true)
-    const res = await post('https://id.org.ai./api/magic-link', { email: 'ada@listed-host.example', continue: 'https://waitlist.example/in' }, { authorization: c.basic })
+    const res = await post('https://id.org.ai./api/magic-link', { email: 'ada@listed-host.example', continue: CB }, { authorization: c.basic })
     expect(res.status).toBe(202)
     expect(((await res.json()) as { verify_url: string }).verify_url).toMatch(/^https:\/\/id\.org\.ai\/magic-link\/[0-9a-f]{48}$/)
     expect(sends.n).toBe(1)
@@ -130,11 +130,13 @@ describe('B1: AuthService.sendMagicLink (the binding path)', () => {
     expect(page.status).toBe(200)
   })
 
-  it('lends a named client its redirect origins, and refuses an unknown client', async () => {
+  it('lends a named client its exact redirect_uris (never its whole origin, H3), and refuses an unknown client', async () => {
     countSends((e) => e.endsWith('@rpc-client.example'))
     const c = await confidentialClient(false) // a binding needs no listing
-    const ok = await authService().sendMagicLink({ email: 'a@rpc-client.example', continue: 'https://waitlist.example/welcome', clientId: c.id })
+    const ok = await authService().sendMagicLink({ email: 'a@rpc-client.example', continue: CB, clientId: c.id })
     expect(ok.ok).toBe(true)
+    const sameOrigin = await authService().sendMagicLink({ email: 'a@rpc-client.example', continue: 'https://waitlist.example/welcome', clientId: c.id })
+    expect(sameOrigin).toMatchObject({ ok: false, status: 400 })
     const unknown = await authService().sendMagicLink({ email: 'b@rpc-client.example', clientId: 'cid_nobody' })
     expect(unknown).toMatchObject({ ok: false, status: 400, error: 'invalid_client' })
   })

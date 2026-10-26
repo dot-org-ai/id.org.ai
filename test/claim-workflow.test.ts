@@ -9,7 +9,8 @@ describe('buildClaimWorkflow', () => {
     expect(yaml).toContain('uses: dot-org-ai/id@v1')
     expect(yaml).toContain('uses: actions/checkout@v4')
     expect(yaml).toContain('id-token: write')
-    expect(yaml).toContain('branches: [main, master]')
+    // Every branch: the first push binds the token to the repo (H1).
+    expect(yaml).toContain("branches: ['**']")
   })
 
   it('throws on invalid claim token', () => {

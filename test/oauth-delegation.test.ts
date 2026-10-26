@@ -271,7 +271,7 @@ describe('1. RFC 9207 iss in the authorization response', () => {
     expect(back.searchParams.get('iss')).toBe('https://id.org.ai')
   })
 
-  it('iss follows X-Issuer (the issuer that proxy advertises in its metadata)', async () => {
+  it('iss is pinned: an X-Issuer header does not change it (security review M1)', async () => {
     const url = await authorizeUrl(clientId)
     const page = await provider.handleAuthorize(new Request(url, { headers: { 'X-Issuer': 'https://oauth.do/' } }), PERSON)
     const fields = hiddenFields(await page.text())
@@ -283,7 +283,7 @@ describe('1. RFC 9207 iss in the authorization response', () => {
       }),
       PERSON,
     )
-    expect(new URL(res.headers.get('location')!).searchParams.get('iss')).toBe('https://oauth.do')
+    expect(new URL(res.headers.get('location')!).searchParams.get('iss')).toBe('https://id.org.ai')
   })
 
   it('an unknown client or unregistered redirect_uri gets a 400, never a redirect', async () => {

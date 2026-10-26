@@ -10,7 +10,8 @@ import { getStubForIdentity, resolveIdentityFromClaim } from '../middleware/tena
 import { ClaimService } from '../../src/sdk/claim/provision'
 import { verifyClaim } from '../../src/sdk/claim/verify'
 import { buildClaimWorkflow } from '../../src/sdk/claim/workflow'
-import { parseGitHubOIDC } from '../../src/sdk/claim/policy'
+import { bodyClaimMismatches, CLAIM_EVENTS, isClaimEvent, missingGitHubOIDCClaims, parseGitHubOIDC } from '../../src/sdk/claim/policy'
+import { extractSessionToken } from '../utils/extract'
 import { AUDIT_EVENTS } from '../../src/sdk/audit'
 import { logAuditEvent } from '../utils/audit'
 import { requestOriginOf } from '../../src/sdk/csrf'
@@ -169,6 +170,18 @@ app.post('/api/claim', async (c) => {
     return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token verification failed: ${errorMessage(err)}`)
   }
 
+  // Identity comes only from the verified OIDC claims (H1). The body may name
+  // the claim token; any GitHub fields it carries are ignored, and a
+  // disagreement is recorded in the audit event.
+  const github = parseGitHubOIDC(oidcPayload)
+  const missing = missingGitHubOIDCClaims(github)
+  if (missing.length > 0) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, `OIDC token is missing required claims: ${missing.join(', ')}`)
+  }
+  if (!isClaimEvent(github.eventName)) {
+    return errorResponse(c, 403, ErrorCode.Forbidden, `A claim must come from a ${CLAIM_EVENTS.join(' or ')} workflow run, not ${github.eventName}`)
+  }
+
   // Parse request body
   const body = (await c.req.json().catch(() => ({}))) as {
     claimToken?: string
@@ -191,17 +204,23 @@ app.post('/api/claim', async (c) => {
 
   const stub = getStubForIdentity(c.env, identityId)
 
-  // Extract GitHub identity from OIDC token claims or request body
-  const { githubUserId, githubUsername, repo, branch, defaultBranch } = parseGitHubOIDC(oidcPayload, body)
+  const { githubUserId, githubUsername, repo, repositoryId, repositoryOwnerId, branch } = github
+  const ignoredBodyFields = bodyClaimMismatches(github, body)
+  const auditExtra = ignoredBodyFields.length > 0 ? { ignoredBodyFields } : {}
 
   try {
+    // The DO refuses a claim from any repository other than the one the
+    // token is bound to (by its owner before publishing it, or else by the
+    // first claim that uses it). The OIDC token carries no default branch;
+    // the DO uses the one bound with the token, or main/master.
     const result = await stub.claim({
       claimToken,
       githubUserId,
       githubUsername,
       repo,
+      repositoryId,
+      repositoryOwnerId,
       branch,
-      defaultBranch,
     })
 
     if (!result.success) {
@@ -209,7 +228,7 @@ app.post('/api/claim', async (c) => {
         event: AUDIT_EVENTS.CLAIM_FAILED,
         actor: githubUsername,
         target: identityId,
-        metadata: { claimToken, repo, branch, error: result.error },
+        metadata: { claimToken, repo, repositoryId, branch, error: result.error, ...auditExtra },
       })
       return c.json({ success: false, error: result.error ?? 'claim_failed' }, 400)
     }
@@ -218,13 +237,60 @@ app.post('/api/claim', async (c) => {
       event: AUDIT_EVENTS.CLAIM_COMPLETED,
       actor: githubUsername,
       target: result.identity?.id ?? identityId,
-      metadata: { claimToken, repo, branch, githubUserId, level: result.identity?.level },
+      metadata: { claimToken, repo, repositoryId, branch, githubUserId, level: result.identity?.level, ...auditExtra },
     })
 
     return c.json({
       success: true,
       identity: result.identity,
     })
+  } catch (err: unknown) {
+    return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
+  }
+})
+
+// ── Claim Binding Endpoint ───────────────────────────────────────────────
+// Binds the caller's claim token to the GitHub repository it will be claimed
+// from, BEFORE the token is committed (H1). The claim token becomes public the
+// moment it is pushed; the session token never is, so only the tenant's owner
+// can bind. `id.org.ai claim` calls this with `git remote get-url origin`.
+// Every later claim (OIDC or webhook) must come from the bound repository.
+
+app.post('/api/claim/bind', async (c) => {
+  const sessionToken = extractSessionToken(c.req.raw)
+  const identityId = c.get('resolvedIdentityId')
+  const stub = c.get('identityStub')
+  if (!sessionToken || !identityId || !stub) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Session token (Bearer ses_…) required to bind a claim')
+  }
+  const session = await stub.getSession(sessionToken)
+  if (!session.valid || session.identityId !== identityId) {
+    return errorResponse(c, 401, ErrorCode.Unauthorized, 'Invalid or expired session token')
+  }
+
+  const body = (await c.req.json().catch(() => ({}))) as { repo?: unknown; defaultBranch?: unknown }
+  if (typeof body.repo !== 'string') {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'repo (GitHub owner/name) is required')
+  }
+  if (body.defaultBranch !== undefined && typeof body.defaultBranch !== 'string') {
+    return errorResponse(c, 400, ErrorCode.InvalidRequest, 'defaultBranch must be a string')
+  }
+
+  try {
+    const result = await stub.bindClaim({ identityId, repo: body.repo, defaultBranch: body.defaultBranch })
+    if (!result.success) {
+      const status = result.error === 'Claim token is bound to another repository' || result.error === 'Tenant already claimed' ? 409 : 400
+      return c.json({ success: false, error: result.error ?? 'bind_failed' }, status)
+    }
+    await logAuditEvent(stub, {
+      event: AUDIT_EVENTS.CLAIM_BOUND,
+      actor: identityId,
+      target: identityId,
+      ip: c.req.raw.headers.get('cf-connecting-ip') ?? undefined,
+      userAgent: c.req.raw.headers.get('user-agent') ?? undefined,
+      metadata: { repo: result.binding?.repo, defaultBranch: result.binding?.defaultBranch },
+    })
+    return c.json({ success: true, repo: result.binding?.repo, defaultBranch: result.binding?.defaultBranch ?? null })
   } catch (err: unknown) {
     return errorResponse(c, 500, ErrorCode.ServerError, errorMessage(err))
   }
@@ -291,8 +357,8 @@ app.get('/claim/:token', async (c) => {
       step1: 'Add this GitHub Action workflow to your repository:',
       file: '.github/workflows/headlessly.yml',
       content: buildClaimWorkflow(token),
-      step2: 'Push to your main branch',
-      step3: 'The push event will link your GitHub identity to this tenant',
+      step2: 'Push it to any branch: the first push binds this tenant to your repository (pending)',
+      step3: 'Merge to your default branch to finalise the claim and link your GitHub identity',
     },
   })
 })
