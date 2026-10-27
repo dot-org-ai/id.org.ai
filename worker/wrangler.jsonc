@@ -44,7 +44,9 @@
     // (no scheme, no path) whose redirect_uri is accepted under the canonical
     // shared client_id `cid_trusted_account_v1` without per-app DCR.
     // Trust comes from the domain being in the same Cloudflare account.
-    "TRUSTED_ACCOUNT_DOMAINS": "startup.games",
+    // pitch.startups.studio and its preview (Nathan, 2026-10-24/27): the Fund I deck asks for the email or Google on
+    // its own page; id.org.ai shows no picker and no consent, only the code screen for email (WorkOS sends the code).
+    "TRUSTED_ACCOUNT_DOMAINS": "startup.games,pitch.startups.studio,pitch-startups-studio-preview.metad.workers.dev",
 
     // ── Sign-in / sign-out destinations (worker/utils/relying-parties.ts) ──
     // /login?continue= and /logout?return_url= accept relative paths, this

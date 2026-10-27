@@ -11,6 +11,7 @@ import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, getSigningKeyManager, resolveIdentityId } from '../middleware/tenant'
 import { renderProviderPicker } from '../views/provider-picker'
+import { startEmailCode } from './login-email'
 import { renderOrgPickerPage } from '../views/org-picker'
 import {
   buildWorkOSAuthUrl,
@@ -125,6 +126,14 @@ app.get('/login', async (c) => {
   const provider = c.req.query('provider') || undefined
   const VALID_PROVIDERS = ['authkit', 'GitHubOAuth', 'GoogleOAuth', 'MicrosoftOAuth', 'AppleOAuth']
   const safeProvider = provider && VALID_PROVIDERS.includes(provider) ? provider : undefined
+
+  // provider=email with a login_hint (a trusted app's own page asked for the
+  // address, worker/routes/login-email.ts): WorkOS emails the code, and the
+  // code screen is all id.org.ai shows. If it can't send, the picker below.
+  if (provider === 'email' && loginHint) {
+    const started = await startEmailCode(c, loginHint, continueUrl)
+    if (started) return started
+  }
 
   // No provider specified → show provider picker page
   // This avoids AuthKit's built-in org selection which causes a double sign-in

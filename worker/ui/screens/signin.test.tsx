@@ -238,6 +238,11 @@ describe('1b email code', () => {
     expect(doc.querySelector('[role="status"]')).not.toBeNull()
   })
 
+  it('leaves out "open the link in the email" when the email carries only the code', async () => {
+    expect(text((await dom(<EmailCode {...code} />)).body)).toContain('Or open the link in the email on this device.')
+    expect(text((await dom(<EmailCode {...code} linkInEmail={false} />)).body)).not.toContain('open the link')
+  })
+
   it('Verify is the code form’s default button; Resend belongs to its own form posting to /resend', async () => {
     const doc = await dom(<EmailCode {...code} />)
     const form = doc.querySelector('form[data-js="submit"]')!
