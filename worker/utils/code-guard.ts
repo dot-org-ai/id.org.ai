@@ -2,18 +2,19 @@
  * The guess and send budgets for emailed sign-in codes (security review S1,
  * round-2 B2, round-3 lockout fix).
  *
- * One path turns a 6-digit WorkOS Magic Auth code into a session on this
- * branch:
+ * Two paths turn a 6-digit WorkOS Magic Auth code into a session:
  *
  *   ml   POST /api/magic-link (listed clients) and AuthService.sendMagicLink
  *        (service bindings) -> POST /magic-link/:flow
  *        (worker/routes/magic-link.ts).
+ *   web  the sign-in page's own email form: POST /login/email ->
+ *        POST /login/code/:flow (worker/routes/login-email.ts).
  *
  * Every budget below is PER PATH, keyed `<kind>:<path>:<normalised email>`,
- * so that a future public code-sending path (the unmerged upstream-federation
- * email fallback had one) cannot spend this path's budget and lock a person
- * out of magic-link sign-in. The keys are the ones the live worker uses, so
- * counters already in the `signin-code-guard` shard carry over unchanged.
+ * so that the public path (web) cannot spend magic-link's budget and lock a
+ * person out of magic-link sign-in, nor the other way round. The keys are the
+ * ones the live worker uses, so counters already in the `signin-code-guard`
+ * shard carry over unchanged.
  *
  *   sends      5 per address per hour (`code-send:ml:<email>`), reserved
  *              BEFORE WorkOS is asked to send.
@@ -42,11 +43,8 @@
 import type { Env } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
 
-/**
- * Which sign-in path a send or guess belongs to. Only magic-link exists here;
- * the type keeps the per-path key shape the live worker uses.
- */
-export type CodeSendPath = 'ml'
+/** Which sign-in path a send or guess belongs to. */
+export type CodeSendPath = 'ml' | 'web'
 
 const GUARD_SHARD = 'signin-code-guard'
 

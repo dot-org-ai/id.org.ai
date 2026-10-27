@@ -64,19 +64,27 @@ import { finishWorkOSSignIn, loginCsrfRecord } from './auth'
 import { renderOrgPickerPage } from '../views/org-picker'
 import { escapeHtml } from '../utils/html'
 import { parseCookieValue } from '../utils/cookies'
-import { reserveCodeGuess, resetCodeGuesses, reserveCodeSend, clientIpOf } from '../utils/code-guard'
+import { reserveCodeGuess, resetCodeGuesses, reserveCodeSend, clientIpOf, type CodeSendPath } from '../utils/code-guard'
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /** Where the person completes the sign-in. */
 const CANONICAL_ORIGIN = 'https://id.org.ai'
 const DEFAULT_CONTINUE = '/dash/profile'
-const FLOW_TTL_MS = 10 * 60 * 1000
+export const FLOW_TTL_MS = 10 * 60 * 1000
 const MAX_CODE_ATTEMPTS = 5
 const CLIENT_LIMIT = { max: 100, windowMs: 60 * 60 * 1000 }
 /** Every caller together: bounds what id.org.ai's WorkOS account sends per hour. */
 const GLOBAL_LIMIT = { max: 300, windowMs: 60 * 60 * 1000 }
 const GLOBAL_LIMIT_KEY = 'magiclink-rl:global'
+/**
+ * The sign-in page's own email form (caller 'web'): anyone may ask, so it has
+ * its own budgets: per address (code-guard's 'web' path), per IP, and its own
+ * hourly total, apart from the listed clients' so neither can starve the other.
+ */
+const WEB_IP_LIMIT = { max: 20, windowMs: 60 * 60 * 1000 }
+const WEB_GLOBAL_LIMIT = { max: 300, windowMs: 60 * 60 * 1000 }
+const WEB_GLOBAL_LIMIT_KEY = 'magiclink-rl:web-global'
 
 /** MAGIC_LINK_CLIENTS: the client ids allowed to call POST /api/magic-link. */
 export function magicLinkClients(env: Env): Set<string> {
@@ -89,11 +97,15 @@ export function magicLinkClients(env: Env): Set<string> {
 }
 const FLOW_COOKIE = '__mlf'
 
-interface MagicFlow {
+export interface MagicFlow {
   email: string
   continue: string
   clientId?: string
+  /** The budget path it was opened on; absent on flows from before 'web' existed (= 'ml'). */
+  path?: CodeSendPath
   createdAt: number
+  /** When the last code went out (a resend moves it); absent = createdAt. */
+  sentAt?: number
   expiresAt: number
 }
 
@@ -105,7 +117,7 @@ export function isPlausibleEmail(email: string): boolean {
   return email.length <= 320 && /^[^\s@<>"']+@[^\s@<>".]+(\.[^\s@<>".]+)+$/.test(email)
 }
 
-function storage(env: Env) {
+export function flowStorage(env: Env) {
   const stub = getStubForIdentity(env, 'oauth')
   return {
     get: async <T>(key: string) => (await stub.oauthStorageOp({ op: 'get', key })).value as T | undefined,
@@ -123,7 +135,7 @@ function storage(env: Env) {
  * Increment and check happen in one call inside the oauth Durable Object, so
  * concurrent callers cannot both pass on a stale count.
  */
-async function consumeBudget(env: Env, key: string, limit: { max: number; windowMs: number }): Promise<number> {
+export async function consumeBudget(env: Env, key: string, limit: { max: number; windowMs: number }): Promise<number> {
   const r = await getStubForIdentity(env, 'oauth').consumeBudget({ key, max: limit.max, windowMs: limit.windowMs })
   return r.allowed ? 0 : r.retryAfterSec
 }
@@ -131,9 +143,9 @@ async function consumeBudget(env: Env, key: string, limit: { max: number; window
 const attemptsKey = (flowId: string) => `magic-flow-attempts:${flowId}`
 
 /** End a flow: the flow record and its attempt counter. */
-async function endFlow(env: Env, flowId: string): Promise<void> {
-  await storage(env).delete(`magic-flow:${flowId}`)
-  await storage(env).delete(attemptsKey(flowId))
+export async function endFlow(env: Env, flowId: string): Promise<void> {
+  await flowStorage(env).delete(`magic-flow:${flowId}`)
+  await flowStorage(env).delete(attemptsKey(flowId))
 }
 
 function parseBasicAuth(header: string | undefined): { clientId: string; clientSecret: string } | null {
@@ -164,7 +176,7 @@ async function readBody(request: Request): Promise<Record<string, string>> {
   }
 }
 
-function randomFlowId(): string {
+export function randomFlowId(): string {
   const bytes = new Uint8Array(24)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -188,6 +200,11 @@ export type MagicLinkCaller =
    * (where `continue` may land); neither is needed.
    */
   | { kind: 'binding'; clientId?: string; origin?: string }
+  /**
+   * The sign-in page's email form (POST /login/email), from `ip`. Its
+   * `continue` is already resolved by the route, under /login's own policy.
+   */
+  | { kind: 'web'; ip: string }
 
 export interface MagicLinkRequest {
   email: string
@@ -214,8 +231,9 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
   const apiKey = env.WORKOS_API_KEY!
 
   // A binding may name a client for its redirect_uris; it must exist.
-  const client = caller.clientId ? await getRegisteredClient(env, caller.clientId) : null
-  if (caller.clientId && !client) {
+  const callerClientId = caller.kind === 'web' ? undefined : caller.clientId
+  const client = callerClientId ? await getRegisteredClient(env, callerClientId) : null
+  if (callerClientId && !client) {
     return { ok: false, status: 400, error: 'invalid_client', error_description: 'Unknown client_id' }
   }
   const bindingOrigin = caller.kind === 'binding' && caller.origin ? canonicalOrigin(caller.origin) : null
@@ -231,7 +249,9 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
 
   const rawContinue = typeof req.continue === 'string' ? req.continue : ''
   let continueUrl = DEFAULT_CONTINUE
-  if (rawContinue) {
+  if (caller.kind === 'web') {
+    continueUrl = rawContinue || DEFAULT_CONTINUE
+  } else if (rawContinue) {
     // The client here is authenticated (a listed confidential client, or one a
     // service binding names), so its redirect_uris count, by exact match (H3).
     let accepted = await resolveContinue(env, rawContinue, { requestOrigin: CANONICAL_ORIGIN, clientRedirectUris: client?.redirectUris })
@@ -251,14 +271,20 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
   }
 
   // ── Rate limits: per address (this path's own), then per caller, then for everyone ──
-  const callerKey = client?.id ?? `binding:${bindingOrigin ? new URL(bindingOrigin).host : 'rpc'}`
-  const byEmail = await reserveCodeSend(env, email, 'ml')
+  const path: CodeSendPath = caller.kind === 'web' ? 'web' : 'ml'
+  const callerKey = caller.kind === 'web' ? `web-ip:${caller.ip}` : client?.id ?? `binding:${bindingOrigin ? new URL(bindingOrigin).host : 'rpc'}`
+  const byEmail = await reserveCodeSend(env, email, path)
   const emailWait = byEmail.ok ? 0 : byEmail.retryAfterSec
-  const clientWait = emailWait ? 0 : await consumeBudget(env, `magiclink-rl:client:${callerKey}`, CLIENT_LIMIT)
-  const globalWait = emailWait || clientWait ? 0 : await consumeBudget(env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
+  const clientWait = emailWait ? 0 : await consumeBudget(env, `magiclink-rl:client:${callerKey}`, caller.kind === 'web' ? WEB_IP_LIMIT : CLIENT_LIMIT)
+  const globalWait =
+    emailWait || clientWait
+      ? 0
+      : caller.kind === 'web'
+        ? await consumeBudget(env, WEB_GLOBAL_LIMIT_KEY, WEB_GLOBAL_LIMIT)
+        : await consumeBudget(env, GLOBAL_LIMIT_KEY, GLOBAL_LIMIT)
   const wait = emailWait || clientWait || globalWait
   if (wait) {
-    const why = emailWait ? 'for this address' : clientWait ? 'from this client' : 'right now'
+    const why = emailWait ? 'for this address' : clientWait ? (caller.kind === 'web' ? 'from this network' : 'from this client') : 'right now'
     if (globalWait) console.warn(JSON.stringify({ event: 'magic-link.global-cap', client: callerKey }))
     return { ok: false, status: 429, error: 'rate_limited', error_description: `Too many sign-in emails ${why}; try later`, retryAfterSec: wait }
   }
@@ -283,20 +309,22 @@ export async function startMagicLink(env: Env, req: MagicLinkRequest, caller: Ma
   } else {
     // A new code is out: this path's guess budget for the address starts
     // afresh. Bounded by this path's send budget reserved above.
-    await resetCodeGuesses(env, email, 'ml')
+    await resetCodeGuesses(env, email, path)
   }
 
   const flowId = randomFlowId()
   const now = Date.now()
-  await storage(env).put(`magic-flow:${flowId}`, {
+  await flowStorage(env).put(`magic-flow:${flowId}`, {
     email,
     continue: continueUrl,
     ...(client ? { clientId: client.id } : {}),
+    ...(path === 'web' ? { path } : {}),
     createdAt: now,
     expiresAt: now + FLOW_TTL_MS,
   } satisfies MagicFlow)
 
-  return { ok: true, sent: true, verify_url: `${CANONICAL_ORIGIN}/magic-link/${flowId}`, expires_in: FLOW_TTL_MS / 1000 }
+  const verifyPath = path === 'web' ? '/login/code/' : '/magic-link/'
+  return { ok: true, sent: true, verify_url: `${CANONICAL_ORIGIN}${verifyPath}${flowId}`, expires_in: FLOW_TTL_MS / 1000 }
 }
 
 // ── POST /api/magic-link ─────────────────────────────────────────────────────
@@ -345,10 +373,11 @@ app.post('/api/magic-link', async (c) => {
 
 // ── The sign-in page ────────────────────────────────────────────────────────
 
-async function loadFlow(env: Env, flowId: string): Promise<MagicFlow | null> {
+/** A live flow opened on `path` (each route loads only its own path's flows), or null. */
+export async function loadFlow(env: Env, flowId: string, path: CodeSendPath = 'ml'): Promise<MagicFlow | null> {
   if (!/^[0-9a-f]{48}$/.test(flowId)) return null
-  const flow = await storage(env).get<MagicFlow>(`magic-flow:${flowId}`)
-  if (!flow) return null
+  const flow = await flowStorage(env).get<MagicFlow>(`magic-flow:${flowId}`)
+  if (!flow || (flow.path ?? 'ml') !== path) return null
   if (flow.expiresAt < Date.now()) {
     await endFlow(env, flowId)
     return null
@@ -422,6 +451,49 @@ app.post('/magic-link/:flow', async (c) => {
     return page('Sign in', codeForm(flowId, flow, { error: 'Enter the 6-digit code from the email.' }), 400)
   }
 
+  const outcome = await verifyFlowCode(c, flowId, flow, code)
+  if (outcome.kind === 'expired') return expiredPage(c)
+  if (outcome.kind === 'too-many') {
+    const res = page('Sign in', codeForm(flowId, flow, { error: 'Too many attempts for this address. Ask for a new sign-in code, or try again later.' }), 429)
+    res.headers.set('Retry-After', String(outcome.retryAfterSec))
+    return res
+  }
+  if (outcome.kind === 'wrong-code') return page('Sign in', codeForm(flowId, flow, { error: 'That code is not valid or has expired.' }), 400)
+  if (outcome.kind === 'unavailable') return page('Sign in', codeForm(flowId, flow, { error: 'Sign-in is temporarily unavailable. Try again.' }), 502)
+  if (outcome.kind === 'org-picker') return outcome.response
+  const out = new Response(outcome.response.body, outcome.response)
+  const secure = new URL(c.req.url).protocol === 'https:'
+  out.headers.append('Set-Cookie', `${FLOW_COOKIE}=; Path=/magic-link; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`)
+  return out
+})
+
+/** What checking a flow's code came to (each route renders its own page for it). */
+export type VerifyOutcome =
+  | { kind: 'signed-in'; response: Response }
+  /** The person must pick a workspace first: WorkOS's organisation selection, rendered. */
+  | { kind: 'org-picker'; response: Response }
+  /** The flow is spent (its guesses used up): the expired page. */
+  | { kind: 'expired' }
+  | { kind: 'wrong-code' }
+  /** The address's or this IP's guess budget is spent. */
+  | { kind: 'too-many'; retryAfterSec: number }
+  | { kind: 'unavailable' }
+
+/**
+ * Check a 6-digit code for a live flow, under the flow's guess budget and its
+ * path's per-address and per-IP guess budgets, then sign the person in. The
+ * caller has already checked the flow's cookie binding and the code's shape.
+ */
+export async function verifyFlowCode(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  flowId: string,
+  flow: MagicFlow,
+  code: string,
+): Promise<VerifyOutcome> {
+  const clientId = c.env.WORKOS_CLIENT_ID!
+  const apiKey = c.env.WORKOS_API_KEY!
+  const path = flow.path ?? 'ml'
+
   // Count the attempt before asking WorkOS, atomically: the Durable Object
   // increments and checks in one call, so of N parallel guesses at most
   // MAX_CODE_ATTEMPTS reach WorkOS; the rest end the flow unasked.
@@ -432,16 +504,12 @@ app.post('/magic-link/:flow', async (c) => {
   })
   if (!attempt.allowed) {
     await endFlow(c.env, flowId)
-    return expiredPage(c)
+    return { kind: 'expired' }
   }
   // ...and against this path's guess budget for the address and this IP's
   // guess budget, so new flows cannot buy more guesses.
-  const reservation = await reserveCodeGuess(c.env, flow.email, clientIpOf(c.req.raw), 'ml')
-  if (!reservation.ok) {
-    const res = page('Sign in', codeForm(flowId, flow, { error: 'Too many attempts for this address. Ask for a new sign-in code, or try again later.' }), 429)
-    res.headers.set('Retry-After', String(reservation.retryAfterSec))
-    return res
-  }
+  const reservation = await reserveCodeGuess(c.env, flow.email, clientIpOf(c.req.raw), path)
+  if (!reservation.ok) return { kind: 'too-many', retryAfterSec: reservation.retryAfterSec }
 
   let authResult: WorkOSAuthResult
   try {
@@ -454,7 +522,7 @@ app.post('/magic-link/:flow', async (c) => {
       // Hand over to the regular org picker → /api/org-select → /api/callback,
       // with a login state that remembers this was a magic link.
       await endFlow(c.env, flowId)
-      await resetCodeGuesses(c.env, flow.email, 'ml')
+      await resetCodeGuesses(c.env, flow.email, path)
       const csrf = crypto.randomUUID()
       const origin = requestOriginOf(c.req.url)
       await getStubForIdentity(c.env, 'oauth').oauthStorageOp({
@@ -464,29 +532,25 @@ app.post('/magic-link/:flow', async (c) => {
         options: { expirationTtl: 300 },
       })
       const state = encodeLoginState(csrf, flow.continue, origin, 'magic_link')
-      return renderOrgPickerPage(err as OrgSelectionError, state)
+      return { kind: 'org-picker', response: renderOrgPickerPage(err as OrgSelectionError, state) }
     }
     const status = (err as { status?: number }).status
     if (status === 400 || status === 401 || status === 403 || status === 404) {
       if (attempt.count >= MAX_CODE_ATTEMPTS) {
         await endFlow(c.env, flowId)
-        return expiredPage(c)
+        return { kind: 'expired' }
       }
-      return page('Sign in', codeForm(flowId, flow, { error: 'That code is not valid or has expired.' }), 400)
+      return { kind: 'wrong-code' }
     }
     console.error('[magic-link] WorkOS authenticate failed:', err instanceof Error ? err.message : err)
-    return page('Sign in', codeForm(flowId, flow, { error: 'Sign-in is temporarily unavailable. Try again.' }), 502)
+    return { kind: 'unavailable' }
   }
 
   // One use: the flow is gone once it signs someone in.
   await endFlow(c.env, flowId)
-  await resetCodeGuesses(c.env, flow.email, 'ml')
+  await resetCodeGuesses(c.env, flow.email, path)
 
-  const response = await finishWorkOSSignIn(c, authResult, { requestedProvider: 'magic_link', continueUrl: flow.continue })
-  const out = new Response(response.body, response)
-  const secure = new URL(c.req.url).protocol === 'https:'
-  out.headers.append('Set-Cookie', `${FLOW_COOKIE}=; Path=/magic-link; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`)
-  return out
-})
+  return { kind: 'signed-in', response: await finishWorkOSSignIn(c, authResult, { requestedProvider: 'magic_link', continueUrl: flow.continue }) }
+}
 
 export { app as magicLinkRoutes }
