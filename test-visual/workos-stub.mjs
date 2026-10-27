@@ -204,6 +204,19 @@ const routes = [
   }],
 
   // ── Users ──────────────────────────────────────────────────────────────
+  // list by email, and create (the trusted-account sign-in link finds or creates the user it signs in)
+  ['GET', /^\/user_management\/users$/, (req, res, _m, url) => {
+    const email = url.searchParams.get('email')
+    return send(res, 200, list(email ? db.users.filter((u) => u.email.toLowerCase() === email.toLowerCase()) : db.users))
+  }],
+  ['POST', /^\/user_management\/users$/, async (req, res) => {
+    const b = await readBody(req)
+    if (!b.email) return send(res, 422, { code: 'invalid_request', message: 'email is required' })
+    if (userByEmail(b.email)) return send(res, 409, { code: 'user_already_exists', message: 'A user with this email already exists' })
+    const user = { object: 'user', id: id('user'), email: b.email, first_name: b.first_name ?? null, last_name: b.last_name ?? null, email_verified: b.email_verified === true, identities: [], created_at: now(), updated_at: now() }
+    db.users.push(user)
+    return send(res, 201, user)
+  }],
   ['GET', /^\/user_management\/users\/([^/]+)$/, (req, res, m) => {
     const u = userById(m[1])
     return u ? send(res, 200, u) : send(res, 404, { message: 'Not found' })

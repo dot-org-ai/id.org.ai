@@ -16,7 +16,7 @@ const WORKOS = 'https://api.workos.com'
 const PITCH = 'https://pitch.startups.studio'
 const PREVIEW = 'https://pitch-startups-studio-preview.metad.workers.dev'
 
-type Sent = { from: { name: string; email: string }; to: { email: string }; subject: string; html: string; text: string }
+type Sent = { from: { name: string; email: string }; to: string; subject: string; html: string; text: string }
 
 function b64url(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
@@ -113,7 +113,7 @@ describe('the headless sign-in link', () => {
 
     expect(sent).toHaveLength(1)
     const m = sent[0]!
-    expect(m.to.email).toBe(email)
+    expect(m.to).toBe(email)
     expect(m.from).toEqual({ name: 'Startups.Studio Fund I', email: 'fund@startups.studio' })
     expect(m.subject).toBe('Your sign-in link for the Startups.Studio Fund I deck (preview)')
     expect(m.text).toContain('works once, for 15 minutes, on any device')

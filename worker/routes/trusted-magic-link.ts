@@ -49,6 +49,8 @@ import { ensureHumanIdentity } from './auth'
 import { clientIpOf, reserveCodeSend } from '../utils/code-guard'
 import { signInLinkEmail } from '../ui/emails/SignInLink'
 import { renderEmail } from '../ui/emails/layout'
+import { isLocalStubOrigin } from '../../src/sdk/workos/base'
+import { requestOriginOf } from '../utils/relying-parties'
 
 type C = Context<{ Bindings: Env; Variables: Variables }>
 
@@ -101,6 +103,25 @@ const budget = async (env: Env, key: string, limit: { max: number; windowMs: num
   return r.allowed ? 0 : Math.max(1, r.retryAfterSec ?? 1)
 }
 
+/** id.org.ai; or, in local development against the WorkOS stub, this server (as the OAuth issuer is). */
+const linkOrigin = (c: C) => {
+  const here = requestOriginOf(c.req.url)
+  return isLocalStubOrigin(c.env, here) ? here : CANONICAL_ORIGIN
+}
+
+type TrustedApps = NonNullable<Env['TRUSTED_ACCOUNT_APPS']>
+/** TRUSTED_ACCOUNT_APPS: an object in wrangler.jsonc, or the same as a JSON string (.dev.vars, --var). */
+function trustedApps(env: Env): TrustedApps {
+  const v = env.TRUSTED_ACCOUNT_APPS as TrustedApps | string | undefined
+  if (!v) return {}
+  if (typeof v !== 'string') return v
+  try {
+    return JSON.parse(v) as TrustedApps
+  } catch {
+    return {}
+  }
+}
+
 const fail = (c: C, status: 400 | 429 | 502 | 503, error: string, description: string, retryAfter?: number) =>
   c.json({ error, error_description: description }, status, { 'Cache-Control': 'no-store', ...(retryAfter ? { 'Retry-After': String(retryAfter) } : {}) })
 
@@ -139,10 +160,10 @@ app.post('/oauth/magic-link', async (c) => {
   const oauth = getStubForIdentity(c.env, 'oauth')
   await oauth.oauthStorageOp({ op: 'put', key, value: { email, grant, createdAt: now, expiresAt: now + LINK_TTL_MS } satisfies LinkRecord })
 
-  const appInfo = c.env.TRUSTED_ACCOUNT_APPS?.[grant.host]
+  const appInfo = trustedApps(c.env)[grant.host]
   const message = renderEmail(
     signInLinkEmail({
-      url: `${CANONICAL_ORIGIN}/oauth/magic-link/${token}`,
+      url: `${linkOrigin(c)}/oauth/magic-link/${token}`,
       app: appInfo?.name ?? 'your app',
       email,
       expiresInMinutes: LINK_TTL_MS / 60000,
@@ -150,7 +171,7 @@ app.post('/oauth/magic-link', async (c) => {
     }),
   )
   try {
-    await c.env.EMAIL.send({ from: message.from, to: { email }, subject: message.subject, html: message.html, text: message.text } as never)
+    await c.env.EMAIL.send({ from: message.from, to: email, subject: message.subject, html: message.html, text: message.text })
   } catch (err) {
     await oauth.oauthStorageOp({ op: 'delete', key })
     console.error(JSON.stringify({ event: 'trusted-link.send.failed', host: grant.host, code: (err as { code?: unknown })?.code ?? String(err) }))

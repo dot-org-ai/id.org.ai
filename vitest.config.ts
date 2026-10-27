@@ -18,6 +18,8 @@ function neutralizeLocalEnv(): Record<string, string> {
     const prodValue = prod[key]
     if (prodValue === undefined) out[key] = ''
     else if (typeof prodValue === 'string' && value !== prodValue) out[key] = prodValue
+    // an object var (TRUSTED_ACCOUNT_APPS): put back as its JSON, which its reader also takes
+    else if (typeof prodValue !== 'string' && JSON.stringify(value) !== JSON.stringify(prodValue)) out[key] = JSON.stringify(prodValue)
   }
   return out
 }
