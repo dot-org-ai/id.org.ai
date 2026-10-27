@@ -38,6 +38,7 @@ import {
   identityStubMiddleware,
   verifySessionJwt,
 } from './middleware/tenant'
+import { trustedMagicLinkRoutes } from './routes/trusted-magic-link'
 import { oauthRoutes, getOAuthProvider, createOAuthProvider } from './routes/oauth'
 import { grantRoutes } from './routes/grants'
 import { SCOPES_SUPPORTED } from '../src/sdk/oauth/delegation'
@@ -898,6 +899,8 @@ app.route('', authRoutes)
 // Mounted before the /api/* authenticateRequest middleware: the caller
 // authenticates as an OAuth client (client_secret) or a service binding.
 app.route('', magicLinkRoutes)
+// before oauthRoutes, whose /oauth/* fallback answers 404
+app.route('', trustedMagicLinkRoutes)
 app.route('', oauthRoutes)
 app.route('', claimRoutes)
 

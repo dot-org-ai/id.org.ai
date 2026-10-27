@@ -409,6 +409,59 @@ function secureBounceOrigin(origin: string | undefined): string | null {
  *
  * `continueUrl` must already have passed the caller's redirect policy.
  */
+/**
+ * The id.org.ai identity for a WorkOS user (`human:<workos user id>`): found,
+ * or created at level 2 (claimed, email verified by WorkOS or by a link we
+ * emailed). A GitHub id is backfilled onto an identity that lacks one.
+ */
+export async function ensureHumanIdentity(
+  env: Env,
+  user: { id: string; email: string; first_name?: string; last_name?: string; organization_id?: string },
+  extra: { organizationId?: string; githubUserId?: string | null } = {},
+) {
+  const shardKey = `human:${user.id}`
+  const stub = getStubForIdentity(env, shardKey)
+  const githubIdFromWorkOS = extra.githubUserId ?? null
+
+  let identity = await stub.getIdentity(shardKey)
+  if (!identity) {
+    // Create new human identity
+    const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ')
+    identity = await stub.provisionAnonymous(shardKey).then((r) => r.identity)
+    // Upgrade to human type + level 2 (claimed via WorkOS)
+    await stub.oauthStorageOp({
+      op: 'put',
+      key: `identity:${shardKey}`,
+      value: {
+        id: shardKey,
+        type: 'human',
+        name: fullName || user.email,
+        email: user.email,
+        verified: true,
+        level: 2,
+        claimStatus: 'claimed',
+        workosUserId: user.id,
+        organizationId: extra.organizationId,
+        ...(githubIdFromWorkOS ? { githubUserId: githubIdFromWorkOS } : {}),
+        createdAt: Date.now(),
+      },
+    })
+    identity = await stub.getIdentity(shardKey)
+  } else if (githubIdFromWorkOS && !identity.githubUserId) {
+    // Existing identity without GitHub ID — backfill from WorkOS profile
+    const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${shardKey}` })
+    if (stored.value) {
+      await stub.oauthStorageOp({
+        op: 'put',
+        key: `identity:${shardKey}`,
+        value: { ...(stored.value as object), githubUserId: githubIdFromWorkOS },
+      })
+      identity = await stub.getIdentity(shardKey)
+    }
+  }
+  return { shardKey, stub, identity }
+}
+
 export async function finishWorkOSSignIn(
   c: any,
   authResult: WorkOSAuthResult,
@@ -445,45 +498,10 @@ export async function finishWorkOSSignIn(
   }
 
   // Create or find identity for this human user
-  const shardKey = `human:${authResult.user.id}`
-  const stub = getStubForIdentity(c.env, shardKey)
-
-  let identity = await stub.getIdentity(shardKey)
-  if (!identity) {
-    // Create new human identity
-    const fullName = [authResult.user.first_name, authResult.user.last_name].filter(Boolean).join(' ')
-    identity = await stub.provisionAnonymous(shardKey).then((r) => r.identity)
-    // Upgrade to human type + level 2 (claimed via WorkOS)
-    await stub.oauthStorageOp({
-      op: 'put',
-      key: `identity:${shardKey}`,
-      value: {
-        id: shardKey,
-        type: 'human',
-        name: fullName || authResult.user.email,
-        email: authResult.user.email,
-        verified: true,
-        level: 2,
-        claimStatus: 'claimed',
-        workosUserId: authResult.user.id,
-        organizationId: authResult.user.organization_id || authResult.organization_id,
-        ...(githubIdFromWorkOS ? { githubUserId: githubIdFromWorkOS } : {}),
-        createdAt: Date.now(),
-      },
-    })
-    identity = await stub.getIdentity(shardKey)
-  } else if (githubIdFromWorkOS && !identity.githubUserId) {
-    // Existing identity without GitHub ID — backfill from WorkOS profile
-    const stored = await stub.oauthStorageOp({ op: 'get', key: `identity:${shardKey}` })
-    if (stored.value) {
-      await stub.oauthStorageOp({
-        op: 'put',
-        key: `identity:${shardKey}`,
-        value: { ...(stored.value as object), githubUserId: githubIdFromWorkOS },
-      })
-      identity = await stub.getIdentity(shardKey)
-    }
-  }
+  const { stub, identity } = await ensureHumanIdentity(c.env, authResult.user, {
+    organizationId: authResult.user.organization_id || authResult.organization_id,
+    githubUserId: githubIdFromWorkOS,
+  })
 
   // Store WorkOS refresh token for later widget token exchange
   if (authResult.refresh_token) {

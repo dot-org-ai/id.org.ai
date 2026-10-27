@@ -997,3 +997,32 @@ export async function authenticateWorkOSMagicAuth(
   const data = (await response.json()) as WorkOSAuthResult
   return extractRolesFromToken({ ...data, authentication_method: data.authentication_method || 'MagicAuth' }, clientId, apiKey)
 }
+
+/**
+ * The WorkOS user for an address whose owner has just proved it (opened a
+ * sign-in link id.org.ai emailed): found by email, else created; either way
+ * marked email_verified. Throws when WorkOS can't be reached or refuses.
+ */
+export async function findOrCreateVerifiedWorkOSUser(apiKey: string, email: string): Promise<WorkOSUser & { email_verified?: boolean }> {
+  const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+  type U = WorkOSUser & { email_verified?: boolean }
+  const find = async (): Promise<U | null> => {
+    const res = await fetch(workosUrl(`/user_management/users?email=${encodeURIComponent(email)}&limit=1`), { headers })
+    if (!res.ok) throw Object.assign(new Error(`WorkOS user lookup ${res.status}`), { status: res.status })
+    const body = (await res.json()) as { data?: U[] }
+    return body.data?.find((u) => u.email.toLowerCase() === email.toLowerCase()) ?? null
+  }
+  let user = await find()
+  if (!user) {
+    const res = await fetch(workosUrl('/user_management/users'), { method: 'POST', headers, body: JSON.stringify({ email, email_verified: true }) })
+    if (res.ok) return (await res.json()) as U
+    // created meanwhile (another tab): take that one
+    user = await find()
+    if (!user) throw Object.assign(new Error(`WorkOS user create ${res.status}`), { status: res.status })
+  }
+  if (user.email_verified !== true) {
+    const res = await fetch(workosUrl(`/user_management/users/${user.id}`), { method: 'PUT', headers, body: JSON.stringify({ email_verified: true }) })
+    if (res.ok) user = (await res.json()) as U
+  }
+  return user
+}

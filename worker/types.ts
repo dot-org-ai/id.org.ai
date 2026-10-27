@@ -37,6 +37,14 @@ export interface Env {
   // the canonical shared client_id `cid_trusted_account_v1` without per-app DCR.
   TRUSTED_ACCOUNT_DOMAINS?: string
   /**
+   * Per trusted-account host: the app's name in the sign-in link email ("the
+   * Startups.Studio Fund I deck") and, optionally, the sender (an address the
+   * EMAIL binding allows). Hosts not listed get "your app" from no-reply@id.org.ai.
+   */
+  TRUSTED_ACCOUNT_APPS?: Record<string, { name: string; from?: { name: string; email: string } }>
+  /** Cloudflare Email Service (wrangler.jsonc send_email): the trusted-account sign-in link emails. */
+  EMAIL?: SendEmail
+  /**
    * Extra hosts a sign-in (`/login?continue=`) or sign-out
    * (`/logout?return_url=`) may send the browser to, beyond the built-in
    * policy in worker/utils/relying-parties.ts. Comma-separated bare hostnames;

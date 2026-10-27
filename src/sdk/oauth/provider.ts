@@ -378,6 +378,20 @@ interface IdentityInfo {
  * `magic_link`) and `auth_time` (epoch seconds). All optional: a session that
  * predates this field, or a non-browser credential, simply carries none.
  */
+/** The upstream providers a trusted-account client may name on /oauth/authorize (`provider=`). */
+const TRUSTED_UPSTREAM_PROVIDERS = new Set(['GoogleOAuth', 'GitHubOAuth', 'MicrosoftOAuth', 'AppleOAuth'])
+
+/** A trusted-account authorize request, checked, for a sign-in that happens without a browser here (the headless magic link). */
+export interface TrustedGrant {
+  redirectUri: string
+  scopes: string[]
+  codeChallenge: string
+  state?: string
+  nonce?: string
+  /** The redirect_uri's host, for the email's app name and the send budget. */
+  host: string
+}
+
 export interface SignInContext {
   amr?: string[]
   idp?: string
@@ -971,6 +985,23 @@ export class OAuthProvider {
     if (!checked.ok) return checked.response
     const { client, redirectUri, scopes: requestedScopes, resource } = checked
     const clientId = client.id
+
+    // ── A trusted-account client may name the upstream provider ─────────
+    // `provider=GoogleOAuth` (etc.): straight to that provider and straight
+    // back, with no id.org.ai screen, and a fresh sign-in even when an
+    // id.org.ai session exists (the person chose that account just now). The
+    // way back is this request without `provider`, so it issues the code.
+    const upstream = params.get('provider') || undefined
+    if (upstream && this.isTrustedAccountClient(clientId) && TRUSTED_UPSTREAM_PROVIDERS.has(upstream)) {
+      const back = new URL(request.url)
+      back.searchParams.delete('provider')
+      const loginUrl = new URL('/login', iss)
+      loginUrl.searchParams.set('continue', back.toString())
+      loginUrl.searchParams.set('provider', upstream)
+      loginUrl.searchParams.set('prompt', 'login')
+      if (loginHint) loginUrl.searchParams.set('login_hint', loginHint)
+      return Response.redirect(loginUrl.toString(), 302)
+    }
 
     // ── User must be authenticated ──────────────────────────────────────
     if (!identityId) {
@@ -2369,6 +2400,79 @@ export class OAuthProvider {
    * and for the consumerHost stamped on trusted-account refresh tokens (the
    * QUESTION resolution in PR #8 review).
    */
+  /**
+   * Check authorize parameters sent without a browser (the headless magic
+   * link, worker/routes/trusted-magic-link.ts) exactly as GET /oauth/authorize
+   * would, for the trusted-account client only: client_id, an allowlisted
+   * redirect_uri, response_type=code, S256 PKCE, OIDC scopes. Errors are
+   * answered, never redirected: the caller is the client's server or page.
+   */
+  async checkTrustedAuthorize(input: {
+    clientId: string
+    redirectUri: string
+    responseType?: string
+    scope?: string
+    state?: string
+    codeChallenge?: string
+    codeChallengeMethod?: string
+    nonce?: string
+  }): Promise<{ ok: true; grant: TrustedGrant } | { ok: false; error: string; description: string }> {
+    if (!this.isTrustedAccountClient(input.clientId)) return { ok: false, error: 'unauthorized_client', description: 'Only the trusted-account client may use this endpoint' }
+    if (!this.isTrustedAccountRedirect(input.redirectUri)) return { ok: false, error: 'invalid_request', description: 'redirect_uri host is not in the trusted-account allowlist' }
+    if (!input.codeChallenge || input.codeChallengeMethod !== 'S256') return { ok: false, error: 'invalid_request', description: 'PKCE (code_challenge, code_challenge_method=S256) is required' }
+    const checked = await this.validateAuthorizationRequest({
+      clientId: input.clientId,
+      redirectUri: input.redirectUri,
+      responseType: input.responseType ?? 'code',
+      scope: input.scope || 'openid profile email',
+      state: input.state,
+      codeChallenge: input.codeChallenge,
+      codeChallengeMethod: input.codeChallengeMethod,
+      resources: [],
+      iss: this.config.issuer,
+    })
+    if (!checked.ok) {
+      const at = checked.response.headers.get('location')
+      const q = at ? new URL(at).searchParams : null
+      return { ok: false, error: q?.get('error') || 'invalid_request', description: q?.get('error_description') || 'Invalid authorization request' }
+    }
+    return {
+      ok: true,
+      grant: {
+        redirectUri: checked.redirectUri,
+        scopes: checked.scopes,
+        codeChallenge: input.codeChallenge,
+        ...(input.state ? { state: input.state } : {}),
+        ...(input.nonce ? { nonce: input.nonce } : {}),
+        host: this.extractRedirectUriHost(checked.redirectUri) ?? '',
+      },
+    }
+  }
+
+  /**
+   * Issue the code for a trusted grant checked earlier by checkTrustedAuthorize
+   * (the magic link, once its owner opens it): the redirect to the client.
+   * The allowlist is checked again, since it may have changed in between.
+   * Answers null when the redirect is no longer allowed.
+   */
+  async issueTrustedCode(identityId: string, grant: TrustedGrant, signIn: SignInContext): Promise<Response | null> {
+    if (!this.trustedAccount || !this.isTrustedAccountRedirect(grant.redirectUri)) return null
+    return this.issueAuthorizationCode(this.buildTrustedAccountClient(), identityId, {
+      redirectUri: grant.redirectUri,
+      scopes: grant.scopes,
+      codeChallenge: grant.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: grant.state,
+      nonce: grant.nonce,
+      signIn,
+    })
+  }
+
+  /** Is `redirectUri` an allowlisted trusted-account redirect? (An error may be redirected there.) */
+  isTrustedRedirect(redirectUri: string): boolean {
+    return this.isTrustedAccountRedirect(redirectUri)
+  }
+
   private extractRedirectUriHost(redirectUri: string): string | undefined {
     try {
       return canonicalHostname(new URL(redirectUri).hostname)

@@ -43,10 +43,11 @@ import type { Env } from '../types'
 import { getStubForIdentity } from '../middleware/tenant'
 
 /**
- * Which sign-in path a send or guess belongs to. Only magic-link exists here;
- * the type keeps the per-path key shape the live worker uses.
+ * Which sign-in path a send or guess belongs to: 'ml' the magic-link code
+ * above; 'tml' the trusted-account sign-in link (worker/routes/trusted-magic-link.ts),
+ * which sends a link, not a code, so only its send budget is used.
  */
-export type CodeSendPath = 'ml'
+export type CodeSendPath = 'ml' | 'tml'
 
 const GUARD_SHARD = 'signin-code-guard'
 
