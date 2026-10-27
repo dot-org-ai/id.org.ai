@@ -378,6 +378,9 @@ interface IdentityInfo {
  * `magic_link`) and `auth_time` (epoch seconds). All optional: a session that
  * predates this field, or a non-browser credential, simply carries none.
  */
+/** How a trusted-account client may ask the person to sign in (`provider=` on /oauth/authorize). */
+const TRUSTED_UPSTREAM_PROVIDERS = new Set(['GoogleOAuth', 'GitHubOAuth', 'MicrosoftOAuth', 'AppleOAuth', 'email'])
+
 export interface SignInContext {
   amr?: string[]
   idp?: string
@@ -971,6 +974,29 @@ export class OAuthProvider {
     if (!checked.ok) return checked.response
     const { client, redirectUri, scopes: requestedScopes, resource } = checked
     const clientId = client.id
+
+    // ── A trusted-account client may name how the person signs in ──────
+    // `provider=GoogleOAuth` (GitHub, Microsoft, Apple): straight to that
+    // provider and back; `provider=email` with a login_hint: WorkOS emails
+    // the code and id.org.ai shows only the code screen. A fresh sign-in
+    // even when an id.org.ai session exists (the person chose it just now).
+    // The way back is this request without `provider`, so it issues the code.
+    const upstream = params.get('provider') || undefined
+    if (
+      upstream &&
+      this.isTrustedAccountClient(clientId) &&
+      TRUSTED_UPSTREAM_PROVIDERS.has(upstream) &&
+      (upstream !== 'email' || loginHint)
+    ) {
+      const back = new URL(request.url)
+      back.searchParams.delete('provider')
+      const loginUrl = new URL('/login', iss)
+      loginUrl.searchParams.set('continue', back.toString())
+      loginUrl.searchParams.set('provider', upstream)
+      loginUrl.searchParams.set('prompt', 'login')
+      if (loginHint) loginUrl.searchParams.set('login_hint', loginHint)
+      return Response.redirect(loginUrl.toString(), 302)
+    }
 
     // ── User must be authenticated ──────────────────────────────────────
     if (!identityId) {
