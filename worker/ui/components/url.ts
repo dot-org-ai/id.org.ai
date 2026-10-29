@@ -12,8 +12,12 @@ export function httpsOnly(url: string | undefined): string | undefined {
   }
 }
 
-/** An image an app tile may load: an https logo_uri, or a first-party file under our own origin ("/brand/…"). */
+/**
+ * An image an app tile may load: an https logo_uri, a first-party file under our own origin ("/brand/…"), or the
+ * image data: URI an app's own site declares as its icon (worker/utils/app-icon.ts). An <img> never runs script.
+ */
 export function safeImageUrl(url: string | undefined): string | undefined {
   if (url?.startsWith('/') && !url.startsWith('//')) return url
+  if (url && /^data:image\//i.test(url)) return url
   return httpsOnly(url)
 }
