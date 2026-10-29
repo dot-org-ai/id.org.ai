@@ -173,6 +173,64 @@ details[data-x][open] > summary [data-chev-d] {
   fill: var(--id-fg-3);
 }
 
+/*
+ * The header's mark pours: each mark starts at the centre, small and clear, and
+ * settles into the ring, the gray one last (as on the landing page and
+ * foundation.org.ai). data-pour="load" plays once on load; pour.js sets "hover"
+ * to play it again and clears it when the last mark lands. Reduced motion and
+ * the frozen gallery show the ring still.
+ */
+.id-mark__mk {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.id-mark__mk:nth-child(1) {
+  --i: 0;
+  --dx: 3.68px;
+  --dy: -13.72px;
+}
+.id-mark__mk:nth-child(2) {
+  --i: 1;
+  --dx: 13.72px;
+  --dy: -3.68px;
+}
+.id-mark__mk:nth-child(3) {
+  --i: 2;
+  --dx: 10.04px;
+  --dy: 10.04px;
+}
+.id-mark__mk:nth-child(4) {
+  --i: 3;
+  --dx: -3.68px;
+  --dy: 13.72px;
+}
+.id-mark__mk:nth-child(5) {
+  --i: 4;
+  --dx: -13.72px;
+  --dy: 3.68px;
+}
+.id-mark__mk:nth-child(6) {
+  --i: 5;
+  --dx: -10.04px;
+  --dy: -10.04px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-frozen]) .id-mark[data-pour='load'] .id-mark__mk {
+    animation: id-pour 900ms var(--id-ease-out) both;
+    animation-delay: calc(220ms + var(--i) * 55ms);
+  }
+  :root:not([data-frozen]) .id-mark[data-pour='hover'] .id-mark__mk {
+    animation: id-pour 820ms var(--id-ease-out) both;
+    animation-delay: calc(var(--i) * 38ms);
+  }
+}
+@keyframes id-pour {
+  from {
+    transform: translate(var(--dx), var(--dy)) scale(0.2);
+    opacity: 0;
+  }
+}
+
 /* Visually hidden, still announced (the mocks' rule). */
 .id-sr {
   position: absolute;

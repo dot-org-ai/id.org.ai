@@ -1,6 +1,6 @@
 # Motion: the connector
 
-The connector is the one moving element in the auth UI: two app tiles joined by five dots that grow toward the destination. Pulsing means connecting. The middle dot becomes the verdict: a green check or the accent X, the same size. Nothing else on the page animates, except content fading in when a screen changes state in place.
+The connector is the one moving element in the auth UI: two app tiles joined by five dots that grow toward the destination. Pulsing means connecting. The middle dot becomes the verdict: a green check or the accent X, the same size. Nothing else on the page animates, except content fading in when a screen changes state in place, and the header's .org.ai mark, which pours into its ring on load and again on hover (`OrgMark pour`, `pour.js`), as on the landing page; reduced motion and the frozen gallery show it still.
 
 The reference for every state, at real speed:
 
