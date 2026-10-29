@@ -211,7 +211,6 @@ describe('1g branded sign in', () => {
 // ── 1b ─────────────────────────────────────────────────────────────────────
 
 const code: EmailCodeProps = {
-  app,
   email: 'bryant@driv.ly',
   expiresInMinutes: 10,
   action: '/login/code/flw_1',

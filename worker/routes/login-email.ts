@@ -23,7 +23,6 @@ import type { Env, Variables } from '../types'
 import { bareOrigin, renderPage } from '../ui/render'
 import { renderErrorPage } from '../ui/errors'
 import { EmailCode, type EmailCodeError } from '../ui/screens/EmailCode'
-import type { TileContent } from '../ui/components'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { createWorkOSMagicAuth } from '../../src/sdk/workos/upstream'
 import { requestOriginOf } from '../utils/relying-parties'
@@ -38,7 +37,6 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /** Seconds after a send before 1b offers another code. */
 const RESEND_AFTER_SECONDS = 30
-const ID_ORG_AI: { name: string; tile: TileContent } = { name: 'id.org.ai', tile: { kind: 'org' } }
 
 const isHttps = (c: C) => new URL(c.req.url).protocol === 'https:'
 /** __Host- on https (host-only, Secure, Path=/: no sibling host can plant it); plain on http://localhost. */
@@ -109,7 +107,6 @@ function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string
   return renderPage(
     c,
     EmailCode({
-      app: ID_ORG_AI,
       email: flow.email,
       expiresInMinutes: Math.max(1, Math.round((flow.expiresAt - Date.now()) / 60000)),
       action: `/login/code/${flowId}`,

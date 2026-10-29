@@ -17,7 +17,6 @@ import { Resend, ResendForm } from '../components/Resend'
 export type EmailCodeError = 'wrong-code' | 'too-many-tries'
 
 export interface EmailCodeProps {
-  app: { name: string; tile: TileContent }
   /** Shown in full: it's the person's own address. */
   email: string
   expiresInMinutes: number
@@ -43,6 +42,8 @@ export interface EmailCodeProps {
 }
 
 const ORG: TileContent = { kind: 'org' }
+/** The connector ends at the inbox the code went to, not at the app. */
+const MAIL: TileContent = { kind: 'icon', icon: 'mail' }
 const ERROR_ID = 'code-error'
 const RESEND_FORM = 'resend'
 
@@ -75,7 +76,7 @@ export function EmailCode(p: EmailCodeProps): JSX.Element {
           }
         >
           <CardHead
-            connector={<Connector left={ORG} right={p.app.tile} />}
+            connector={<Connector left={ORG} right={MAIL} />}
             title="Check your email"
             description={
               <>
