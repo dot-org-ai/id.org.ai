@@ -13,14 +13,15 @@
    - DCR registration: `logo_uri` in `POST /oauth/register`.
    
    The consent, device and admin screens render that image inside the app tile. Nobody places Codex's or Claude Code's logo by hand; the client supplies it.
-2. **Fallback**: when a client has no `logo_uri`, or the image fails to load, show the monogram, as the mocks do:
+2. **Apps without client metadata** (the trusted-account apps, which share one client: `TRUSTED_ACCOUNT_DOMAINS`, ADR-0007) have no `logo_uri`. id.org.ai reads the icon their own site declares instead: `worker/utils/app-icon.ts` fetches the home page of a host on that list, takes its `<link rel="icon">` or `apple-touch-icon` (SVG first, then the largest; `/favicon.ico` when none is declared) and caches the answer in KV for a day. 1b uses it for the app that sent the person (pitch.startups.studio). No app is listed by hand; an app changes its tile by changing its own icon.
+3. **Fallback**: when a client has no `logo_uri`, or the image fails to load, show the monogram, as the mocks do:
    - one or two letters from the display name;
    - or an icon for first-party CLIs (terminal) and agents (bot).
-3. **Unverified clients** (3c) still show their own `logo_uri` (it's their claim). The name shown is the host, and the warning callout makes the trust level clear.
-4. **First-party .do apps** (headless.ly, auto.dev, startups.studio, api.sb, .do) get a `brand.mark` in `src/sdk/oauth/clients.ts`, used for branded sign-in (1g) and their tiles.
+4. **Unverified clients** (3c) still show their own `logo_uri` (it's their claim). The name shown is the host, and the warning callout makes the trust level clear.
+5. **First-party .do apps** (headless.ly, auto.dev, startups.studio, api.sb, .do) get a `brand.mark` in `src/sdk/oauth/clients.ts`, used for branded sign-in (1g) and their tiles.
    - These marks are the company's own assets. Add the files to `worker/ui/static/brand/`.
    - Until they exist, use the monogram.
-5. **Provider marks**: use each provider's official sign-in mark from their brand guidelines, at 18px, in the dashed slot's position:
+6. **Provider marks**: use each provider's official sign-in mark from their brand guidelines, at 18px, in the dashed slot's position:
    - GitHub mark
    - Google "G"
    - Microsoft four squares

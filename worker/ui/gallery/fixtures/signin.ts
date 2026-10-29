@@ -26,6 +26,9 @@ const signIn: SignInProps = {
   passkey: { href: '/login?provider=authkit' },
 }
 
+const PITCH_ICON =
+  'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2032%2032%22%3E%20%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2216%22%20fill%3D%22%230A0A0A%22%3E%3C%2Fcircle%3E%20%3Crect%20x%3D%2210%22%20y%3D%2210%22%20width%3D%2212%22%20height%3D%2212%22%20fill%3D%22%2379EE67%22%3E%3C%2Frect%3E%20%3C%2Fsvg%3E%20'
+
 const emailCode: EmailCodeProps = {
   email: 'bryant@driv.ly',
   expiresInMinutes: 10,
@@ -102,6 +105,9 @@ export const signinFixtures: FixtureGroup = {
       'wrong-code': { ...emailCode, error: 'wrong-code', focusIndex: 0 },
       'too-many-tries': { ...emailCode, error: 'too-many-tries', focusIndex: undefined },
       'resend-ready': { ...emailCode, resendIn: 0 },
+      // From pitch.startups.studio's own page: the connector ends at the app that sent them, by the icon its site
+      // declares (app-icon.ts). This is pitch's as its home page declares it (the green square, since 2026-10-29).
+      'from-app': { ...emailCode, app: { name: 'pitch.startups.studio', tile: { kind: 'logo', src: PITCH_ICON, monogram: 'p' } } },
     },
   }),
   '1c-sso': defineFixture({

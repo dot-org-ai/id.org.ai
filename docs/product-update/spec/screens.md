@@ -67,7 +67,7 @@ Shown only when there is no id.org.ai session, or the app asked for a fresh one 
   - `expiresInMinutes` (10).
   - `resendAvailableIn` (seconds). It counts down "Resend in 0:42" in m:ss, always fg-3, then becomes a "Resend code" link. Frozen in the gallery.
   - `error?` (wrong code, too many tries).
-- The connector runs from the id.org.ai tile to a mail icon tile, the inbox the code went to, rather than to the app.
+- The connector runs from the id.org.ai tile to the app that sent the person, by the icon that app's own site declares (`worker/utils/app-icon.ts`; see logos.md). Without one it ends at a mail icon tile, the inbox the code went to.
 - Actions:
   - **Verify** posts the code.
   - **Use a different email** returns to 1a with the email cleared.

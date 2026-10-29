@@ -23,11 +23,13 @@ import type { Env, Variables } from '../types'
 import { bareOrigin, renderPage } from '../ui/render'
 import { renderErrorPage } from '../ui/errors'
 import { EmailCode, type EmailCodeError } from '../ui/screens/EmailCode'
+import type { TileContent } from '../ui/components'
 import { errorResponse, ErrorCode } from '../../src/sdk/errors'
 import { createWorkOSMagicAuth } from '../../src/sdk/workos/upstream'
 import { requestOriginOf } from '../utils/relying-parties'
 import { parseCookieValue } from '../utils/cookies'
 import { clientIpOf, reserveCodeSend, resetCodeGuesses } from '../utils/code-guard'
+import { siteIcon } from '../utils/app-icon'
 import { TRUSTED_ACCOUNT_CLIENT_ID } from './oauth'
 import { FLOW_TTL_MS, flowStorage, loadFlow, startMagicLink, verifyFlowCode, type MagicFlow } from './magic-link'
 
@@ -94,6 +96,19 @@ function differentEmailHref(continueUrl: string, requestOrigin: string): string 
   return app && app.startsWith('http') ? `${app}/` : `/login?${new URLSearchParams({ continue: continueUrl })}`
 }
 
+/** The host of the app that sent them (https only): the same origin "Use a different email" goes back to. */
+export function referringHost(continueUrl: string, requestOrigin: string): string | undefined {
+  const [app] = continueOrigins(continueUrl, requestOrigin)
+  return app?.startsWith('https://') ? new URL(app).host : undefined
+}
+
+/** 1b's connector ends at the app that sent them, by the icon its own site declares (app-icon.ts); else the mail icon. */
+async function referringApp(env: Env, continueUrl: string, requestOrigin: string): Promise<{ name: string; tile: TileContent } | undefined> {
+  const host = referringHost(continueUrl, requestOrigin)
+  const icon = host ? await siteIcon(env, host) : undefined
+  return host && icon ? { name: host, tile: { kind: 'logo', src: icon, monogram: host.charAt(0) } } : undefined
+}
+
 /** The live 'web' flow this browser asked for, or null. */
 async function boundFlow(c: C, flowId: string): Promise<MagicFlow | null> {
   const flow = await loadFlow(c.env, flowId, 'web')
@@ -101,12 +116,14 @@ async function boundFlow(c: C, flowId: string): Promise<MagicFlow | null> {
   return parseCookieValue(c.req.header('cookie') || '', flowCookieName(c)) === flowId ? flow : null
 }
 
-function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string; error?: EmailCodeError; status?: number } = {}): Promise<Response> {
+async function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string; error?: EmailCodeError; status?: number } = {}): Promise<Response> {
   const sentAt = flow.sentAt ?? flow.createdAt
   const here = requestOriginOf(c.req.url)
+  const referrer = await referringApp(c.env, flow.continue, here)
   return renderPage(
     c,
     EmailCode({
+      app: referrer,
       email: flow.email,
       expiresInMinutes: Math.max(1, Math.round((flow.expiresAt - Date.now()) / 60000)),
       action: `/login/code/${flowId}`,

@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock, env } from 'cloudflare:test'
 import { authService } from './helpers/auth-service'
 import { parseTrustedAccountDomains, TRUSTED_ACCOUNT_CLIENT_ID } from '../worker/routes/oauth'
-import { continueOrigins } from '../worker/routes/login-email'
+import { continueOrigins, referringHost } from '../worker/routes/login-email'
 
 const BASE = 'https://id.org.ai'
 const WORKOS = 'https://api.workos.com'
@@ -159,6 +159,10 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     expect(codePath).toMatch(/^\/login\/code\/[0-9a-f]{48}$/)
     expect(sends.n).toBe(1)
 
+    fetchMock
+      .get(PREVIEW)
+      .intercept({ path: '/' })
+      .reply(200, '<html><head><link rel="icon" type="image/svg+xml" href="/icon.svg"></head><body></body></html>', { headers: { 'content-type': 'text/html' } })
     const page = await SELF.fetch(`${BASE}${codePath}`, { headers: { cookie: cookieHeader(cookies) } })
     expect(page.status).toBe(200)
     const html = await page.text()
@@ -166,6 +170,8 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     expect(html).not.toContain('Or open the link in the email')
     // "Use a different email" goes back to the deck, not to an id.org.ai form
     expect(html).toContain(`href="${PREVIEW}/"`)
+    // the connector ends at the app that sent them, by the icon its own site declares, not the mail icon
+    expect(html).toContain(`<img class="id-tile__logo" src="${PREVIEW}/icon.svg"`)
     // Verify's redirects end at the deck: the page's CSP lets the form's redirect chain reach it
     expect(page.headers.get('content-security-policy')).toContain(`form-action 'self' ${PREVIEW}`)
 
@@ -282,5 +288,15 @@ describe('continueOrigins (1b form-action)', () => {
     expect(continueOrigins('https://headless.ly/after', BASE)).toEqual(['https://headless.ly'])
     expect(continueOrigins(`${BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(`${PITCH}/auth/callback`)}`, BASE)).toEqual([PITCH])
     expect(continueOrigins(`${BASE}/oauth/authorize?redirect_uri=javascript%3Aalert(1)`, BASE)).toEqual([])
+  })
+})
+
+describe('referringHost (1b connector)', () => {
+  it('is the https host the code goes back to; nothing for http or a local continue', () => {
+    const authorize = (to: string) => `${BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(to)}`
+    expect(referringHost(authorize(`${PITCH}/auth/callback`), BASE)).toBe('pitch.startups.studio')
+    expect(referringHost('https://headless.ly/after', BASE)).toBe('headless.ly')
+    expect(referringHost(authorize('http://pitch.startups.studio/auth/callback'), BASE)).toBeUndefined()
+    expect(referringHost('/dash/profile', BASE)).toBeUndefined()
   })
 })
