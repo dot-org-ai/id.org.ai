@@ -461,14 +461,40 @@ describe('OAuthProvider', () => {
       expect(d.client_id).toBeDefined()
     })
 
+    it('allows [::1] redirect URI', async () => {
+      const d = await registerClient(provider, { redirect_uris: ['http://[::1]:8080/cb'] })
+      expect(d.client_id).toBeDefined()
+    })
+
+    it.each([
+      'evil://localhost/cb',
+      'javascript://localhost/%0aalert(1)',
+      'ftp://127.0.0.1/cb',
+      'myapp://[::1]/cb',
+      'http://localhost.evil.example/cb',
+      'http://127.0.0.2/cb',
+    ])('rejects a non-https redirect URI that is not http on loopback: %s', async (uri) => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', { client_name: 'Scheme', redirect_uris: [uri] })
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_redirect_uri')
+      expect(d.error_description).toContain('HTTPS')
+    })
+
+    it.each(['https://user:pw@app.example.com/cb', 'http://user@localhost:3000/cb'])('rejects a redirect URI with userinfo: %s', async (uri) => {
+      const req = makeJsonRequest('https://id.org.ai/oauth/register', { client_name: 'Userinfo', redirect_uris: [uri] })
+      const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
+      expect(d.error).toBe('invalid_redirect_uri')
+      expect(d.error_description).toContain('username or password')
+    })
+
     it('allows HTTPS redirect URI', async () => {
       const d = await registerClient(provider, { redirect_uris: ['https://secure.example.com/cb'] })
       expect(d.redirect_uris).toEqual(['https://secure.example.com/cb'])
     })
 
-    it('rejects redirect URI with fragment', async () => {
+    it.each(['https://x.com/cb#frag', 'https://x.com/cb#'])('rejects redirect URI with fragment: %s', async (uri) => {
       const req = makeJsonRequest('https://id.org.ai/oauth/register', {
-        client_name: 'Frag', redirect_uris: ['https://x.com/cb#frag'],
+        client_name: 'Frag', redirect_uris: [uri],
       })
       const d = await (await provider.handleRegister(req)).json() as Record<string, unknown>
       expect(d.error).toBe('invalid_redirect_uri')
@@ -808,6 +834,68 @@ describe('OAuthProvider', () => {
       const res = await provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
       expect(res.status).toBe(200)
       expect(res.headers.get('Content-Type')).toContain('text/html')
+    })
+
+    // RFC 8252 §8.6: anyone on the Person's machine can bind a loopback port or
+    // claim cursor://, and start the flow with a known client_id and their own
+    // PKCE challenge. Recorded consent must not hand them the code.
+    describe('a loopback or native callback always asks, even with consent on record', () => {
+      const CURSOR = 'cursor://anysphere.cursor-mcp/oauth/callback'
+      const LOOPBACK = 'http://localhost:8787/callback'
+      const HTTPS = 'https://www.cursor.com/agents/mcp/oauth/callback'
+
+      const authorize = async (cid: string, redirectUri: string) => {
+        const url = new URL('https://id.org.ai/oauth/authorize')
+        url.searchParams.set('client_id', cid)
+        url.searchParams.set('redirect_uri', redirectUri)
+        url.searchParams.set('response_type', 'code')
+        url.searchParams.set('scope', 'openid profile email')
+        url.searchParams.set('code_challenge', await computeS256Challenge(verifier))
+        url.searchParams.set('code_challenge_method', 'S256')
+        return provider.handleAuthorize(new Request(url.toString(), { method: 'GET', redirect: 'manual' }), 'user-1')
+      }
+      const registerWithConsent = async (overrides: Record<string, unknown>) => {
+        const { client_id } = await registerClient(provider, overrides)
+        await storage.put(`consent:user-1:${client_id}`, { scopes: ['openid', 'profile', 'email'], createdAt: Date.now() })
+        return client_id as string
+      }
+
+      it.each([LOOPBACK, 'http://127.0.0.1:8787/callback', 'http://[::1]:8787/callback', CURSOR])(
+        'a public DCR client at %s gets the consent screen',
+        async (uri) => {
+          const cid = await registerWithConsent({ client_name: 'Native', redirect_uris: [uri, HTTPS] })
+          const res = await authorize(cid, uri)
+          expect(res.status).toBe(200)
+          expect(res.headers.get('Content-Type')).toContain('text/html')
+        },
+      )
+
+      it('the same client at its https callback is approved from recorded consent', async () => {
+        const cid = await registerWithConsent({ client_name: 'Cursor', redirect_uris: [CURSOR, HTTPS, LOOPBACK] })
+        const res = await authorize(cid, HTTPS)
+        expect(res.status).toBe(302)
+        expect(new URL(res.headers.get('location')!).searchParams.get('code')).toBeTruthy()
+      })
+
+      it('an older DCR record with a non-http loopback redirect gets the consent screen', async () => {
+        const legacy = 'exp://127.0.0.1:8081/--/callback'
+        const cid = await registerWithConsent({ client_name: 'Legacy', redirect_uris: [HTTPS] })
+        const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+        await storage.put(`client:${cid}`, { ...s, redirectUris: [legacy] })
+        expect((await authorize(cid, legacy)).status).toBe(200)
+      })
+
+      it('a confidential DCR client at a loopback callback gets the consent screen too', async () => {
+        const cid = await registerWithConsent({ client_name: 'Conf', redirect_uris: [LOOPBACK], token_endpoint_auth_method: 'client_secret_post' })
+        expect((await authorize(cid, LOOPBACK)).status).toBe(200)
+      })
+
+      it('a first-party (trusted) client at a loopback callback still skips consent', async () => {
+        const { client_id } = await registerClient(provider, { redirect_uris: [LOOPBACK] })
+        const s = await storage.get<Record<string, unknown>>(`client:${client_id}`)
+        await storage.put(`client:${client_id}`, { ...s, trusted: true })
+        expect((await authorize(client_id as string, LOOPBACK)).status).toBe(302)
+      })
     })
 
     it('rejects GET on token endpoint', async () => {
