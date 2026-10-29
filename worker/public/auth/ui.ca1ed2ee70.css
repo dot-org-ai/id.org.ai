@@ -169,6 +169,9 @@ details[data-x][open] > summary [data-chev-d] {
 .id-mark {
   flex-shrink: 0;
 }
+.id-mark__accent {
+  fill: var(--id-fg-3);
+}
 
 /* Visually hidden, still announced (the mocks' rule). */
 .id-sr {

@@ -110,7 +110,7 @@ export function EmailContent({ blocks }: { blocks: JSX.Element[] }): JSX.Element
             <tr>
               <td style={{ fontSize: '14px', lineHeight: '18px', fontWeight: '600', color: C.text }}>
                 <span style={{ display: 'inline-block', verticalAlign: 'top', marginRight: '8px', fontSize: '0', lineHeight: '0', color: C.text }}>
-                  <OrgMark size={18} />
+                  <OrgMark size={18} accent={C.tertiary} />
                 </span>
                 id.org.ai
               </td>

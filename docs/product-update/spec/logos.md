@@ -1,7 +1,7 @@
 # Logos
 
 ## What the mocks show
-- **id.org.ai**: the org.ai mark, already in the repo at `worker/public/orgLogo.svg` and `site/public/orgLogo.svg`. Use it as is.
+- **id.org.ai**: the .org.ai mark, six marks in a ring. Five take the text color; the sixth, the accent, is gray (`--id-fg-3` on the pages, `#68686f` in emails) where the other .org.ai sites use amber. It is drawn by `worker/ui/components/OrgMark.tsx` and `site/components/logos/org-logo.tsx`, and kept as a file at `worker/public/orgLogo.svg` and `site/public/orgLogo.svg`.
 - **Apps** (Codex, Claude Code, headless.ly, startups.studio, api.sb, auto.dev, agent-tools.dev, Drivly):
   - The mocks show a **letter monogram or an icon** in the 56px app tile (for example "Cx", "h", or a terminal or bot icon).
   - These are placeholders. They are **not** the final marks.
