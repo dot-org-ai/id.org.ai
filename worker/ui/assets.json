@@ -2,12 +2,12 @@
   "claim-status.js": "/auth/claim-status.bfc5007013.js",
   "code-input.js": "/auth/code-input.d3650d07ec.js",
   "copy.js": "/auth/copy.86eb66637e.js",
-  "countdown.js": "/auth/countdown.db2a412e44.js",
-  "fetch-form.js": "/auth/fetch-form.99c9f68cc1.js",
+  "countdown.js": "/auth/countdown.ccd0bfd791.js",
+  "fetch-form.js": "/auth/fetch-form.d76dc5944d.js",
   "gallery.css": "/auth/gallery.6b8071658f.css",
   "handoff.js": "/auth/handoff.56c8bbadb6.js",
   "logo.js": "/auth/logo.3167733da6.js",
   "pour.js": "/auth/pour.a8136b5a1a.js",
-  "submit.js": "/auth/submit.3c4af40a55.js",
+  "submit.js": "/auth/submit.9c8549c305.js",
   "ui.css": "/auth/ui.c0fb4635d6.css"
 }
