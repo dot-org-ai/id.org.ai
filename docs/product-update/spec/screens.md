@@ -66,8 +66,8 @@ Shown only when there is no id.org.ai session, or the app asked for a fresh one 
   - `email` (shown in full; this is the person's own address).
   - `expiresInMinutes` (10).
   - `resendAvailableIn` (seconds). It counts down "Resend in 0:42" in m:ss, always fg-3, then becomes a "Resend code" link. Frozen in the gallery.
-  - `app`.
   - `error?` (wrong code, too many tries).
+- The connector runs from the id.org.ai tile to a mail icon tile, the inbox the code went to, rather than to the app.
 - Actions:
   - **Verify** posts the code.
   - **Use a different email** returns to 1a with the email cleared.

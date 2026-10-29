@@ -27,7 +27,6 @@ const signIn: SignInProps = {
 }
 
 const emailCode: EmailCodeProps = {
-  app: headlessly,
   email: 'bryant@driv.ly',
   expiresInMinutes: 10,
   action: '/login/code/flw_gallery',

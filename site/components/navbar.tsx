@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { OrgLogo } from '@/components/logos/org-logo'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,15 @@ interface MeResponse {
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false)
   const [me, setMe] = useState<MeResponse | null>(null)
+  // The logo pours on load, then again on each hover once it has settled (null).
+  const [pour, setPour] = useState<'load' | 'hover' | null>('load')
+  const logo = useRef<SVGSVGElement>(null)
+
+  useEffect(() => {
+    // The load pour can finish before hydration, and then its animationend is never heard.
+    const last = logo.current?.querySelector('.mk:last-child')
+    if (last && last.getAnimations().every((a) => a.playState === 'finished')) setPour(null)
+  }, [])
 
   useEffect(() => {
     const handleScroll = () => {
@@ -41,8 +50,16 @@ export function Navbar() {
   return (
     <nav className={`pointer-events-none fixed inset-x-0 top-0 z-50 transition-colors duration-200 ${scrolled ? 'bg-background pointer-events-auto' : ''}`}>
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="pointer-events-auto flex items-center gap-2">
-          <OrgLogo width={32} height={32} />
+        <Link href="/" className="pointer-events-auto flex items-center gap-2" onMouseEnter={() => setPour((p) => p ?? 'hover')}>
+          <OrgLogo
+            ref={logo}
+            width={32}
+            height={32}
+            data-pour={pour ?? undefined}
+            onAnimationEnd={(e) => {
+              if ((e.target as Element).matches('.mk:last-child')) setPour(null)
+            }}
+          />
           <span className="text-foreground font-medium">id.org.ai</span>
         </Link>
         <div className="pointer-events-auto flex items-center gap-4">
