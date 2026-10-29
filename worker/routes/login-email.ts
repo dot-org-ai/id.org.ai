@@ -14,7 +14,7 @@
  *
  * WorkOS sends the email (its code, as it works today); id.org.ai sends none.
  * The flow is bound to the browser that asked: starting it sets the flow's
- * cookie (SameSite=Strict) and every later step needs it, so a code someone
+ * cookie (SameSite=Lax) and every later step needs it, so a code someone
  * else asked for can't sign this browser in. "Use a different email" goes back
  * to the app (its redirect_uri's origin), never to an id.org.ai form.
  */
@@ -43,8 +43,13 @@ const isHttps = (c: C) => new URL(c.req.url).protocol === 'https:'
 const flowCookieName = (c: C) => (isHttps(c) ? '__Host-id_code' : 'id_code')
 
 /** The flow cookie: the browser that asked for the code. Path=/ because __Host- requires it; the value is the flow. */
+// Lax, not Strict: a trusted app starts this flow from its own page (pitch.startups.studio's email form), so the
+// redirect chain that lands on /login/code/:flow began on another site, and browsers don't send a Strict cookie on a
+// navigation another site started, even across redirects: the code screen would read as expired the moment it
+// opened. Lax is sent on that top-level GET, and still never on another site's POST, so the code can only be
+// entered in the browser that asked for it.
 function flowCookie(c: C, flowId: string | null): string {
-  return `${flowCookieName(c)}=${flowId ?? ''}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${flowId ? FLOW_TTL_MS / 1000 : 0}${isHttps(c) ? '; Secure' : ''}`
+  return `${flowCookieName(c)}=${flowId ?? ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${flowId ? FLOW_TTL_MS / 1000 : 0}${isHttps(c) ? '; Secure' : ''}`
 }
 
 /**
@@ -111,7 +116,7 @@ function renderCode(c: C, flowId: string, flow: MagicFlow, opts: { code?: string
       expiresInMinutes: Math.max(1, Math.round((flow.expiresAt - Date.now()) / 60000)),
       action: `/login/code/${flowId}`,
       resendAction: `/login/code/${flowId}/resend`,
-      // The flow cookie (SameSite=Strict, this flow only) is what binds these posts.
+      // The flow cookie (SameSite=Lax, this flow only) is what binds these posts.
       csrf: '',
       differentEmailHref: differentEmailHref(flow.continue, here),
       code: opts.code && /^\d{6}$/.test(opts.code) ? opts.code : undefined,

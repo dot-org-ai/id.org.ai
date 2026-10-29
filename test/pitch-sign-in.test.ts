@@ -156,6 +156,11 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     // no picker, no email form: straight to the code screen, the code already sent
     expect(r2.status).toBe(303)
     const codePath = r2.headers.get('location')!
+    // the flow cookie must reach the code screen when the deck's own page started the flow (another site):
+    // a Strict cookie is not sent on a navigation another site started, and the screen would read as expired
+    const flowSetCookie = r2.headers.getSetCookie().find((l) => /id_code=/.test(l))!
+    expect(flowSetCookie).toMatch(/SameSite=Lax/i)
+    expect(flowSetCookie).not.toMatch(/SameSite=Strict/i)
     expect(codePath).toMatch(/^\/login\/code\/[0-9a-f]{48}$/)
     expect(sends.n).toBe(1)
 
