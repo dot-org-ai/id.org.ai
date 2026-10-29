@@ -25,7 +25,7 @@ export function guardEnter(form: HTMLFormElement): void {
  * `type="module"`, which always run after the document is parsed, so there's
  * no DOMContentLoaded to wait for.
  */
-export function enhance<T extends HTMLElement>(name: string, init: (el: T) => void): void {
+export function enhance<T extends HTMLElement | SVGElement = HTMLElement>(name: string, init: (el: T) => void): void {
   for (const el of document.querySelectorAll<T>(`[data-js="${name}"]`)) {
     if (el.dataset.jsReady) continue
     el.dataset.jsReady = '1'

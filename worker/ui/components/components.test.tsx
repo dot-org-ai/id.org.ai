@@ -298,7 +298,8 @@ describe('Card, connector, lists', () => {
 
   it('escapes request data (scope strings, client names)', async () => {
     const d = await dom(<PermissionList heading="<b>x</b>" items={[{ icon: 'globe', title: '<script>alert(1)</script>', detail: 'd', scope: '<img src=x>' }]} />)
-    expect(d.querySelector('script')).toBeNull()
+    // The head carries the page's own pour.js; request data must not add a script to the body.
+    expect(d.body.querySelector('script')).toBeNull()
     expect(d.querySelector('img')).toBeNull()
     expect(d.querySelector('.id-perm__title')!.textContent).toBe('<script>alert(1)</script>')
   })

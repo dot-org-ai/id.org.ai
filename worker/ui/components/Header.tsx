@@ -15,7 +15,7 @@ export function Header({ brand, right }: HeaderProps): JSX.Element {
     <header class="id-header">
       {brand ?? (
         <a class="id-brand" href={LINKS.home}>
-          <OrgMark size={18} />
+          <OrgMark size={18} pour />
           <span>id.org.ai</span>
         </a>
       )}

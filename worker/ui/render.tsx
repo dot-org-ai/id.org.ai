@@ -112,6 +112,8 @@ export function Document({
         {scripts.map((s) => (
           <script type="module" src={assetUrl(s)}></script>
         ))}
+        {/* Every page: the header's mark pours again on hover. */}
+        <script type="module" src={assetUrl('pour.js')}></script>
       </head>
       <body>{children}</body>
     </html>
