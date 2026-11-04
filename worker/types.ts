@@ -54,6 +54,13 @@ export interface Env {
    */
   LOGIN_CONTINUE_POLICY?: string
   /**
+   * Extra zones (comma-separated) whose subdomains belong to different
+   * owners, on top of worker/utils/shared-zones.ts. The session cookie is
+   * never scoped to one of them. Optional; the built-in list covers the
+   * builder base zones as of this release.
+   */
+  SESSION_COOKIE_SHARED_ZONES?: string
+  /**
    * `true` serves the DLVP handshake (/dlvp/*, worker/routes/dlvp.ts).
    * Unset in production: nothing in DLVP can complete there yet (empty issuer
    * trust map, no-op settlement), so its anonymous surface stays off.

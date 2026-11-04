@@ -3,6 +3,7 @@
  * Supports chunked cookies for JWTs that exceed per-cookie size limits.
  */
 import { canonicalHostname } from '../../src/sdk/csrf'
+import { sharedZones } from './shared-zones'
 
 // ── Cookie Parsing ──────────────────────────────────────────────────────
 // Simple cookie parser for extracting auth tokens from cookie headers.
@@ -75,26 +76,74 @@ export function buildClearAuthCookieHeaders(opts: { secure: boolean; domain: str
 }
 
 // ── Cookie Domain Detection ──────────────────────────────────────────────
-// When running on a subdomain (e.g. id.headless.ly), set Domain=.headless.ly
-// so the auth cookie is shared across all subdomains. On root domains or
-// localhost, omit Domain to use the default (exact host).
+// On an estate apex's sibling (auth.headless.ly, auth.startups.new) the
+// cookie is set on the apex (Domain=.headless.ly) so the app there receives
+// it. On a zone whose subdomains belong to different owners (the builder base
+// zones, workers.do, workers.dev: worker/utils/shared-zones.ts) it never is:
+// those are treated as public suffixes (security review H4). On localhost or
+// an IP, Domain is omitted (exact host).
 
-export function getRootDomain(rawHostname: string): string | null {
+export function getRootDomain(rawHostname: string, extraSharedZones?: string | null): string | null {
   // Canonical spelling: `id.org.ai.` must not become Domain=.ai.
   const hostname = canonicalHostname(rawHostname)
   // An IP address (127.0.0.1 in local development, [::1]) has no parent domain.
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':') || hostname.startsWith('[')) return null
-  // Known public suffixes that should not be used as cookie domains
-  const publicSuffixes = ['org.ai', 'co.uk', 'com.au', 'co.jp']
   const parts = hostname.split('.')
   if (parts.length < 2) return null // localhost or single-part hostname
-  const lastTwo = parts.slice(-2).join('.')
-  // Check if the last two parts form a public suffix (e.g. org.ai)
-  if (publicSuffixes.includes(lastTwo)) {
-    if (parts.length <= 3) return null // id.org.ai is already the root — can't set domain on public suffix
-    return '.' + parts.slice(-3).join('.') // sub.id.org.ai → .id.org.ai
+  const suffixes = sharedZones(extraSharedZones)
+  if (suffixes.has(hostname)) return null // the shared zone itself (api.sb, svc.st)
+  // The longest listed suffix wins: acme.hq.com.ai is under hq.com.ai, not com.ai.
+  for (let i = 1; i < parts.length; i++) {
+    if (!suffixes.has(parts.slice(i).join('.'))) continue
+    // The host is the registrable domain itself (id.org.ai, acme.svc.st): host-only.
+    if (i === 1) return null
+    return '.' + parts.slice(i - 1).join('.') // sub.id.org.ai → .id.org.ai, auth.acme.svc.st → .acme.svc.st
   }
-  // For regular two-part domains (headless.ly), set Domain so subdomains share the cookie.
-  // For three+ part domains (dashboard.headless.ly), extract the root.
-  return '.' + lastTwo // headless.ly → .headless.ly, dashboard.headless.ly → .headless.ly
+  // An unlisted parent: share with its subdomains, as before.
+  return '.' + parts.slice(-2).join('.') // headless.ly → .headless.ly, auth.headless.ly → .headless.ly
+}
+
+/**
+ * The Domain the cookie was set on before H4 (last two labels, `org.ai`-style
+ * suffixes aside). Used only to clear a cookie a browser may still hold there.
+ */
+function legacyRootDomain(rawHostname: string): string | null {
+  const hostname = canonicalHostname(rawHostname)
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':') || hostname.startsWith('[')) return null
+  const parts = hostname.split('.')
+  if (parts.length < 2) return null
+  const lastTwo = parts.slice(-2).join('.')
+  if (['org.ai', 'co.uk', 'com.au', 'co.jp'].includes(lastTwo)) {
+    if (parts.length <= 3) return null
+    return '.' + parts.slice(-3).join('.')
+  }
+  return '.' + lastTwo
+}
+
+/**
+ * Set-Cookie headers that put the session JWT on the request's host (see
+ * getRootDomain), clearing first any copy an earlier release left on a wider
+ * parent domain, which would otherwise shadow or outlive it.
+ */
+export function sessionCookieHeaders(requestUrl: string, jwt: string, opts: { maxAge: number; sharedZones?: string | null }): string[] {
+  const url = new URL(requestUrl)
+  const secure = url.protocol === 'https:'
+  const domain = getRootDomain(url.hostname, opts.sharedZones)
+  const legacy = legacyRootDomain(url.hostname)
+  return [
+    ...(legacy && legacy !== domain ? buildClearAuthCookieHeaders({ secure, domain: legacy }) : []),
+    ...buildAuthCookieHeaders(jwt, { secure, domain, maxAge: opts.maxAge }),
+  ]
+}
+
+/** Set-Cookie headers that clear the session cookie on the request's host, and on the pre-H4 parent domain. */
+export function clearSessionCookieHeaders(requestUrl: string, opts: { sharedZones?: string | null } = {}): string[] {
+  const url = new URL(requestUrl)
+  const secure = url.protocol === 'https:'
+  const domain = getRootDomain(url.hostname, opts.sharedZones)
+  const legacy = legacyRootDomain(url.hostname)
+  return [
+    ...buildClearAuthCookieHeaders({ secure, domain }),
+    ...(legacy && legacy !== domain ? buildClearAuthCookieHeaders({ secure, domain: legacy }) : []),
+  ]
 }

@@ -7,13 +7,16 @@
  * the signing-key manager and delegates to the stable `verifyToken` primitive
  * (src/sdk/auth/verify-token.ts → src/sdk/oauth/jwt-verify.ts).
  *
- * The JWKS source is injectable (`JwksResolver`) so the endpoint can be driven
- * hermetically in tests without a Durable Object, while production uses the
- * default resolver backed by the signing-key manager.
+ * The JWKS source (`JwksResolver`) and the session-record check
+ * (`SessionChecker`) are injectable so the endpoint can be driven hermetically
+ * in tests without a Durable Object, while production uses the signing-key
+ * manager and the Person's IdentityDO.
  */
 import { Hono } from 'hono'
+import * as jose from 'jose'
 import type { Env, Variables } from '../types'
 import { getSigningKeyManager } from '../middleware/tenant'
+import { checkSessionState } from '../utils/session'
 import { verifyToken as verifyIdentityToken, CANONICAL_AUTH_ORIGIN } from '../../src/sdk/auth'
 import type { VerifyTokenResult } from '../../src/sdk/auth'
 import type { JWKS } from '../../src/sdk/jwt/signing'
@@ -35,6 +38,12 @@ export interface VerifyIdentityOptions {
 }
 
 /**
+ * Is a verified token's browser session still live (H4)? Production asks the
+ * session record in the Person's IdentityDO; tests inject a stand-in.
+ */
+export type SessionChecker = (env: Env, payload: jose.JWTPayload, token: string) => Promise<boolean>
+
+/**
  * Verify an id.org.ai-issued JWT against our live signing keys. Pins the
  * canonical issuer and never throws. Shared by the RPC entrypoint and the
  * HTTP endpoint.
@@ -44,6 +53,7 @@ export async function verifyIdentityTokenWithEnv(
   env: Env,
   resolveJwks: JwksResolver = defaultJwksResolver,
   options: VerifyIdentityOptions = {},
+  checkSession: SessionChecker = checkSessionState,
 ): Promise<VerifyTokenResult> {
   // Separate a SERVER-side failure (JWKS/signing-key manager unavailable) from a
   // TOKEN-side failure. A server failure must not be dressed up as "invalid
@@ -59,14 +69,21 @@ export async function verifyIdentityTokenWithEnv(
   }
   const audience = audienceOption(options.audience)
   if (audience === null) return { valid: false, error: 'Invalid audience option' }
-  return await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN, ...(audience !== undefined && { audience }) })
+  const result = await verifyIdentityToken(token, { jwks, issuer: CANONICAL_AUTH_ORIGIN, ...(audience !== undefined && { audience }) })
+  if (!result.valid) return result
+  // The signature is good; a browser session must also still be live: not
+  // logged out, not frozen (security review H4). Other token kinds pass.
+  if (!(await checkSession(env, jose.decodeJwt(token), token))) {
+    return { valid: false, error: 'Session revoked' }
+  }
+  return result
 }
 
 /**
  * Build the `/auth/verify` Hono app. `resolveJwks` defaults to the
  * signing-key manager; tests inject a fixed JWKS.
  */
-export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResolver) {
+export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResolver, checkSession: SessionChecker = checkSessionState) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>()
 
   app.post('/auth/verify', async (c) => {
@@ -86,7 +103,7 @@ export function createAuthVerifyApp(resolveJwks: JwksResolver = defaultJwksResol
     if (audience === null) {
       return c.json({ valid: false, error: 'audience must be a non-empty string or array of strings' } satisfies VerifyTokenResult, 400)
     }
-    const result = await verifyIdentityTokenWithEnv(token, c.env, resolveJwks, { audience })
+    const result = await verifyIdentityTokenWithEnv(token, c.env, resolveJwks, { audience }, checkSession)
     if (!result.valid && result.error === 'jwks_unavailable') {
       // Server-side verification substrate is down — 503, not a token 401, and
       // a generic client message (the real cause is already logged).

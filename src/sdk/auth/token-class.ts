@@ -4,8 +4,10 @@
  * id.org.ai signs three kinds of JWT with one published key set (the
  * signature alone cannot tell them apart):
  *
- *   - the sign-in session JWT (the `auth` cookie): `typ: JWT`, NO `aud`.
- *     It is the Person's own credential.
+ *   - the sign-in session JWT (the `auth` cookie): `typ: JWT`, and `aud`
+ *     either the session audience `urn:id.org.ai:session` (with a `sid`,
+ *     since security review H4) or absent (minted before H4). It is the
+ *     Person's own credential.
  *   - the OIDC id_token: `typ: JWT`, `aud` = the OAuth client it was issued to.
  *     It tells THAT client who signed in; it is never a credential anywhere
  *     else. Registration is open, so any third-party client a Person signs into
@@ -18,6 +20,31 @@
  * that names that audience (it is the audience).
  */
 
+/**
+ * The `aud` of a browser-session JWT. A URN, so no OAuth client or resource
+ * server can be registered under it (DCR ids are generated, CIMD ids are
+ * https URLs with a path).
+ */
+export const ID_ORG_AI_SESSION_AUDIENCE = 'urn:id.org.ai:session'
+
+/**
+ * THE session-audience rule: is `aud` that of an id.org.ai sign-in session?
+ * True only when `aud` is absent (a session minted before H4) or exactly the
+ * string `urn:id.org.ai:session` (what `mintSessionJwt` signs). Anything else
+ * names some other audience and is not a session: `null`, `''`, any array
+ * (even `[urn:id.org.ai:session]`; we never sign one), and case or whitespace
+ * variants.
+ *
+ * Every id.org.ai check of the session audience calls this one function (the
+ * classifier below, `isSessionPayload`, `isSessionCookieJwt`, and the `auth`
+ * worker's `isIdOrgAiSession`). The `orgai_auth_identity` edge snippet
+ * (dot-do/snippets `src/auth-identity.ts`) carries a copy, since it cannot
+ * import this; change both together.
+ */
+export function isSessionAudience(aud: unknown): boolean {
+  return aud === undefined || aud === ID_ORG_AI_SESSION_AUDIENCE
+}
+
 export type IdOrgAiTokenClass = 'session' | 'id_token' | 'access_token' | 'other'
 
 /** Classify a VERIFIED token from its protected header and payload. */
@@ -28,8 +55,9 @@ export function idOrgAiTokenClass(header: { typ?: unknown; crit?: unknown }, pay
   // defined) is not a session.
   if (header.crit !== undefined) return 'other'
   if (typ !== undefined && typ !== 'jwt') return 'other'
-  // Any `aud` at all (even an empty one) names an audience: not a session.
-  if (payload.aud !== undefined && payload.aud !== null) return 'id_token'
+  // Any `aud` other than the session audience (even an empty one) names an
+  // audience: not a session.
+  if (!isSessionAudience(payload.aud)) return 'id_token'
   return 'session'
 }
 
