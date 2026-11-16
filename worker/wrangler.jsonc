@@ -82,8 +82,10 @@
     // /fga/* and /pipes/* if an unknown estate caller breaks. "0" is secure.
     "LEGACY_OPEN_WORKOS_ROUTES": "0",
     // CIMD client hosts shown as verified on consent (D3), comma-separated.
-    // Nathan approved the deployed Studio pitch app on 2026-10-05. Exact production host only.
-    "VERIFIED_CLIENT_HOSTS": "pitch.startups.studio",
+    // Nathan approved the deployed Studio pitch app on 2026-10-05. Chris Risner approved
+    // claude.ai (Claude's connector, which signs people in to mcp.auto.dev) on 2026-11-16.
+    // Exact production hosts only.
+    "VERIFIED_CLIENT_HOSTS": "pitch.startups.studio,claude.ai",
     // "1": step up before granting act permissions (sb:do) on a sign-in older
     // than 10 minutes. /step-up arrives in phase 9; keep "0" until then.
     "FEATURE_STEP_UP": "0",

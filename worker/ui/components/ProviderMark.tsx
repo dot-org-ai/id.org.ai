@@ -4,7 +4,7 @@ import type { Provider } from './ProviderButton'
 /**
  * Each sign-in provider's mark at 18px (logos.md#provider-marks): the GitHub
  * mark, Google's "G", Microsoft's four squares and the Apple logo, moved from
- * worker/views/provider-picker.ts. GitHub and Apple are single-colour and take
+ * the old provider picker (worker/views/provider-picker.ts, since removed). GitHub and Apple are single-colour and take
  * the button's text colour; Google and Microsoft keep their brand colours.
  * Decorative: the provider's name beside it is the label.
  */
