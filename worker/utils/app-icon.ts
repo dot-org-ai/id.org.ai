@@ -81,9 +81,10 @@ async function headOf(res: Response): Promise<string> {
 export async function siteIcon(env: Env, host: string): Promise<string | undefined> {
   if (!parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(host) && !parseTrustedAccountDomains(env.VERIFIED_CLIENT_HOSTS).has(host)) return undefined
   const key = `app-icon:${host}`
-  const cached = await env.SESSIONS.get(key)
-  if (cached !== null) return cached || undefined
+  // Everything from here is inside the try: an icon is decoration, so a cache or network fault is "no icon".
   try {
+    const cached = await env.SESSIONS.get(key)
+    if (cached !== null) return cached || undefined
     const page = await fetch(`https://${host}/`, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
     let icon = page.ok ? pickIcon(await headOf(page), page.url || `https://${host}/`) : undefined
     if (!page.ok) await page.body?.cancel()

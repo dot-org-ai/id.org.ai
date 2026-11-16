@@ -76,6 +76,11 @@ describe('siteIcon', () => {
     expect(await env.SESSIONS.get('app-icon:client.example.evil.example')).toBeNull()
   })
 
+  it('a failing cache is no icon, never an error: the icon is decoration, and consent waits on this', async () => {
+    const broken = { ...env, SESSIONS: { get: () => Promise.reject(new Error('kv down')), put: () => Promise.reject(new Error('kv down')) } } as unknown as typeof env
+    await expect(siteIcon(broken, 'startup.games')).resolves.toBeUndefined()
+  })
+
   it('falls back to /favicon.ico, and a failed fetch is not cached', async () => {
     await env.SESSIONS.delete('app-icon:pitch.startups.studio')
     // nothing mocked: the fetch fails, nothing is cached, and the page shows the mail icon
