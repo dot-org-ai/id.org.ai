@@ -15,11 +15,15 @@ import type { ConsentViewModel } from '../../src/sdk/oauth/consent-view'
 import { buildCSRFCookie, encodeStateWithCSRF, generateCSRFToken } from '../../src/sdk/csrf'
 import { personAccount, personWorkspaces } from '../utils/person'
 import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
+import { siteIcon } from '../utils/app-icon'
 import { renderPage } from '../ui/render'
 import { consentProps } from '../ui/consent-props'
 import { Consent, consentTitle } from '../ui/screens/Consent'
 
 type C = Context<{ Bindings: Env; Variables: Variables }>
+
+/** How long consent waits for a verified client's site icon before rendering without it. */
+const ICON_WAIT_MS = 700
 
 export interface ConsentScreenOptions {
   /** Bind the form to a CSRF token (every browser-direct request). */
@@ -47,7 +51,23 @@ export async function renderConsentScreen(c: C, vm: ConsentViewModel, opts: Cons
     fields.state = encodeStateWithCSRF(csrf, vm.fields.state)
   }
 
-  const props = consentProps(vm, { account: person, workspaces: orgs, selectedOrgId, switchHref, fields, csrf })
+  // A verified CIMD client whose document declares no logo (claude.ai's doesn't): the icon its own site declares,
+  // so the tile shows the app's mark, not a letter. siteIcon only fetches hosts on the operators' lists.
+  // Consent never waits long on it: after ICON_WAIT_MS the page renders with the letter tile, and the lookup
+  // finishes in the background so the next render finds the answer cached.
+  let icon: string | undefined
+  if (vm.client.verified && vm.client.cimdUrl && !vm.client.logoUrl) {
+    const lookup = siteIcon(c.env, vm.client.host).catch(() => undefined)
+    try {
+      c.executionCtx.waitUntil(lookup)
+    } catch {
+      // no execution context (some test harnesses): the lookup just isn't kept alive past the response
+    }
+    icon = await Promise.race([lookup, new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ICON_WAIT_MS))])
+  }
+  const view = icon ? { ...vm, client: { ...vm.client, logoUrl: icon } } : vm
+
+  const props = consentProps(view, { account: person, workspaces: orgs, selectedOrgId, switchHref, fields, csrf })
   const res = await renderPage(c, Consent(props), {
     title: consentTitle(props),
     scripts: ['copy.js', 'submit.js', 'logo.js'],

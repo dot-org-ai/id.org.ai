@@ -234,7 +234,10 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     const sends = mockSends('direct@fund-one.example')
     const direct = await SELF.fetch(`${BASE}/login?provider=email&login_hint=direct%40fund-one.example&continue=%2Fdash%2Fprofile`, { redirect: 'manual' })
     expect(direct.status).toBe(200)
-    expect(await direct.text()).toContain('Choose a provider')
+    // The sign-in page (1a) replaced the old picker, whose "Choose a provider" this used to look for.
+    const page = await direct.text()
+    expect(page).toContain('<title>Sign in · id.org.ai</title>')
+    expect(page).toContain('href="/login?provider=GitHubOAuth')
     expect(sends.n).toBe(0)
   })
 

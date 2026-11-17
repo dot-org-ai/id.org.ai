@@ -6,6 +6,8 @@ import { LinkAccount, type LinkAccountProps } from '../../screens/LinkAccount'
 import { ProviderFallback, type ProviderFallbackProps } from '../../screens/ProviderFallback'
 import { SignIn, type SignInProps } from '../../screens/SignIn'
 import { Sso, type SsoProps } from '../../screens/Sso'
+import { resourceBrand } from '../../../utils/resource-brands'
+import { signInPageProps, signInTitle } from '../../signin-props'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const headlessly: { name: string; tile: TileContent } = { name: 'headless.ly', tile: { kind: 'monogram', text: 'h' } }
@@ -83,7 +85,15 @@ const fallback: ProviderFallbackProps = {
   retryHref: '/login?provider=MicrosoftOAuth',
 }
 
-const signInTitle = (p: SignInProps) => (p.brand && p.app ? `Sign in to ${p.app.name} · id.org.ai` : 'Sign in · id.org.ai')
+/**
+ * GET /login as it renders today (worker/ui/signin-props.ts): email is a link
+ * to hosted AuthKit, no passkey button, no "Last used" pill. No mock: these
+ * are derived states, outside the visual diff.
+ */
+const AUTO_DEV_AUTHORIZE =
+  'https://id.org.ai/oauth/authorize?response_type=code&client_id=https%3A%2F%2Fclaude.ai%2Foauth%2Fclient.json&resource=https%3A%2F%2Fmcp.auto.dev%2Fmcp'
+const liveSignIn: SignInProps = signInPageProps({ continueUrl: '/dash/profile' })
+const autoDevSignIn: SignInProps = signInPageProps({ continueUrl: AUTO_DEV_AUTHORIZE, brand: resourceBrand('https://mcp.auto.dev/mcp') })
 
 export const signinFixtures: FixtureGroup = {
   '1a-sign-in': defineFixture({
@@ -94,6 +104,8 @@ export const signinFixtures: FixtureGroup = {
     derived: {
       'email-error': { ...signIn, email: 'bryant@driv', emailError: 'Enter a full email address, like you@company.com.' },
       'no-app': { ...signIn, app: undefined, continueUrl: undefined },
+      // What /login serves today, without and with a listed resource's brand.
+      live: liveSignIn,
     },
   }),
   '1b-email-code': defineFixture({
@@ -166,7 +178,10 @@ export const signinFixtures: FixtureGroup = {
   '1g-branded-sign-in': defineFixture({
     screen: SignIn,
     title: signInTitle,
-    scripts: ['submit.js'],
+    // logo.js: a brand mark that fails to load falls back to the monogram (the auto-dev state has one).
+    scripts: ['submit.js', 'logo.js'],
     default: { ...signIn, brand: { name: 'headless.ly', monogram: 'h' } },
+    // Signing in on the way to mcp.auto.dev (Claude's Auto.dev connector): the resource's brand, links only.
+    derived: { 'auto-dev': autoDevSignIn },
   }),
 }

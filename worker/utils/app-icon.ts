@@ -3,7 +3,9 @@
  *
  * For the apps that sign in through the one shared trusted-account client (TRUSTED_ACCOUNT_DOMAINS, ADR-0007): they
  * have no client metadata, so no logo_uri, but id.org.ai knows which of them sent the person (the host the code goes
- * back to). Only those hosts are ever fetched. The icon is the one the site's home page declares
+ * back to). And for a verified client (VERIFIED_CLIENT_HOSTS) whose document declares no logo_uri, as claude.ai's
+ * doesn't: consent shows the icon of the host that identifies it. Only hosts on those two operator lists are ever
+ * fetched. The icon is the one the site's home page declares
  * (<link rel="icon"> or "apple-touch-icon"), an SVG first, then the largest; /favicon.ico when it declares none.
  * The answer, or that there is none, is cached in KV for a day; a failed fetch is not cached.
  */
@@ -72,13 +74,17 @@ async function headOf(res: Response): Promise<string> {
   return text
 }
 
-/** The icon `host`'s site declares, when `host` is a trusted-account app; undefined otherwise or when it has none. */
+/**
+ * The icon `host`'s site declares, when `host` is a trusted-account app or a verified client host; undefined
+ * otherwise or when it has none. Both lists are plain host lists, read the same way.
+ */
 export async function siteIcon(env: Env, host: string): Promise<string | undefined> {
-  if (!parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(host)) return undefined
+  if (!parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(host) && !parseTrustedAccountDomains(env.VERIFIED_CLIENT_HOSTS).has(host)) return undefined
   const key = `app-icon:${host}`
-  const cached = await env.SESSIONS.get(key)
-  if (cached !== null) return cached || undefined
+  // Everything from here is inside the try: an icon is decoration, so a cache or network fault is "no icon".
   try {
+    const cached = await env.SESSIONS.get(key)
+    if (cached !== null) return cached || undefined
     const page = await fetch(`https://${host}/`, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
     let icon = page.ok ? pickIcon(await headOf(page), page.url || `https://${host}/`) : undefined
     if (!page.ok) await page.body?.cancel()

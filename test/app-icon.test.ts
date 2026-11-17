@@ -1,7 +1,9 @@
 /**
  * worker/utils/app-icon.ts: the icon an app's own site declares (logos.md), for
- * the trusted-account apps that have no client metadata. Only hosts on
- * TRUSTED_ACCOUNT_DOMAINS are fetched; the answer is cached in KV.
+ * the trusted-account apps that have no client metadata, and for a verified
+ * client whose document declares no logo_uri (claude.ai). Only hosts on
+ * TRUSTED_ACCOUNT_DOMAINS or VERIFIED_CLIENT_HOSTS are fetched; the answer is
+ * cached in KV.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { env, fetchMock } from 'cloudflare:test'
@@ -58,6 +60,25 @@ describe('siteIcon', () => {
     expect(await siteIcon(env, 'startup.games')).toBe('https://startup.games/logo.svg')
     // no second intercept: this one comes from KV
     expect(await siteIcon(env, 'startup.games')).toBe('https://startup.games/logo.svg')
+  })
+
+  it('reads a verified client host’s icon too, and only while the host is on that list', async () => {
+    const listed = { ...env, VERIFIED_CLIENT_HOSTS: 'pitch.startups.studio, Client.Example ' }
+    fetchMock
+      .get('https://client.example')
+      .intercept({ path: '/' })
+      .reply(200, '<html><head><link rel="apple-touch-icon" href="/touch.png"></head></html>', { headers: { 'content-type': 'text/html' } })
+    expect(await siteIcon(listed, 'client.example')).toBe('https://client.example/touch.png')
+    // Off the list, the cached answer isn't served either: the list is checked first.
+    expect(await siteIcon({ ...env, VERIFIED_CLIENT_HOSTS: '' }, 'client.example')).toBeUndefined()
+    // A look-alike of a listed host is never fetched (net connect is off: a fetch would throw).
+    expect(await siteIcon(listed, 'client.example.evil.example')).toBeUndefined()
+    expect(await env.SESSIONS.get('app-icon:client.example.evil.example')).toBeNull()
+  })
+
+  it('a failing cache is no icon, never an error: the icon is decoration, and consent waits on this', async () => {
+    const broken = { ...env, SESSIONS: { get: () => Promise.reject(new Error('kv down')), put: () => Promise.reject(new Error('kv down')) } } as unknown as typeof env
+    await expect(siteIcon(broken, 'startup.games')).resolves.toBeUndefined()
   })
 
   it('falls back to /favicon.ico, and a failed fetch is not cached', async () => {

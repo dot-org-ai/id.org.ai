@@ -10,7 +10,10 @@ import type { Env, Variables } from '../types'
 import { errorResponse, ErrorCode, errorMessage } from '../../src/sdk/errors'
 import { parseCookieValue, buildAuthCookieHeaders, buildClearAuthCookieHeaders, getRootDomain } from '../utils/cookies'
 import { getStubForIdentity, getSigningKeyManager, resolveIdentityId, verifySessionJwt } from '../middleware/tenant'
-import { renderProviderPicker } from '../views/provider-picker'
+import { renderPage } from '../ui/render'
+import { SignIn } from '../ui/screens/SignIn'
+import { signInPageProps, signInTitle } from '../ui/signin-props'
+import { signInResourceBrand } from '../utils/resource-brands'
 import { startEmailCode } from './login-email'
 import { renderOrgPickerPage } from '../views/org-picker'
 import {
@@ -138,13 +141,23 @@ app.get('/login', async (c) => {
     if (started) return started
   }
 
-  // No provider specified → show provider picker page
+  // No provider specified → show the sign-in page (1a), where the person picks one.
   // This avoids AuthKit's built-in org selection which causes a double sign-in
   // for users with multiple orgs. Direct providers return organization_selection_required
   // on code exchange, which our /api/callback handler catches and shows our own org picker.
   if (!safeProvider) {
-    // Keep the flow's client on the picker links only when it is what let the continue through.
-    return renderProviderPicker(continueUrl, loginHint, promptLogin, clientRedirectUris ? flowClientId : undefined)
+    const props = signInPageProps({
+      continueUrl,
+      loginHint,
+      promptLogin,
+      // Keep the flow's client on the links only when it is what let the continue through.
+      clientId: clientRedirectUris ? flowClientId : undefined,
+      // A listed resource's look (Auto.dev for mcp.auto.dev), only on the way to this origin's own
+      // /oauth/authorize for it. Looks only: every link is the same with or without it.
+      brand: signInResourceBrand(continueUrl, reqOrigin),
+    })
+    // logo.js: the brand tile falls back to its monogram if the mark fails to load.
+    return renderPage(c, SignIn(props), { title: signInTitle(props), scripts: props.brand ? ['logo.js'] : [] })
   }
 
   const csrf = crypto.randomUUID()
