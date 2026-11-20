@@ -77,8 +77,7 @@ export async function startEmailCode(c: C, email: string, continueUrl: string): 
 /**
  * Where a signed-in Verify's redirects go beyond this origin: the continue URL's origin, and for a continue that is
  * our own /oauth/authorize, its redirect_uri's (the code goes there next). The browser holds a form post's whole
- * redirect chain to the page's CSP form-action, so without them Chrome stops at the first hop off id.org.ai (and at
- * a listed app's own onward hop: utils/redirect-relays). The
+ * redirect chain to the page's CSP form-action, so without them Chrome stops at the first hop off id.org.ai. The
  * continue already passed /login's policy; authorize checks the redirect_uri itself when it runs.
  */
 export function continueOrigins(continueUrl: string, requestOrigin: string): string[] {

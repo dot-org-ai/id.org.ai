@@ -314,8 +314,8 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
   })
 })
 
-describe('consent v2: an app that forwards the browser after it takes the code', () => {
-  it('chatgpt.com relays to platform.openai.com, so form-action allows both and Chrome lets the Allow post through', async () => {
+describe('consent v2: relay origins', () => {
+  it('form-action allows chatgpt.com and platform.openai.com', async () => {
     const cookies = await signIn('user_01CONSENT_A')
     const redirect = 'https://chatgpt.com/connector/oauth/abc123'
     const reg = await SELF.fetch(`${BASE}/oauth/register`, {

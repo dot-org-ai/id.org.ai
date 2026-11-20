@@ -298,10 +298,10 @@ describe('continueOrigins (1b form-action)', () => {
     expect(continueOrigins(`${BASE}/oauth/authorize?redirect_uri=javascript%3Aalert(1)`, BASE)).toEqual([])
   })
 
-  it('adds the origin a listed app forwards the browser to: chatgpt.com relays the code to platform.openai.com', () => {
+  it('adds a listed app’s relay origin (chatgpt.com -> platform.openai.com)', () => {
     const authorize = (to: string) => `${BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(to)}`
     expect(continueOrigins(authorize('https://chatgpt.com/connector/oauth/abc'), BASE)).toEqual(['https://chatgpt.com', 'https://platform.openai.com'])
-    // Only the exact listed origin: a look-alike or a plain continue gets nothing extra.
+    // exact origin only
     expect(continueOrigins(authorize('https://chatgpt.com.evil.example/cb'), BASE)).toEqual(['https://chatgpt.com.evil.example'])
     expect(continueOrigins('https://chatgpt.com/after', BASE)).toEqual(['https://chatgpt.com'])
   })
