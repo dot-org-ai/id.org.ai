@@ -184,6 +184,44 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(page.headers.get('content-security-policy')).toContain("form-action 'self' cursor:;")
   })
 
+  it('with consent on record, a Cursor client is asked again at its native and loopback callbacks, not at its https one (RFC 8252 §8.6)', async () => {
+    const cookies = await signIn('user_01CONSENT_CURSOR_AGAIN')
+    const cursor = 'cursor://anysphere.cursor-mcp/oauth/callback'
+    const https = 'https://www.cursor.com/agents/mcp/oauth/callback'
+    const loopback = 'http://localhost:8787/callback'
+    const reg = await SELF.fetch(`${BASE}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Cursor', redirect_uris: [cursor, https, loopback], token_endpoint_auth_method: 'none' }),
+    })
+    expect(reg.status).toBe(201)
+    const { client_id } = (await reg.json()) as { client_id: string }
+    const visit = async (redirectUri: string) =>
+      SELF.fetch(authorizeUrl(client_id, redirectUri, await challenge()), { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+
+    // The Person allows at the native callback; the code goes to cursor://.
+    const page = await visit(cursor)
+    expect(page.status).toBe(200)
+    const allowed = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: cookieHeader({ ...cookies, __csrf: setCookies(page).__csrf! }) },
+      body: new URLSearchParams({ ...hiddenFields(await page.text()), approved: 'true', org_id: '' }).toString(),
+    })
+    expect(allowed.status).toBe(302)
+    const back = new URL(allowed.headers.get('location')!)
+    expect(back.protocol).toBe('cursor:')
+    expect(back.searchParams.get('code')).toMatch(/^ac_/)
+
+    // Consent is on record: the https callback is approved silently...
+    const silent = await visit(https)
+    expect(silent.status).toBe(302)
+    expect(new URL(silent.headers.get('location')!).searchParams.get('code')).toMatch(/^ac_/)
+    // ...the native and loopback callbacks get the consent screen again.
+    expect((await visit(cursor)).status).toBe(200)
+    expect((await visit(loopback)).status).toBe(200)
+  })
+
   it('the route renders exactly what the screen renders from the same props', async () => {
     const cookies = await signIn('user_01CONSENT_B')
     const clientId = await register('Same props')

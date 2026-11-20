@@ -87,7 +87,12 @@ export function isLoopbackUri(uri: string): boolean {
   }
 }
 
-function isHttpsOrLoopback(uri: string): boolean {
+/**
+ * The redirect_uri rule for every client kind (CIMD, DCR, trusted-account):
+ * https, or http on a loopback host, with no fragment and no userinfo. Any
+ * other scheme on a loopback host (`evil://localhost/`) is refused.
+ */
+export function isHttpsOrLoopback(uri: string): boolean {
   try {
     const u = new URL(uri)
     if (u.hash || uri.includes('#')) return false
