@@ -840,6 +840,67 @@ describe('OAuthProvider', () => {
       expect(tRes.status).toBe(200)
       expect((await tRes.json() as Record<string, unknown>).access_token).toBeDefined()
     })
+
+    describe('confidential client with PKCE', () => {
+      // OAuth 2.1 §4.1.3: a confidential client authenticates at the token
+      // endpoint even when the code_verifier alone would satisfy PKCE.
+      async function confidentialPkceCode(): Promise<{ cid: string; cs: string; code: string }> {
+        const cd = await registerConfidentialClient(provider)
+        const cid = cd.client_id as string
+        const s = await storage.get<Record<string, unknown>>(`client:${cid}`)
+        await storage.put(`client:${cid}`, { ...s, trusted: true })
+        const code = await getAuthCode(provider, cid, redir, 'user-1', verifier)
+        return { cid, cs: cd.client_secret as string, code }
+      }
+
+      it('rejects code_verifier without client_secret (401 invalid_client)', async () => {
+        const { cid, code } = await confidentialPkceCode()
+        const res = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code, redirect_uri: redir, client_id: cid, code_verifier: verifier,
+        }))
+        expect(res.status).toBe(401)
+        const d = await res.json() as Record<string, unknown>
+        expect(d.error).toBe('invalid_client')
+        expect(d.access_token).toBeUndefined()
+      })
+
+      it('rejects a wrong client_secret (401 invalid_client)', async () => {
+        const { cid, code } = await confidentialPkceCode()
+        const res = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code, redirect_uri: redir, client_id: cid, client_secret: 'cs_wrong', code_verifier: verifier,
+        }))
+        expect(res.status).toBe(401)
+        expect((await res.json() as Record<string, unknown>).error).toBe('invalid_client')
+      })
+
+      it('issues tokens with the correct client_secret (client_secret_post)', async () => {
+        const { cid, cs, code } = await confidentialPkceCode()
+        const res = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code, redirect_uri: redir, client_id: cid, client_secret: cs, code_verifier: verifier,
+        }))
+        expect(res.status).toBe(200)
+        expect((await res.json() as Record<string, unknown>).access_token).toBeDefined()
+      })
+
+      it('issues tokens with the correct secret over Basic auth', async () => {
+        const { cid, cs, code } = await confidentialPkceCode()
+        const basic = 'Basic ' + btoa(`${cid}:${cs}`)
+        const res = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code, redirect_uri: redir, code_verifier: verifier,
+        }, basic))
+        expect(res.status).toBe(200)
+        expect((await res.json() as Record<string, unknown>).access_token).toBeDefined()
+      })
+
+      it('still checks the code_verifier when the secret is correct', async () => {
+        const { cid, cs, code } = await confidentialPkceCode()
+        const res = await provider.handleToken(makeTokenRequest({
+          grant_type: 'authorization_code', code, redirect_uri: redir, client_id: cid, client_secret: cs, code_verifier: 'wrong-verifier',
+        }))
+        expect(res.status).toBe(400)
+        expect((await res.json() as Record<string, unknown>).error).toBe('invalid_grant')
+      })
+    })
   })
 
   // ══════════════════════════════════════════════════════════════════════════
