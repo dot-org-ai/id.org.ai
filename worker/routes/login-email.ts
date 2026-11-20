@@ -21,6 +21,7 @@
 import { Hono, type Context } from 'hono'
 import type { Env, Variables } from '../types'
 import { bareOrigin, renderPage } from '../ui/render'
+import { withRelayOrigins } from '../utils/redirect-relays'
 import { renderErrorPage } from '../ui/errors'
 import { EmailCode, type EmailCodeError } from '../ui/screens/EmailCode'
 import type { TileContent } from '../ui/components'
@@ -87,7 +88,7 @@ export function continueOrigins(continueUrl: string, requestOrigin: string): str
     else if (u.pathname === '/oauth/authorize') {
       const redirect = u.searchParams.get('redirect_uri')
       const origin = redirect ? bareOrigin(new URL(redirect).origin) : null
-      if (origin && origin !== 'null') out.push(origin)
+      if (origin && origin !== 'null') out.push(...withRelayOrigins(origin))
     }
   } catch {
     // not a URL: nothing beyond 'self'

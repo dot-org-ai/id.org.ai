@@ -16,6 +16,7 @@ import { buildCSRFCookie, encodeStateWithCSRF, generateCSRFToken } from '../../s
 import { personAccount, personWorkspaces } from '../utils/person'
 import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
 import { siteIcon } from '../utils/app-icon'
+import { withRelayOrigins } from '../utils/redirect-relays'
 import { renderPage } from '../ui/render'
 import { consentProps } from '../ui/consent-props'
 import { Consent, consentTitle } from '../ui/screens/Consent'
@@ -71,8 +72,8 @@ export async function renderConsentScreen(c: C, vm: ConsentViewModel, opts: Cons
   const res = await renderPage(c, Consent(props), {
     title: consentTitle(props),
     scripts: ['copy.js', 'submit.js', 'logo.js'],
-    // The POST answers with a redirect to the app: form-action must allow its origin.
-    formActionOrigins: [vm.redirect.origin],
+    // The POST answers with a redirect to the app: form-action must allow its origin (+ relays).
+    formActionOrigins: withRelayOrigins(vm.redirect.origin),
   })
   if (opts.csrf) res.headers.append('Set-Cookie', buildCSRFCookie(csrf, new URL(c.req.url).protocol === 'https:'))
   return res
