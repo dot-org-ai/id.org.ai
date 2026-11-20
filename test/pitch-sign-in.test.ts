@@ -10,6 +10,7 @@
  *      goes back to the deck.
  *   3. provider=GoogleOAuth: straight to Google through WorkOS, and back.
  */
+import { withRelayOrigins } from '../worker/utils/redirect-relays'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock, env } from 'cloudflare:test'
 import { authService } from './helpers/auth-service'
@@ -314,5 +315,12 @@ describe('referringHost (1b connector)', () => {
     expect(referringHost('https://headless.ly/after', BASE)).toBe('headless.ly')
     expect(referringHost(authorize('http://pitch.startups.studio/auth/callback'), BASE)).toBeUndefined()
     expect(referringHost('/dash/profile', BASE)).toBeUndefined()
+  })
+})
+
+describe('withRelayOrigins', () => {
+  it('ignores inherited object keys', () => {
+    expect(withRelayOrigins('constructor')).toEqual(['constructor'])
+    expect(withRelayOrigins('https://chatgpt.com')).toEqual(['https://chatgpt.com', 'https://platform.openai.com'])
   })
 })

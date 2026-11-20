@@ -10,5 +10,5 @@ const RELAYS: Readonly<Record<string, readonly string[]>> = {
 
 /** origin + its known relay origins */
 export function withRelayOrigins(origin: string): string[] {
-  return [origin, ...(RELAYS[origin] ?? [])]
+  return [origin, ...(Object.hasOwn(RELAYS, origin) ? RELAYS[origin] : [])]
 }
