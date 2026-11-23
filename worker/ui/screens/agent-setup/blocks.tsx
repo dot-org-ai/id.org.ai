@@ -126,7 +126,7 @@ export function BlockView({ block: b }: { block: Block }): JSX.Element {
       )
     }
     case 'line':
-      return <FootText>{rich(b.text)}</FootText>
+      return <FootText fill>{rich(b.text)}</FootText>
     case 'select':
       return (
         <Field id={b.id} label={b.label}>
@@ -318,7 +318,7 @@ export function Foot({ terms, secondary, primary, note, noteIcon }: FootProps): 
       ) : secondary ? (
         <ActionButton a={secondary} variant="secondary" />
       ) : null}
-      {note ? noteIcon ? <FootNote icon={noteIcon}>{rich(note)}</FootNote> : <FootText>{rich(note)}</FootText> : null}
+      {note ? noteIcon ? <FootNote icon={noteIcon}>{rich(note)}</FootNote> : <FootText fill>{rich(note)}</FootText> : null}
     </>
   )
 }

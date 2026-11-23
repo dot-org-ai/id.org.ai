@@ -17,7 +17,7 @@ function Pictured({ label, placeholder, value, chevron }: { label: string; place
     <div class="id-stripe__field">
       <span class="id-label">{label}</span>
       <span class={value ? 'id-stripe__box id-stripe__box--value' : 'id-stripe__box'}>
-        {value ?? placeholder}
+        <span class="id-stripe__text">{value ?? placeholder}</span>
         {chevron ? <Icon name="chev_ud" size={14} /> : null}
       </span>
     </div>

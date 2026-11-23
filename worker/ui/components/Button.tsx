@@ -10,7 +10,7 @@ export interface ButtonProps {
   type?: 'submit' | 'button'
   name?: string
   value?: string
-  /** A 16px icon before the label. */
+  /** A 16px icon before the label; the arrow on an action that leaves for another site (`arrow_ur`) goes after it instead (owner direction, 2026-11-23). */
   icon?: IconName
   disabled?: boolean
   /** Busy: disabled, aria-busy, and the progressive label ("Confirming…"). */
@@ -37,13 +37,14 @@ export interface ButtonProps {
   children: Child
 }
 
-export function buttonClass(p: Pick<ButtonProps, 'variant' | 'size' | 'block' | 'grow' | 'class'>): string {
+export function buttonClass(p: Pick<ButtonProps, 'variant' | 'size' | 'block' | 'grow' | 'class' | 'icon'>): string {
   return [
     'id-btn',
     `id-btn--${p.variant}`,
     p.size === 'sm' ? 'id-btn--sm' : '',
     p.block ? 'id-btn--block' : '',
     p.grow ? 'id-btn--grow' : '',
+    p.icon === 'arrow_ur' ? 'id-btn--icon-end' : '',
     p.class ?? '',
   ]
     .filter(Boolean)

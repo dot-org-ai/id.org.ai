@@ -46,6 +46,7 @@ async function shoot(url, width, height, open) {
   await page.goto(url, { waitUntil: 'load' })
   await page.evaluate(() => document.fonts.ready)
   if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(SLASH_MONTH)
+  if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(() => document.querySelectorAll('[data-card] div').forEach((el) => el.style.textWrap === 'balance' && el.style.fontSize === '13px' && (el.style.textWrap = 'wrap')))
   await open(page)
   await page.mouse.move(0, 0)
   await page.evaluate(() => {

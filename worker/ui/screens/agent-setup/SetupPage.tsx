@@ -222,7 +222,7 @@ export function SetupPage(p: SetupPageProps): JSX.Element {
         </CardFoot>
       }
     >
-      <CardHead connector={<Connector left={p.agent.tile} right={product} state={p.connector ?? SETUP_CONNECTOR[setup.state]} />} title={p.title} description={rich(p.description)} />
+      <CardHead fill connector={<Connector left={p.agent.tile} right={product} state={p.connector ?? SETUP_CONNECTOR[setup.state]} />} title={p.title} description={rich(p.description)} />
       {p.top ? <Blocks blocks={p.top} /> : null}
       {setup.steps.length ? (
         <>

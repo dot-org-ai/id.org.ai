@@ -2,7 +2,7 @@
 /**
  * Phone, keyboard and reduced-motion checks for the agent setup screens.
  *
- *   node test-visual/agent-check.mjs [--base http://localhost:8787] [--only 9a,9b] [--phase 2]
+ *   node test-visual/agent-check.mjs [--base http://localhost:8787] [--only 9a,9b] [--phase 2] [--width 320]
  *
  * For every built page in docs/agent-setup/manifest.json, at 390px wide:
  *   phone     no sideways scroll; the card runs edge to edge; two actions stack
@@ -26,6 +26,8 @@ const arg = (name, fallback) => (argv.includes(`--${name}`) ? argv[argv.indexOf(
 const BASE = String(arg('base', process.env.VISUAL_BASE || 'http://localhost:8787')).replace(/\/$/, '')
 const only = arg('only') ? String(arg('only')).split(',') : null
 const phase = arg('phase') ? Number(arg('phase')) : null
+/** Phone width to check at: 390 by default; 320 and 360 are the narrow phones. */
+const WIDTH = Number(arg('width', 390))
 
 const bin = findChromium()
 const browser = await chromium.launch(bin ? { executablePath: bin } : {})
@@ -40,7 +42,7 @@ for (const s of manifest.screens) {
   seen.add(slug)
   ran++
   const problems = []
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  const page = await browser.newPage({ viewport: { width: WIDTH, height: 844 }, hasTouch: true })
   try {
     await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'dark' })
     const res = await page.goto(`${BASE}/__design/${slug}`, { waitUntil: 'load' })
@@ -57,6 +59,40 @@ for (const s of manifest.screens) {
           if (r.width && (r.right > vw + 0.5 || r.left < -0.5) && getComputedStyle(el).position !== 'absolute') {
             out.push(`overflows the screen: <${el.tagName.toLowerCase()} class="${el.className}">`)
             break
+          }
+        }
+        // Nothing may be cut off: content wider than its own box, unless it is a line designed to truncate.
+        for (const el of document.querySelectorAll('.id-card *')) {
+          if (el.closest('[hidden], template, svg, select') || !el.getClientRects().length) continue
+          const st = getComputedStyle(el)
+          if (el.scrollWidth > el.clientWidth + 1 && st.overflowX !== 'visible' && st.textOverflow !== 'ellipsis' && !el.matches('.id-hidden-input, .id-sr')) {
+            out.push(`content cut off: <${el.tagName.toLowerCase()} class="${el.className}"> ${(el.textContent || '').trim().slice(0, 30)}`)
+            break
+          }
+        }
+        // An amount is never broken across lines.
+        for (const el of document.querySelectorAll('.id-card .id-kv__value, .id-card .id-amount, .id-card .id-plan__cost, .id-card .id-plan__value')) {
+          if (el.closest('[hidden], template') || !el.getClientRects().length) continue
+          const t = (el.textContent || '').trim()
+          // Lines of text, not the box: a stretched cell is tall without its text wrapping.
+          const range = document.createRange()
+          range.selectNodeContents(el)
+          const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)))
+          if (/^\$[\d,.]+(\/\w+)?( of \$[\d,.]+)?$/.test(t) && lines.size > 1) {
+            out.push(`amount broken across lines: ${t}`)
+            break
+          }
+        }
+        // No two pieces of text may collide: siblings in a row must not overlap.
+        for (const row of document.querySelectorAll('.id-card .id-kv, .id-card .id-plan__title, .id-card .id-spend__top, .id-card .id-evrow, .id-card .id-sstep__head, .id-card .id-payline, .id-card .id-method, .id-card .id-moneyrow, .id-card .id-connrow, .id-card .id-agentrow__summary, .id-card .id-plans__head, .id-card .id-alerts__row, .id-card .id-plan__item, .id-card .id-compare__row, .id-card .id-limit__top')) {
+          if (row.closest('[hidden], template') || !row.getClientRects().length) continue
+          const kids = [...row.children].filter((k) => k.getClientRects().length && getComputedStyle(k).position !== 'absolute').map((k) => k.getBoundingClientRect())
+          for (let i = 1; i < kids.length; i++) {
+            const sameLine = kids[i].top < kids[i - 1].bottom - 1 && kids[i].bottom > kids[i - 1].top + 1
+            if (sameLine && kids[i].left < kids[i - 1].right - 1) {
+              out.push(`overlap in <${row.tagName.toLowerCase()} class="${row.className}"> ${(row.textContent || '').trim().slice(0, 40)}`)
+              break
+            }
           }
         }
         const card = document.querySelector('.id-card')?.getBoundingClientRect()
@@ -152,5 +188,5 @@ for (const s of manifest.screens) {
   console.log(`${real.length ? 'FAIL' : 'PASS'}  ${s.id.padEnd(4)} ${problems.join(' · ')}`)
 }
 await browser.close()
-console.log(`\n${ran - failed}/${ran} pages pass at 390px, by keyboard and with reduced motion`)
+console.log(`\n${ran - failed}/${ran} pages pass at ${WIDTH}px, by keyboard and with reduced motion`)
 process.exit(failed ? 1 : 0)

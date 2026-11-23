@@ -108,7 +108,7 @@ export function ConnectPlan(p: ConnectPlanProps): JSX.Element {
             </CardFoot>
           }
         >
-          <CardHead connector={<Connector {...tiles(p.client, p.product)} state="idle" />} title={`Pick an ${p.product.name} plan`} description={`${p.client.name} is connecting to ${p.product.name} for you. Change plans anytime.`} />
+          <CardHead fill connector={<Connector {...tiles(p.client, p.product)} state="idle" />} title={`Pick an ${p.product.name} plan`} description={`${p.client.name} is connecting to ${p.product.name} for you. Change plans anytime.`} />
           <Dotted />
           <Who name={p.account.name} sub={p.account.email} right={<Link href={AGENT_ROUTES.switchAccount}>Switch</Link>} />
           <PlanPicker name="plan" plans={cards} billing={p.billing} yearly={yearly} />
@@ -174,7 +174,7 @@ export function ConnectPay(p: ConnectPayProps): JSX.Element {
             </CardFoot>
           }
         >
-          <CardHead connector={<Connector {...tiles(p.client, p.product)} state="idle" />} title={`Subscribe and connect ${p.client.name}`} description={rich(description)} />
+          <CardHead fill connector={<Connector {...tiles(p.client, p.product)} state="idle" />} title={`Subscribe and connect ${p.client.name}`} description={rich(description)} />
           <Dotted />
           <Well>
             {chargeSummary(p).map(([k, v]) => (

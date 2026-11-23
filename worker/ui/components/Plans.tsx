@@ -56,12 +56,14 @@ export function PlanCard({ name: group, plan }: { name: string; plan: PlanCardPr
           </span>
           <span class="id-plan__text">
             <span class="id-plan__title">
-              <span>{plan.name}</span>
-              <span class="id-plan__price">
-                <span data-price="monthly">{plan.price}</span>
-                <span data-price="yearly">{plan.priceYearly ?? plan.price}</span>
+              <span class="id-plan__name">{plan.name}</span>
+              <span class="id-plan__cost">
+                <span class="id-plan__price">
+                  <span data-price="monthly">{plan.price}</span>
+                  <span data-price="yearly">{plan.priceYearly ?? plan.price}</span>
+                </span>
+                {plan.priceNote ? <span class={plan.priceNote.startsWith('/') ? 'id-plan__note id-plan__note--slash' : 'id-plan__note'}>{plan.priceNote}</span> : null}
               </span>
-              {plan.priceNote ? <span class={plan.priceNote.startsWith('/') ? 'id-plan__note id-plan__note--slash' : 'id-plan__note'}>{plan.priceNote}</span> : null}
             </span>
             <span class="id-help">{plan.summary}</span>
           </span>

@@ -376,6 +376,16 @@
   color: var(--id-fg);
 }
 
+/* A line under the actions, or in the body, fills before it wraps (balanced lines break early). */
+.id-foottext--fill {
+  text-wrap: wrap;
+}
+
+/* A button whose icon follows its label (the arrow on actions that leave for another site). */
+.id-btn--icon-end .id-icon {
+  order: 1;
+}
+
 /* ── Two-line checkbox, terms line ──────────────────────────────────────── */
 
 .id-check--top {
@@ -690,14 +700,25 @@
 .id-plan__title {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  flex-wrap: wrap;
+  column-gap: 6px;
   font-size: 14px;
   line-height: 20px;
   font-weight: 500;
   color: var(--id-fg);
 }
+/* The name takes the spare room, so the price sits at the right; on a narrow
+   phone the price and its note drop to their own line, under the name. */
+.id-plan__name {
+  flex-grow: 1;
+}
+.id-plan__cost {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
 .id-plan__price {
-  margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
 .id-plan__note {
@@ -785,6 +806,16 @@
   align-items: center;
   justify-content: space-between;
 }
+/* A pictured field never wraps: it truncates, as a real input would. */
+.id-stripe__text {
+  min-width: 0;
+  /* Room for a glyph's overhang, so truncation never clips the last letter's edge. */
+  padding: 0 2px;
+  margin: 0 -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .id-stripe__box--value {
   color: var(--id-fg);
 }
@@ -833,7 +864,8 @@
 }
 .id-rowtext__name {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 2px 8px;
   align-items: center;
   font-size: 14px;
   font-weight: 500;
@@ -935,6 +967,11 @@
   gap: 12px;
   padding: 12px 14px;
   min-height: 60px;
+}
+.id-method > .id-link,
+.id-connrow > .id-link {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .id-method__mark {
   width: 40px;
@@ -1343,6 +1380,17 @@
   padding-top: 6px;
 }
 
+/* Money rows (a limit's lines, a plan's rates): the amount never breaks; a long label wraps instead. */
+.id-limit__lines .id-kv__key,
+.id-rates .id-kv__key {
+  flex-shrink: 1;
+}
+.id-limit__lines .id-kv__value,
+.id-rates .id-kv__value {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* ── Motion ─────────────────────────────────────────────────────────────── */
 
 @keyframes idpulse {
@@ -1375,5 +1423,37 @@
   .id-chevbtn .id-icon,
   .id-plan {
     transition: none;
+  }
+}
+
+/* ── Phones ─────────────────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  /* Stacked actions put the primary on top. Two quiet actions have no primary,
+     so they keep their order: Pause above Remove, Back above Export. */
+  .id-actions > .id-btn--secondary:last-child {
+    order: 0;
+  }
+  /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
+     new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
+     picture of Stripe's fields matches the real inputs beside it. */
+  .id-seg__cell {
+    height: 40px;
+  }
+  .id-stripe__box {
+    height: var(--id-control-h-phone);
+  }
+  /* The title and description fill each line before wrapping: balanced lines break too
+     early on a narrow screen. */
+  .id-head--fill .id-title,
+  .id-head--fill .id-desc {
+    text-wrap: wrap;
+  }
+}
+
+/* Field text is 16px on phones and touch screens (ui.css); the pictured fields follow. */
+@media (max-width: 480px), (pointer: coarse) {
+  .id-stripe__box {
+    font-size: 16px;
   }
 }

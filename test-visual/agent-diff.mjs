@@ -61,6 +61,12 @@ async function shoot(browser, url, [width, height]) {
   }
   await page.evaluate(() => document.fonts.ready)
   if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(SLASH_MONTH)
+  // Owner direction (2026-11-23): an arrow sits after a button's label; drawings put it before.
+  if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(() => document.querySelectorAll('svg').forEach((s) => s.querySelector('path[d="M7 7h10v10"]') && s.nextElementSibling && s.parentElement.append(s)))
+  // Owner direction (2026-11-23): on phones the title and description fill each line; drawings balance them.
+  if (url.startsWith('file:') && !argv.includes('--as-drawn') && width <= 480) await page.evaluate(() => document.querySelectorAll('h1, h1 + p').forEach((el) => (el.style.textWrap = 'wrap')))
+  // And the 13px lines under the actions and in the body fill before wrapping, at every width.
+  if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(() => document.querySelectorAll('[data-card] div').forEach((el) => el.style.textWrap === 'balance' && el.style.fontSize === '13px' && (el.style.textWrap = 'wrap')))
   await page.mouse.move(0, 0)
   // The org.ai mark changed after these screens were drawn (main's six-mark ring;
   // the drawings carry the older one). Hide it on both sides unless --with-mark.

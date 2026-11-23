@@ -289,3 +289,32 @@ describe('no red', () => {
     expect(css).not.toMatch(/\bred\b|oklch\(|#[0-9a-f]{3,8}\b|rgba?\(/i)
   })
 })
+
+describe('phones (the repo’s phone rules, applied to the new components)', () => {
+  const phone = css.slice(css.indexOf('/* ── Phones'))
+  it('two quiet actions keep their order when stacked; a primary still goes on top', () => {
+    expect(phone).toMatch(/\.id-actions > \.id-btn--secondary:last-child \{\s*order: 0;/)
+  })
+  it('the title and description fill the line instead of balancing', async () => {
+    expect(phone).toMatch(/\.id-head--fill \.id-title,\s*\.id-head--fill \.id-desc \{\s*text-wrap: wrap;/)
+    expect(css).toMatch(/\.id-foottext--fill \{\s*text-wrap: wrap;/)
+  })
+  it('method tabs and the pictured Stripe fields are 48px with 16px text, as real fields are', () => {
+    expect(phone).toMatch(/\.id-seg__cell \{\s*height: 40px;/)
+    expect(phone).toMatch(/\.id-stripe__box \{\s*height: var\(--id-control-h-phone\);/)
+    expect(css).toMatch(/@media \(max-width: 480px\), \(pointer: coarse\) \{\s*\.id-stripe__box \{\s*font-size: 16px;/)
+  })
+  it('an amount never breaks, a plan’s price drops under its name, and a row link never wraps', () => {
+    expect(css).toMatch(/\.id-limit__lines \.id-kv__value,\s*\.id-rates \.id-kv__value \{\s*flex-shrink: 0;\s*white-space: nowrap;/)
+    expect(css).toMatch(/\.id-plan__title \{[^}]*flex-wrap: wrap;/)
+    expect(css).toMatch(/\.id-plan__cost \{[^}]*white-space: nowrap;/)
+    expect(css).toMatch(/\.id-method > \.id-link,\s*\.id-connrow > \.id-link \{\s*white-space: nowrap;/)
+  })
+  it('the arrow on an action that leaves the site follows its label; other icons lead', async () => {
+    const away = await dom(<Button variant="primary" href="https://auto.dev/dashboard" icon="arrow_ur">Open developer dashboard</Button>)
+    expect(away.querySelector('a')!.className).toContain('id-btn--icon-end')
+    const pause = await dom(<Button variant="secondary" href="#" icon="pause">Pause</Button>)
+    expect(pause.querySelector('a')!.className).not.toContain('id-btn--icon-end')
+    expect(css).toMatch(/\.id-btn--icon-end \.id-icon \{\s*order: 1;/)
+  })
+})
