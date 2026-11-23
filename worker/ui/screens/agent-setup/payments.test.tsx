@@ -131,6 +131,9 @@ describe('20 · money views', () => {
   })
   it('20c traces a charge to the approval that allowed it', async () => {
     const d = await dom(<AgentCard {...P.charge} />)
+    // One action for now: the receipt. A refund request isn't offered.
+    expect([...d.querySelectorAll('.id-card__foot .id-btn')].map((b) => text(b))).toEqual(['View receipt'])
+    expect(d.querySelector('[data-actions]')).toBeNull()
     expect([...d.querySelectorAll('.id-group-label')].map((l) => l.textContent)).toEqual(['Allowed by'])
     expect(text(d.querySelectorAll('.id-well')[1]!.querySelector('.id-kv'))).toBe('Your approvalNov 22, 2:14 PM')
   })

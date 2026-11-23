@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The agent setup, payment and connect screens (HANDOFF.md section 2). 9f, 9g and 9h, phone drawings of 9b, 9a and 9c, are not listed: the pages are responsive, and their phone layout follows the repo's phone rules rather than those drawings (owner direction, 2026-11-23). `reference` screens are not built as pages.",
+  "note": "The agent setup, payment and connect screens (HANDOFF.md section 2). 9f, 9g and 9h, phone drawings of 9b, 9a and 9c, are not listed: the pages are responsive, and their phone layout follows the repo's phone rules rather than those drawings (owner direction, 2026-11-23). `reference` screens are not built as pages. `departs` says why a page deliberately differs from its drawing; the comparison reports those without failing.",
   "screens": [
     {
       "id": "9a",
@@ -247,7 +247,8 @@
         844
       ],
       "kind": "screen",
-      "phase": 2
+      "phase": 2,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
     },
     {
       "id": "12c",
@@ -572,7 +573,8 @@
         844
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
     },
     {
       "id": "19d",
@@ -585,7 +587,8 @@
         844
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
     },
     {
       "id": "19e",
@@ -663,7 +666,8 @@
         840
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "One action, \"View receipt\": \"Ask for a refund\" is not offered yet (owner direction, 2026-11-23)."
     },
     {
       "id": "20d",

@@ -20,6 +20,8 @@ export interface AgentScreen {
   phase: number
   /** A phone drawing of another screen: the slug of the fixture it shares. */
   renders?: string
+  /** Why the page deliberately differs from its drawing, when it does. */
+  departs?: string
 }
 
 export const AGENT_SCREENS = (manifest as { screens: AgentScreen[] }).screens

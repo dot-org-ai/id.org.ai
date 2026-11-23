@@ -340,8 +340,9 @@ const charge: AgentCardProps = {
     },
   ],
   foot: {
-    // Open decision 14: who decides a refund. Drawn as a request the person can send.
-    secondary: { label: 'Ask for a refund', value: 'refund' },
+    // One action for now (owner direction, 2026-11-23). The drawing also has "Ask for a refund" on the
+    // left; who decides a refund is still open (decision 14), so it isn't offered. To bring it back:
+    // secondary: { label: 'Ask for a refund', value: 'refund' },
     primary: { label: 'View receipt', value: 'receipt', icon: 'arrow_ur' },
     note: ['Didn’t expect this? ', { href: R.agentPause(AGENT_ID), label: 'Pause Claude Code' }],
   },

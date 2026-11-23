@@ -107,6 +107,7 @@ const bin = findChromium()
 const browser = await chromium.launch(bin ? { executablePath: bin } : {})
 let failed = 0
 let ran = 0
+let departed = 0
 for (const s of manifest.screens) {
   if (s.kind === 'reference') continue
   if (only && !only.includes(s.id)) continue
@@ -118,6 +119,11 @@ for (const s of manifest.screens) {
     const r = compare(mock.png, impl.png)
     const height = AGAINST === 'html' && mock.tall !== impl.tall ? ` · page height ${mock.tall} vs ${impl.tall}` : ''
     const pass = r.n >= 0 && r.n <= MAX && !height
+    if (!pass && s.departs) {
+      departed++
+      console.log(`NOTE  ${s.id.padEnd(4)} differs by direction: ${s.departs}`)
+      continue
+    }
     if (!pass) {
       failed++
       writeFileSync(join(OUT, `${s.id}.mock.png`), PNG.sync.write(mock.png))
@@ -131,5 +137,6 @@ for (const s of manifest.screens) {
   }
 }
 await browser.close()
-console.log(`\n${ran - failed}/${ran} match (${AGAINST}, at most ${MAX} px) · images in ${OUT}`)
+if (departed) console.log(`\n${departed} differ from their drawing by direction (manifest \`departs\`)`)
+console.log(`\n${ran - failed - departed}/${ran - departed} match (${AGAINST}, at most ${MAX} px) · images in ${OUT}`)
 process.exit(failed ? 1 : 0)
