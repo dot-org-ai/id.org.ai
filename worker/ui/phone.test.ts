@@ -96,9 +96,9 @@ describe('every screen size', () => {
 
   it('on phones the card fills the screen between header and footer, with its action band at the bottom', () => {
     const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
-    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \{\s*padding-top: 0;\s*padding-bottom: 0;\s*align-items: stretch;/)
-    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \.id-card \{\s*flex-grow: 1;\s*display: flex;\s*flex-direction: column;/)
-    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \.id-card__body \{\s*flex-grow: 1;/)
+    expect(phone).toMatch(/\.id-main,\s*\.id-main--top \{\s*padding-top: 0;\s*padding-bottom: 0;\s*align-items: stretch;/)
+    expect(phone).toMatch(/\.id-column > \.id-form:has\(\.id-card\),\s*\.id-main \.id-card \{\s*flex-grow: 1;\s*display: flex;\s*flex-direction: column;/)
+    expect(phone).toMatch(/\.id-main \.id-card__body \{\s*flex-grow: 1;/)
     // The band is never pinned to the viewport: a long card's buttons come after its content.
     expect(css).not.toMatch(/\.id-card__foot \{[^}]*position: (fixed|sticky)/)
   })

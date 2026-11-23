@@ -1853,21 +1853,22 @@ button.id-link[hidden] {
     min-height: calc(100dvh - 72px);
     box-sizing: border-box;
   }
-  .id-main:not(.id-main--top) {
+  /* Every page, the one that pins its card to the top on desktop (4b) included: on a phone
+     the card already starts at the header, so its top edge stays still either way. */
+  .id-main,
+  .id-main--top {
     padding-top: 0;
     padding-bottom: 0;
     align-items: stretch;
   }
-  .id-main--top {
-    padding-bottom: 0;
-  }
-  .id-main:not(.id-main--top) .id-column > .id-form,
-  .id-main:not(.id-main--top) .id-card {
+  /* Only the form that wraps the card grows: a page may hold another, empty form (1b's resend). */
+  .id-column > .id-form:has(.id-card),
+  .id-main .id-card {
     flex-grow: 1;
     display: flex;
     flex-direction: column;
   }
-  .id-main:not(.id-main--top) .id-card__body {
+  .id-main .id-card__body {
     flex-grow: 1;
   }
   .id-card {
