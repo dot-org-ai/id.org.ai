@@ -26,9 +26,11 @@ describe('19a · add a payment method', () => {
   it('leaves the method tabs to Stripe: none of our own, and the picture shows where Stripe draws them', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     expect(d.querySelectorAll('input[type=radio]')).toHaveLength(0)
-    const tabs = [...d.querySelectorAll('.id-stripe__picture .id-seg__cell')]
+    const tabs = [...d.querySelectorAll('.id-stripe__picture .id-stripe__tab')]
     expect(tabs.map((t) => t.textContent)).toEqual(['Card', 'US bank account'])
-    expect(tabs[0]!.className).toContain('id-seg__cell--on')
+    expect(tabs[0]!.className).toContain('id-stripe__tab--on')
+    // As Stripe draws them: an icon over the label.
+    expect(tabs.every((t) => t.querySelector('svg'))).toBe(true)
     expect(tabs[0]!.closest('[aria-hidden=true]')).not.toBeNull()
   })
 })

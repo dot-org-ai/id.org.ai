@@ -98,13 +98,17 @@ What follows for these screens:
 
 - It is themed through the Appearance API: `variables` for colours, font and radius, and `rules` for its own parts (`.Label`, `.Input`, `.Tab`, `.Tab--selected`). The colour variables accept no `rgba()` and no `var()`, so the mount script resolves our tokens to plain colours first.
 - Stripe asks for inputs of at least 16px on phones; the script uses 16px there, 14px on desktop, as our own fields do.
-- **Seen against Stripe on Nov 23, 2026** with a test publishable key, in deferred mode (no intent, nothing chargeable), at desktop and phone width. `/__design/19a-stripe-live` renders it when `wrangler dev` is started with `--var STRIPE_PUBLISHABLE_KEY:pk_test_…`; `node test-visual/stripe-live-shot.mjs out.png` puts it beside the picture. The key is never in the repo. What that showed:
-  - Inputs, labels, spacing, radius and colours match the card (44px inputs on desktop, 48px and 16px text on phones).
-  - Stripe's tabs are Card and US bank account. **Link is not a tab**: Stripe offers it inside the card form ("Secure, fast checkout with Link"). The picture now shows those two tabs and Stripe's own field labels ("Expiration date", "ZIP code").
-  - Stripe's tabs carry an icon above the label, so they are taller than our 36px segmented cells. The Appearance API can restyle them but not remove the icon.
-  - On a phone Stripe stacks Country and ZIP code. The handoff asks for two-up; that layout is Stripe's.
-  - Stripe prints its own mandate under the card fields ("By providing your card information, you allow {account name} to charge your card for future payments…"), using the Stripe account's name. It sits next to our consent sentence in the foot. It can be turned off for cards (`terms: { card: 'never' }`), which makes our sentence the only mandate; that is an open decision. Bank accounts must keep Stripe's.
-  - The deferred mode is limited to `card`, `us_bank_account` and `link`; without that Stripe also offered Cash App Pay, Klarna and Amazon Pay.
+- **Measured against Stripe on Nov 23, 2026** with a test publishable key, in deferred mode (no intent, nothing chargeable), at desktop and phone width. `/__design/19a-stripe-live` renders the real element when `wrangler dev` is started with `--var STRIPE_PUBLISHABLE_KEY:pk_test_…`. `test-visual/stripe-live-measure.mjs` reads the computed styles inside Stripe's frame and compares them with our own controls; `stripe-live-shot.mjs` puts the two side by side. The key is never in the repo.
+- **How it is themed.** `STRIPE_APPEARANCE` in `StripeFields.tsx` is written against our tokens. The mount script swaps each `var(--id-…)` for its value and converts every colour to plain `rgb()`/`rgba()` by painting a pixel. That conversion is required: handed `oklch()`, Stripe silently fell back to its own text colour (pure white) and its own border colour.
+- **What matches, by measurement:** inputs (height, fill, border, radius, inner shadow, text and placeholder colour, font), the focus state (border and ring), labels, and the selected and unselected tab (fill, border, radius, shadow, text). Geist loads inside Stripe's frame.
+- **Where we follow Stripe, because it does not let us change it:**
+  - Each tab is an icon over its label, 52px tall. Stripe's console says `"display" is not a supported property for ".TabIcon"`, and no `layout` option removes it. Our picture draws the same tiles.
+  - **Link is not a tab**: Stripe offers it inside the card form ("Secure, fast checkout with Link").
+  - On a phone Stripe stacks Country and ZIP code.
+  - The window for connecting a bank account, and Link's sign-in, are **light**. They are Stripe's own overlay, not part of the element; the `night` theme does not reach them and none of the docs read describes a dark option. Worth asking Stripe support.
+- **No box around the fields.** The drawing sets them in a sunk well; with the real element that made a box inside a box, so they sit straight on the card like every other field (owner question, 2026-11-23).
+- **Stripe's own mandate.** Under the card fields Stripe prints "By providing your card information, you allow {account name} to charge your card for future payments…", with the Stripe account's name, next to our consent sentence. `terms: { card: 'never' }` on the element hides it for cards; Stripe's reference says to consult legal advisors before changing mandate text. Open decision. Bank accounts keep Stripe's.
+- The deferred mode is limited to `card`, `us_bank_account` and `link`; without that Stripe also offered Cash App Pay, Klarna and Amazon Pay.
 - The fetched pages do not say whether Appearance works with a SetupIntent or a deferred intent; Stripe now recommends the Checkout Sessions API for the Payment Element. Confirm which one 19a uses before building it.
 
 ### Not built, on purpose

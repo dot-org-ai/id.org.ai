@@ -252,6 +252,16 @@ describe('StripeFields', () => {
     expect(box.querySelector('.id-stripe__picture')!.getAttribute('aria-hidden')).toBe('true')
     expect(box.textContent).toContain('These fields are Stripe’s. id.org.ai never sees your card number.')
   })
+  it('writes Stripe’s appearance against our tokens only, and only when there is a key to mount with', async () => {
+    const { STRIPE_APPEARANCE } = await import('./StripeFields')
+    const json = JSON.stringify(STRIPE_APPEARANCE)
+    expect(json).not.toMatch(/oklch\(|#[0-9a-f]{3,8}\b|rgba?\(/i)
+    expect(json).toContain('var(--id-panel)')
+    // Stripe's console rejects `display` on .TabIcon, so it isn't sent.
+    expect(json).not.toContain('TabIcon')
+    expect((await dom(<StripeFields />)).querySelector('[data-js=stripe-fields]')!.hasAttribute('data-appearance')).toBe(false)
+    expect((await dom(<StripeFields publishableKey="pk_test_x" mode="setup" />)).querySelector('[data-js=stripe-fields]')!.getAttribute('data-appearance')).toContain('"theme":"night"')
+  })
 })
 
 describe('agents and money', () => {

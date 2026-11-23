@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { formatAgo, initAgo } from './ago'
 import { initDisclose } from './disclose'
 import { initFollow } from './follow'
-import { initStripeFields } from './stripe-fields'
+import { initStripeFields, resolveAppearance } from './stripe-fields'
 import { initTerms } from './terms'
 
 afterEach(() => {
@@ -100,8 +100,8 @@ describe('ago', () => {
 })
 
 describe('stripe fields', () => {
-  const html = (attrs: string) => `<div ${attrs}><div data-stripe-mount hidden></div><div data-stripe-picture></div></div>`
-  it('leaves the picture in place without a key, a client secret or Stripe.js', () => {
+  const html = (attrs: string) => `<div ${attrs} data-appearance='{"theme":"night","variables":{"colorText":"var(--id-fg)","fontSizeBase":"14px"},"rules":{".Input":{"border":"1px solid var(--id-line-2)","padding":"12px 14px"}}}'><div data-stripe-mount hidden></div><div data-stripe-picture></div></div>`
+  it('leaves the picture in place without a key, an intent or mode, or Stripe.js', () => {
     document.body.innerHTML = html('')
     const box = document.body.firstElementChild as HTMLElement
     const make = vi.fn()
@@ -109,16 +109,37 @@ describe('stripe fields', () => {
     expect(make).not.toHaveBeenCalled()
     expect(box.querySelector<HTMLElement>('[data-stripe-picture]')!.hidden).toBe(false)
   })
-  it('mounts Stripe’s Payment Element and removes the picture when it has both', () => {
+  it('mounts Stripe’s Payment Element with our appearance and removes the picture', () => {
     document.body.innerHTML = html('data-publishable-key="pk_test_x" data-client-secret="seti_x"')
     const box = document.body.firstElementChild as HTMLElement
     const mount = vi.fn()
     const create = vi.fn(() => ({ mount }))
-    const make = vi.fn(() => ({ elements: () => ({ create }) }))
+    const elements = vi.fn(() => ({ create }))
+    const make = vi.fn(() => ({ elements }))
     initStripeFields(box, make)
     expect(make).toHaveBeenCalledWith('pk_test_x')
+    const opts = (elements.mock.calls[0] as unknown as [{ clientSecret: string; appearance: { theme: string; rules: Record<string, unknown> } }])[0]
+    expect(opts.clientSecret).toBe('seti_x')
+    expect(opts.appearance.theme).toBe('night')
+    expect(opts.appearance.rules['.Input']).toBeDefined()
     expect(create).toHaveBeenCalledWith('payment', expect.anything())
     expect(mount).toHaveBeenCalledWith(box.querySelector('[data-stripe-mount]'))
     expect(box.querySelector<HTMLElement>('[data-stripe-picture]')!.hidden).toBe(true)
+  })
+  it('without an intent, renders ahead of it and offers only card, US bank account and Link', () => {
+    document.body.innerHTML = html('data-publishable-key="pk_test_x" data-mode="setup"')
+    const elements = vi.fn(() => ({ create: () => ({ mount: () => {} }) }))
+    initStripeFields(document.body.firstElementChild as HTMLElement, () => ({ elements }))
+    const opts = (elements.mock.calls[0] as unknown as [{ mode: string; paymentMethodTypes: string[]; clientSecret?: string }])[0]
+    expect(opts.mode).toBe('setup')
+    expect(opts.paymentMethodTypes).toEqual(['card', 'us_bank_account', 'link'])
+    expect(opts.clientSecret).toBeUndefined()
+  })
+  it('hands Stripe token values, never a var() it would drop', () => {
+    const css = { getPropertyValue: (t: string) => ({ '--id-fg': '#f3f3f5', '--id-line-2': 'rgba(255, 255, 255, 0.14)' })[t] ?? '' } as unknown as CSSStyleDeclaration
+    const out = resolveAppearance('{"variables":{"colorText":"var(--id-fg)"},"rules":{".Input":{"border":"1px solid var(--id-line-2)"}}}', css) as { variables: { colorText: string }; rules: Record<string, { border: string }> }
+    expect(out.variables.colorText).toBe('#f3f3f5')
+    expect(out.rules['.Input']!.border).toBe('1px solid rgba(255, 255, 255, 0.14)')
+    expect(JSON.stringify(out)).not.toContain('var(')
   })
 })

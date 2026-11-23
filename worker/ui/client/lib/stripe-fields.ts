@@ -14,63 +14,43 @@ interface StripeLike {
   elements(o: unknown): { create(type: 'payment', o?: unknown): { mount(el: Element): void } }
 }
 
-/** A token's colour as rgb()/hex, which Stripe's appearance settings accept (tokens are oklch). */
-function colour(el: Element, token: string): string {
-  const ctx = document.createElement('canvas').getContext('2d')
-  if (!ctx) return ''
-  ctx.fillStyle = getComputedStyle(el).getPropertyValue(token).trim()
-  return ctx.fillStyle
+/** Any CSS colour as plain rgb() or rgba(), by painting one pixel and reading it back. */
+function plain(colour: string): string {
+  const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+  if (!ctx) return colour
+  ctx.fillStyle = colour
+  ctx.fillRect(0, 0, 1, 1)
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+  return a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${+((a ?? 0) / 255).toFixed(3)})`
+}
+
+/**
+ * The appearance the server wrote against our tokens, made readable to Stripe: each
+ * `var(--id-…)` becomes the token's value, and every oklch() colour becomes rgb()/rgba().
+ */
+export function resolveAppearance(json: string, css: CSSStyleDeclaration): unknown {
+  return JSON.parse(json, (_k, v) =>
+    typeof v === 'string' ? v.replace(/var\((--[\w-]+)\)/g, (_m, t: string) => css.getPropertyValue(t).trim()).replace(/oklch\([^)]*\)/g, plain) : v,
+  )
 }
 
 export function initStripeFields(box: HTMLElement, make = (window as unknown as { Stripe?: (key: string) => StripeLike }).Stripe): void {
-  const { publishableKey, clientSecret, mode } = box.dataset
+  const { publishableKey, clientSecret, mode, appearance: json } = box.dataset
   const mount = box.querySelector<HTMLElement>('[data-stripe-mount]')
-  if (!publishableKey || !(clientSecret || mode) || !make || !mount) return
-  const css = getComputedStyle(box)
-  const c = (t: string) => colour(box, t)
-  const v = (t: string) => css.getPropertyValue(t).trim()
-  const phone = matchMedia('(max-width: 480px), (pointer: coarse)').matches
-  const line = c('--id-line-2')
-  const flat = { boxShadow: 'none', outline: 'none' }
-  const field = { ...flat, backgroundColor: c('--id-panel'), border: `1px solid ${line}`, padding: phone ? '13px 14px' : '12px 14px', lineHeight: '18px' }
-  const tab = { ...flat, backgroundColor: 'transparent', border: '1px solid transparent', color: c('--id-fg-2'), padding: '8px 12px' }
-  const tabOn = { ...tab, backgroundColor: c('--id-raised'), borderColor: line, color: c('--id-fg') }
+  if (!publishableKey || !(clientSecret || mode) || !make || !mount || !json) return
+  const appearance = resolveAppearance(json, getComputedStyle(box)) as { variables: Record<string, string>; rules: Record<string, Record<string, string>> }
+  // Stripe asks for 16px inputs on phones (iOS zooms below that); our own fields are 16px and 48px tall there.
+  if (matchMedia('(max-width: 480px), (pointer: coarse)').matches) {
+    appearance.variables.fontSizeBase = '16px'
+    for (const k in appearance.rules) if (k.startsWith('.Input')) appearance.rules[k]!.padding = '14px 14px'
+  }
   const elements = make(publishableKey).elements({
     // A client secret when the intent exists; otherwise Stripe renders ahead of it (deferred),
     // offering only what an agent can be allowed to charge later.
     ...(clientSecret ? { clientSecret } : { mode, currency: 'usd', paymentMethodTypes: ['card', 'us_bank_account', 'link'] }),
     // Geist inside Stripe's frame, from our own origin (the font files allow cross-origin use).
     fonts: [{ family: 'Geist', src: 'url(https://id.org.ai/fonts/geist/Geist-Variable.woff2)', weight: '100 900' }],
-    appearance: {
-      theme: 'night',
-      variables: {
-        fontFamily: v('--id-font'),
-        // Stripe asks for 16px inputs on phones (iOS zooms below that), as our own fields use.
-        fontSizeBase: phone ? '16px' : '14px',
-        fontSizeSm: '13px',
-        borderRadius: v('--id-r-control'),
-        gridRowSpacing: '12px',
-        gridColumnSpacing: '12px',
-        colorBackground: c('--id-panel'),
-        colorText: c('--id-fg'),
-        colorTextSecondary: c('--id-fg-2'),
-        colorTextPlaceholder: c('--id-fg-3'),
-        colorPrimary: c('--id-fg'),
-        colorDanger: c('--id-accent'),
-        iconColor: c('--id-fg-3'),
-      },
-      // The element's own parts, matched to ours: labels, fields, and its method tabs as the segmented cells.
-      rules: {
-        '.Label': { fontSize: '13px', fontWeight: '500', color: c('--id-fg-2'), marginBottom: '6px' },
-        '.Input': field,
-        '.Input:focus': { ...field, borderColor: c('--id-fg-2') },
-        '.Tab': tab,
-        '.Tab:hover': { ...tab, color: c('--id-fg') },
-        '.Tab--selected': tabOn,
-        '.Tab--selected:focus': tabOn,
-        '.TabLabel': { fontSize: '13px', fontWeight: '500' },
-      },
-    },
+    appearance,
   })
   elements.create('payment', { layout: 'tabs' }).mount(mount)
   mount.hidden = false

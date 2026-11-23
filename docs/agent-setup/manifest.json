@@ -548,7 +548,7 @@
       ],
       "kind": "screen",
       "phase": 7,
-      "departs": "Stripe's Payment Element draws its own method tabs, so the tabs sit inside Stripe's well instead of above it as a separate control (owner direction, 2026-11-23)."
+      "departs": "Stripe's Payment Element draws its own method tabs (icon over label) and its own field labels, and its fields sit straight on the card with no box around them; the picture shows what Stripe really draws (measured against the real element, 2026-11-23)."
     },
     {
       "id": "19b",

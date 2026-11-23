@@ -2628,7 +2628,6 @@ button.id-link[hidden] {
   position: absolute;
   inset: -4px 0;
 }
-.id-seg__cell--on,
 .id-seg__cell:has(.id-hidden-input:checked) {
   background: var(--id-raised);
   color: var(--id-fg);
@@ -2829,9 +2828,39 @@ button.id-link[hidden] {
 
 /* ── Stripe's fields (19a) ──────────────────────────────────────────────── */
 
-/* Inside Stripe's well the tab strip is a shade up from the well, so it still reads as a strip. */
-.id-stripe__picture .id-seg {
-  background: var(--id-panel);
+/* The picture of Stripe's method tabs: an icon over its label, as Stripe draws them (the
+   Appearance API restyles a tab but can't remove its icon). Sizes measured from the real element. */
+.id-stripe__tabs {
+  display: flex;
+  gap: 7px;
+}
+.id-stripe__tab {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 52px;
+  padding: 8px 12px;
+  border-radius: var(--id-r-sm);
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 15px;
+  color: var(--id-fg-2);
+}
+.id-stripe__tab--on {
+  background: var(--id-raised);
+  border-color: var(--id-line-2);
+  box-shadow: var(--id-sh-ctrl);
+  color: var(--id-fg);
+}
+/* Stripe's fields sit straight on the card, as our own fields do: no sunk box around them. */
+.id-stripe {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 /* Stripe's Payment Element mounts here. Until it does, the box holds a picture
    of it (aria-hidden, never real inputs), which the element replaces. */
@@ -3529,6 +3558,10 @@ button.id-link[hidden] {
 @media (max-width: 480px), (pointer: coarse) {
   .id-stripe__box {
     font-size: 16px;
+  }
+  /* Stripe's tabs measure 53px at its 16px base size. */
+  .id-stripe__tab {
+    height: 53px;
   }
 }
 
