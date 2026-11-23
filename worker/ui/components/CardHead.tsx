@@ -7,17 +7,12 @@ export interface CardHeadProps {
   title: Child
   /** Rich text: highlight names with <Em>. */
   description?: Child
-  /**
-   * On phones, let the title and description fill each line before wrapping, instead of
-   * balancing their lines (owner direction, 2026-11-23, for the agent setup screens).
-   */
-  fill?: boolean
 }
 
 /** The card head: connector, then the title and description, centred. */
-export function CardHead({ connector, title, description, fill }: CardHeadProps): JSX.Element {
+export function CardHead({ connector, title, description }: CardHeadProps): JSX.Element {
   return (
-    <div class={fill ? 'id-head id-head--fill' : 'id-head'}>
+    <div class="id-head">
       {connector}
       <div class="id-head__text">
         <h1 class="id-title" tabindex={-1}>{title}</h1>

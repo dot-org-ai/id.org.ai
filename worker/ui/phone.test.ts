@@ -94,9 +94,23 @@ describe('every screen size', () => {
     expect(render).not.toMatch(/maximum-scale|user-scalable/)
   })
 
-  it('no gap around the card on phones: it starts where the header ends, and the footer follows it', () => {
+  it('on phones the card fills the screen between header and footer, with its action band at the bottom', () => {
     const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
-    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \{\s*padding-top: 0;\s*padding-bottom: 0;\s*align-items: flex-start;/)
-    expect(phone).toMatch(/\.id-main--top \{\s*padding-bottom: 0;/)
+    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \{\s*padding-top: 0;\s*padding-bottom: 0;\s*align-items: stretch;/)
+    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \.id-card \{\s*flex-grow: 1;\s*display: flex;\s*flex-direction: column;/)
+    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \.id-card__body \{\s*flex-grow: 1;/)
+    // The band is never pinned to the viewport: a long card's buttons come after its content.
+    expect(css).not.toMatch(/\.id-card__foot \{[^}]*position: (fixed|sticky)/)
+  })
+
+  it('on phones, titles, descriptions and foot lines fill the line and never end on a lone word', () => {
+    const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
+    expect(phone).toMatch(/\.id-title,\s*\.id-desc,\s*\.id-foottext \{\s*text-wrap: wrap;\s*text-wrap: pretty;/)
+  })
+
+  it('two quiet actions keep their order when stacked; a primary still goes on top', () => {
+    const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
+    expect(phone).toMatch(/\.id-actions > :last-child \{\s*order: -1;/)
+    expect(phone).toMatch(/\.id-actions > \.id-btn--secondary:last-child \{\s*order: 0;/)
   })
 })

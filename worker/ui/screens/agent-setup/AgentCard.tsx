@@ -35,7 +35,7 @@ export function AgentCard(p: AgentCardProps): JSX.Element {
         ) : undefined
       }
     >
-      <CardHead fill connector={head} title={p.title} description={rich(p.description)} />
+      <CardHead connector={head} title={p.title} description={rich(p.description)} />
       <Blocks blocks={p.blocks} />
     </Card>
   )

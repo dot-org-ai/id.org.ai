@@ -71,7 +71,7 @@ export function SetupApprove(p: SetupApproveProps): JSX.Element {
             </CardFoot>
           }
         >
-          <CardHead fill connector={<Connector left={{ kind: 'org' }} right={p.agent.tile} state="idle" />} title={p.title} description={rich(p.description)} />
+          <CardHead connector={<Connector left={{ kind: 'org' }} right={p.agent.tile} state="idle" />} title={p.title} description={rich(p.description)} />
           <Dotted />
           <Who name={p.account.name} sub={p.account.email} right={<Link href={AGENT_ROUTES.switchAccount}>Switch</Link>} />
           <Field id="setup-workspace" label="Workspace">

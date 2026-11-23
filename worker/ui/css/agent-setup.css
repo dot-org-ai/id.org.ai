@@ -1431,11 +1431,6 @@
 /* ── Phones ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 480px) {
-  /* Stacked actions put the primary on top. Two quiet actions have no primary,
-     so they keep their order: Pause above Remove, Back above Export. */
-  .id-actions > .id-btn--secondary:last-child {
-    order: 0;
-  }
   /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
      new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
      picture of Stripe's fields matches the real inputs beside it. */
@@ -1444,14 +1439,6 @@
   }
   .id-stripe__box {
     height: var(--id-control-h-phone);
-  }
-  /* The title and description fill each line before wrapping (balanced lines break too early
-     on a narrow screen), but never leave one word alone on the last line: `pretty` moves a
-     word or two down so the ending looks even. Browsers without it wrap plainly. */
-  .id-head--fill .id-title,
-  .id-head--fill .id-desc {
-    text-wrap: wrap;
-    text-wrap: pretty;
   }
 }
 

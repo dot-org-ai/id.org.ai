@@ -1909,16 +1909,30 @@ button.id-link[hidden] {
 /* ── Phones (layout.md#phones-viewport--480px) ─────────────────────────── */
 
 @media (max-width: 480px) {
-  /* No gap around the card: it starts where the header ends, short cards included (so it sits
-     at the top, not the middle of the screen), and the footer follows it directly; the footer
-     keeps its own 24px (owner direction, 2026-11-23). */
+  /* The card fills the screen between the header and the footer links (owner direction,
+     2026-11-23): no gap above or below it, and its action band sits at the bottom, so a short
+     card puts its buttons in thumb reach instead of floating above empty space. A long card
+     is unchanged: the buttons still come after the content. Nothing is pinned to the
+     viewport, so nobody can approve past what they haven't scrolled through. */
+  .id-page {
+    min-height: 100dvh;
+  }
   .id-main:not(.id-main--top) {
     padding-top: 0;
     padding-bottom: 0;
-    align-items: flex-start;
+    align-items: stretch;
   }
   .id-main--top {
     padding-bottom: 0;
+  }
+  .id-main:not(.id-main--top) .id-column > .id-form,
+  .id-main:not(.id-main--top) .id-card {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .id-main:not(.id-main--top) .id-card__body {
+    flex-grow: 1;
   }
   .id-card {
     align-self: stretch !important;
@@ -1942,6 +1956,20 @@ button.id-link[hidden] {
   }
   .id-actions > * {
     min-height: var(--id-control-h-phone) !important;
+  }
+  /* Two quiet actions have no primary, so they keep their order when stacked: Pause above
+     Remove, Back above Export (owner direction, 2026-11-23). */
+  .id-actions > .id-btn--secondary:last-child {
+    order: 0;
+  }
+  /* Titles, descriptions and foot lines fill each line before wrapping (balanced lines break
+     too early on a narrow screen) and never leave one word alone on the last line. Browsers
+     without `pretty` wrap plainly (owner direction, 2026-11-23). */
+  .id-title,
+  .id-desc,
+  .id-foottext {
+    text-wrap: wrap;
+    text-wrap: pretty;
   }
   /* Side-by-side radio cards (3a's Access) stack, in DOM order (owner direction, 2026-10-01). */
   .id-radios--row {
@@ -3416,11 +3444,6 @@ button.id-link[hidden] {
 /* ── Phones ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 480px) {
-  /* Stacked actions put the primary on top. Two quiet actions have no primary,
-     so they keep their order: Pause above Remove, Back above Export. */
-  .id-actions > .id-btn--secondary:last-child {
-    order: 0;
-  }
   /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
      new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
      picture of Stripe's fields matches the real inputs beside it. */
@@ -3429,14 +3452,6 @@ button.id-link[hidden] {
   }
   .id-stripe__box {
     height: var(--id-control-h-phone);
-  }
-  /* The title and description fill each line before wrapping (balanced lines break too early
-     on a narrow screen), but never leave one word alone on the last line: `pretty` moves a
-     word or two down so the ending looks even. Browsers without it wrap plainly. */
-  .id-head--fill .id-title,
-  .id-head--fill .id-desc {
-    text-wrap: wrap;
-    text-wrap: pretty;
   }
 }
 
