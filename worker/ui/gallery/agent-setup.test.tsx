@@ -15,7 +15,7 @@ const built = AGENT_SCREENS.filter((s) => s.kind !== 'reference' && fixtures[fix
 function words(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html')
   // Spoken-only text and decoration: visually hidden labels, the tiles and avatar, the picture of Stripe's fields.
-  for (const el of doc.querySelectorAll('script, style, template, title, option:not([selected]), .id-sr, [hidden], footer, .id-conn, .id-avatar, .id-stripe__picture')) el.remove()
+  for (const el of doc.querySelectorAll('script, style, template, title, option:not([selected]), .id-sr, [hidden], footer, .id-conn, .id-avatar, .id-stripe__picture, [style*="clip: rect(0 0 0 0)"]')) el.remove()
   // The tiles above the title are decorative (the connector is aria-hidden on the page).
   doc.querySelector('h1')?.parentElement?.previousElementSibling?.remove()
   // So are the avatar's initials (aria-hidden on the page; a bare 32px circle in the drawing).

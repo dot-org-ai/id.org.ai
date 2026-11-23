@@ -42,12 +42,16 @@ export interface SetupApproveProps {
   workspaces: SelectOption[]
   selectedWorkspace: string
   permissions: PermissionItem[]
+  /** The limit's label when it covers more than one API (17a: "Spend limit, all three"). */
+  spendLabel?: string
   spendLimits: SelectOption[]
   selectedSpend: string
   expiries: SelectOption[]
   selectedExpiry: string
   /** "Visa ending 4417". None: the line offers to add one. */
   payMethod?: string
+  /** 17a is drawn without the pays-with line (revision 2 added it to 9a only). */
+  payLine?: boolean
   foot: FootProps
   /** `/agent?code=…` */
   action: string
@@ -75,14 +79,14 @@ export function SetupApprove(p: SetupApproveProps): JSX.Element {
           </Field>
           <PermissionList heading={`${p.agent.name} would like to`} items={p.permissions} />
           <div class="id-agent-limits">
-            <Field id="setup-spend" label="Spend limit">
+            <Field id="setup-spend" label={p.spendLabel ?? 'Spend limit'}>
               <Select id="setup-spend" name="spend_limit" options={p.spendLimits} selected={p.selectedSpend} />
             </Field>
             <Field id="setup-expiry" label="Expires">
               <Select id="setup-expiry" name="expires" options={p.expiries} selected={p.selectedExpiry} />
             </Field>
           </div>
-          <PayLine method={p.payMethod} href={AGENT_ROUTES.paymentMethods} addHref={AGENT_ROUTES.paymentMethodNew} />
+          {p.payLine === false ? null : <PayLine method={p.payMethod} href={AGENT_ROUTES.paymentMethods} addHref={AGENT_ROUTES.paymentMethodNew} />}
           <Dotted />
           <SourceRow icon="key" mono display={`${p.agent.keyType} · ${shortFingerprint(p.agent.fingerprint)}`} copyValue={p.agent.fingerprint} copied={p.copied} details={p.source} />
         </Card>

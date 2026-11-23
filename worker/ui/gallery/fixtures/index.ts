@@ -15,6 +15,7 @@ import { securityFixtures } from './security'
 import { setupFixtures } from './setup'
 import { setupEmailsFixtures } from './setup-emails'
 import { signinFixtures } from './signin'
+import { workflowFixtures } from './workflows'
 
 export const fixtures: FixtureGroup = {
   ...signinFixtures,
@@ -30,4 +31,5 @@ export const fixtures: FixtureGroup = {
   ...agentsManageFixtures,
   ...setupEmailsFixtures,
   ...directoryFixtures,
+  ...workflowFixtures,
 }
