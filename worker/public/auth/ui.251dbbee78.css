@@ -2580,12 +2580,19 @@ button.id-link[hidden] {
   padding: 14px;
 }
 .id-plan__pick {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
   flex-grow: 1;
   min-width: 0;
   cursor: pointer;
+}
+/* The radio's hit area fills the card's padding, up to the chevron's own. */
+.id-plan__pick::before {
+  content: '';
+  position: absolute;
+  inset: -14px 0 -14px -14px;
 }
 .id-plan:has(.id-hidden-input:checked) .id-radio__ring {
   border-color: var(--id-fg);
