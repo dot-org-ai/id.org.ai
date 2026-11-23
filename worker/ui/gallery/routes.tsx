@@ -1,6 +1,6 @@
 /**
  * Design gallery: GET /__design (index), GET /__design/:slug?state=<name>, and
- * GET /__design/agent-setup (the 66 agent setup screens by ID).
+ * GET /__design/agent-setup (the agent setup screens by ID).
  *
  * Dev only. It answers only when env.DESIGN_GALLERY === '1' (worker/.dev.vars);
  * that is never set in wrangler.jsonc, so in production every /__design path
@@ -47,7 +47,7 @@ function Index(): JSX.Element {
       <Card>
         <h1 class="id-gallery__title">Design gallery</h1>
         <a href="/__design/components">Component sheet</a>
-        <a href="/__design/agent-setup">Agent setup, payments and connect: 66 screens by ID</a>
+        <a href="/__design/agent-setup">Agent setup, payments and connect: every screen by ID</a>
         <ul class="id-gallery">
           {SCREENS.map((s) => {
             const f = fixtures[s.slug]
@@ -76,7 +76,7 @@ galleryRoutes.get('/__design/agent-setup', async (c, next) => {
   return renderPage(c, <AgentSetupIndex fixtures={fixtures} />, { title: 'Agent setup screens · id.org.ai', styles: ['gallery.css'] })
 })
 
-/** A phone drawing (9f, 9g, 9h) is the same fixture as its desktop screen, at phone width. */
+/** A manifest entry may share another screen's fixture (`renders`); none does now that the phone drawings are unlisted. */
 const SHARED = Object.fromEntries(AGENT_SCREENS.filter((s) => s.renders).map((s) => [s.slug, fixtureSlug(s)]))
 
 galleryRoutes.get('/__design/:slug', async (c, next) => {

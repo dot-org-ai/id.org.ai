@@ -23,9 +23,9 @@ const approve: AgentApproveProps = {
   ],
   selectedTrust: 'trusted',
   spendLimits: [
-    { value: '50', label: '$50 a month' },
+    { value: '50', label: '$50/month' },
     { value: '0', label: '$0 — no spending' },
-    { value: '250', label: '$250 a month' },
+    { value: '250', label: '$250/month' },
     { value: 'none', label: 'No limit' },
   ],
   selectedSpend: '50',

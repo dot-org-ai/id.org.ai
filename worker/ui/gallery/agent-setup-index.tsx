@@ -1,7 +1,8 @@
 /**
- * /__design/agent-setup: the 66 agent setup, payment and connect screens by ID
+ * /__design/agent-setup: the agent setup, payment and connect screens by ID
  * (docs/agent-setup/HANDOFF.md section 2), each rendered from its fixture so it
- * can be compared with its PNG. Dev only, like the rest of the gallery.
+ * can be compared with its PNG. The three phone drawings (9f, 9g, 9h) are not
+ * listed: 9b, 9a and 9c are the same pages, and they are responsive. Dev only, like the rest of the gallery.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import manifest from '../../../docs/agent-setup/manifest.json'

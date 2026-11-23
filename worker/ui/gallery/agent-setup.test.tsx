@@ -44,14 +44,11 @@ async function page(slug: string): Promise<string> {
 }
 
 describe('agent setup screens', () => {
-  it('each built screen is in the manifest by its ID, and a phone drawing shares its desktop fixture', () => {
-    expect(AGENT_SCREENS).toHaveLength(66)
-    expect(new Set(AGENT_SCREENS.map((s) => s.id)).size).toBe(66)
-    expect(AGENT_SCREENS.filter((s) => s.renders).map((s) => [s.id, s.renders])).toEqual([
-      ['9f', '9b-setup-running'],
-      ['9g', '9a-setup-approve'],
-      ['9h', '9c-setup-needs-you'],
-    ])
+  it('lists every screen once by its ID; the three phone drawings are not separate entries', () => {
+    expect(AGENT_SCREENS).toHaveLength(63)
+    expect(new Set(AGENT_SCREENS.map((s) => s.id)).size).toBe(63)
+    for (const id of ['9f', '9g', '9h']) expect(AGENT_SCREENS.find((s) => s.id === id)).toBeUndefined()
+    expect(AGENT_SCREENS.filter((s) => s.renders)).toEqual([])
   })
 
   for (const s of built) {

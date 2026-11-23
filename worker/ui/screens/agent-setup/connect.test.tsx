@@ -97,7 +97,7 @@ describe('24c · connected', () => {
   })
 })
 
-describe('all 66', () => {
+describe('every screen', () => {
   it('every screen except the terminal reference renders from a fixture', () => {
     const missing = AGENT_SCREENS.filter((s) => s.kind !== 'reference' && !fixtures[fixtureSlug(s)]).map((s) => s.id)
     expect(missing).toEqual([])

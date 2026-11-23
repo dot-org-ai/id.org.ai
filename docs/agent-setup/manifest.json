@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The 66 agent setup, payment and connect screens (HANDOFF.md section 2). `renders` names the fixture a phone drawing shares; `reference` screens are not built as pages.",
+  "note": "The agent setup, payment and connect screens (HANDOFF.md section 2). 9f, 9g and 9h, phone drawings of 9b, 9a and 9c, are not listed: the pages are responsive, and their phone layout follows the repo's phone rules rather than those drawings (owner direction, 2026-11-23). `reference` screens are not built as pages.",
   "screens": [
     {
       "id": "9a",
@@ -65,48 +65,6 @@
         1060
       ],
       "kind": "screen",
-      "phase": 2
-    },
-    {
-      "id": "9f",
-      "slug": "9f-setup-phone",
-      "file": "screens/html/9f-SetupPhone.html",
-      "png": "screens/png/9f-SetupPhone.png",
-      "title": "9b at phone width",
-      "size": [
-        390,
-        892
-      ],
-      "kind": "screen",
-      "renders": "9b-setup-running",
-      "phase": 2
-    },
-    {
-      "id": "9g",
-      "slug": "9g-setup-approve-phone",
-      "file": "screens/html/9g-SetupApprovePhone.html",
-      "png": "screens/png/9g-SetupApprovePhone.png",
-      "title": "9a at phone width",
-      "size": [
-        390,
-        1216
-      ],
-      "kind": "screen",
-      "renders": "9a-setup-approve",
-      "phase": 2
-    },
-    {
-      "id": "9h",
-      "slug": "9h-setup-needs-you-phone",
-      "file": "screens/html/9h-SetupNeedsYouPhone.html",
-      "png": "screens/png/9h-SetupNeedsYouPhone.png",
-      "title": "9c at phone width",
-      "size": [
-        390,
-        1232
-      ],
-      "kind": "screen",
-      "renders": "9c-setup-needs-you",
       "phase": 2
     },
     {
