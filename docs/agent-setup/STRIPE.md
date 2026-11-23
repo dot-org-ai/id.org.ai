@@ -119,4 +119,8 @@ What follows for these screens:
 
 ### Product logos
 
-The drawings use letter tiles only ("No real product logos"). By owner direction (2026-11-23) a product may send `logo_url` with its `tile` letters, and every screen about that product then carries its logo in the tile. The letters remain required: they show when there is no logo, when the URL is refused (not https and not a first-party `/brand/` file), or when the image fails to load. The gallery shows this as `?state=branded` on 9b, 9e, 19b, 19e, 20c, 24a, 24b and 24c, with the Auto.dev mark that ships in `worker/ui/static/brand/`. A connecting app (24) can carry its registered logo the same way.
+The drawings use letter tiles only ("No real product logos"). By owner direction (2026-11-23) a product may send `logo_url` with its `tile` letters, and every screen about that product then carries its logo in the tile. The letters remain required: they show when there is no logo, when the URL is refused (not https and not a first-party `/brand/` file), or when the image fails to load. A connecting app (24) can carry its registered logo the same way.
+
+The gallery shows this as `?state=branded` on every screen about Auto.dev (22 of them), with the Auto.dev mark that ships in `worker/ui/static/brand/` and, for Claude and Claude Code, the mark auto.dev serves at `https://www.auto.dev/logos/ai/claude.svg`. Defaults keep the drawn letters and icons, so the comparison with the drawings stays exact. The other products (apis.email, apis.directory, headless.ly, APIs.ax) keep their letters until their marks are added.
+
+Found while doing this: Claude's client document declares no `logo_uri`, and claude.ai serves `/favicon.svg` for same-origin use only, so a browser refuses it on our pages; its PNG and `.ico` do load but sit on a filled square. `worker/utils/app-icon.ts` prefers an SVG icon, so real Claude sign-ins may be showing letters today. Not changed here.

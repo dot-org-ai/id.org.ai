@@ -8,7 +8,7 @@ import type { Product, Setup, SetupStep } from '../../agent-setup/types'
 import { SetupApprove, type SetupApproveProps } from '../../screens/agent-setup/SetupApprove'
 import { SetupPage, type SetupPageProps } from '../../screens/agent-setup/SetupPage'
 import { defineFixture, type FixtureGroup } from '../types'
-import { AGENT_ID, AUTO_DEV, CLAUDE_CODE, setupProps } from './setup'
+import { AGENT_ID, AUTO_DEV, CLAUDE_CODE, setupPage, setupProps } from './setup'
 
 const at = (hhmm: string) => `2026-11-22T19:${hhmm}:00Z`
 const done = (id: string, title: string, minute: string, detail?: string, tag?: string): SetupStep => ({ id, title, detail, tag, state: 'done', at: at(minute) })
@@ -337,7 +337,7 @@ const saasLive: SetupPageProps = {
 /** The default props per screen, shared with the screens' unit tests. */
 export const workflowProps = { migRunning, migDecide, migSwitch, migDone, jobApprove, jobRunning, jobDone, saasMap, saasRunning, saasLive }
 
-const page = (props: SetupPageProps, scripts: 'ago.js'[] = ['ago.js']) => defineFixture({ screen: SetupPage, title: (p) => `${p.title} · id.org.ai`, scripts, default: props })
+const page = setupPage
 
 export const workflowFixtures: FixtureGroup = {
   '16a-mig-running': page(migRunning),

@@ -19,7 +19,7 @@ describe('19a · add a payment method', () => {
     expect(box.querySelectorAll('input, select, textarea')).toHaveLength(0)
     // Whose fields they are is said once, with a lock, under the buttons.
     expect(box.textContent).not.toContain('id.org.ai never sees')
-    expect(text(d.querySelector('.id-card__foot .id-footnote'))).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
+    expect(text(d.querySelector('.id-card__foot .id-footnote'))).toBe('The card fields are Stripe’s. id.org.ai never sees your payment information.')
     // Inside the card, a dotted rule sets the fields apart from the choice under them.
     expect(box.nextElementSibling!.matches('.id-rule')).toBe(true)
     expect(box.nextElementSibling!.nextElementSibling!.matches('label.id-check')).toBe(true)

@@ -9,7 +9,7 @@ import type { TileContent } from '../../components'
 import { AgentCard, type AgentCardProps } from '../../screens/agent-setup/AgentCard'
 import { SetupPage, type SetupPageProps } from '../../screens/agent-setup/SetupPage'
 import { defineFixture, type FixtureGroup } from '../types'
-import { AGENT_ID, approved, AUTO_DEV, AUTO_DEV_LOGO, autoDev, branded, CLAUDE_CODE, firstCallDone, liveKeyTodo, ORG, productionTodo, SETUP_ID, testKey, VISA } from './setup'
+import { AGENT_ID, approved, AUTO_DEV, AUTO_DEV_LOGO, autoDev, CLAUDE_TILE, setupPage, CLAUDE_CODE, firstCallDone, liveKeyTodo, ORG, productionTodo, SETUP_ID, testKey, VISA } from './setup'
 
 const BOT = CLAUDE_CODE.tile
 const CARD: TileContent = { kind: 'icon', icon: 'card' }
@@ -46,7 +46,7 @@ const payAdd: AgentCardProps = {
     // the description says who charges and inside what limits, and Stripe prints its own mandate
     // under the card fields. That mandate is the consent for charging later, so the element must
     // keep showing it (`terms` stays on).
-    note: 'The card fields are Stripe’s. id.org.ai never sees the number.',
+    note: 'The card fields are Stripe’s. id.org.ai never sees your payment information.',
     noteIcon: 'lock',
   },
   action: R.paymentMethodNew,
@@ -594,12 +594,12 @@ const payoutOn: SetupPageProps = {
 export const paymentProps = { payAdd, planUsage, payOnce, stepUp, confirmBank, renewalFailed, limitReached, spending, payMethods, charge, spendRules, payPerCall, payWallet, payoutSetup, payoutMore, payoutOn, setupId: SETUP_ID }
 
 type Script = 'ago.js' | 'countdown.js' | 'follow.js' | 'disclose.js' | 'terms.js' | 'stripe-fields.js' | 'logo.js'
-const page = (props: SetupPageProps, scripts: Script[] = ['ago.js'], derived?: Record<string, SetupPageProps>) => defineFixture({ screen: SetupPage, title: (p) => `${p.title} · id.org.ai`, scripts, default: props, derived })
+const page = setupPage
 const card = (props: AgentCardProps, scripts: Script[] = [], derived?: Record<string, AgentCardProps>) => defineFixture({ screen: AgentCard, title: (p) => `${p.title} · id.org.ai`, scripts, default: props, derived })
 
 export const paymentFixtures: FixtureGroup = {
   '19a-pay-add': card(payAdd, ['stripe-fields.js']),
-  '19b-pay-plan-usage': page(planUsage, ['ago.js', 'disclose.js', 'terms.js', 'logo.js'], {
+  '19b-pay-plan-usage': page(planUsage, ['ago.js', 'disclose.js', 'terms.js'], {
     // Not drawn: how the page loads. The terms line is unticked and the primary action is disabled.
     unticked: { ...planUsage, foot: { ...planUsage.foot, terms: autoDevTerms } },
     // Not drawn: an API that offers alerts but no limit, and one that offers a limit but no alerts.
@@ -607,8 +607,6 @@ export const paymentFixtures: FixtureGroup = {
     'limit-only': { ...planUsage, spend: { id: 'plan', planPrice: '$299', limit: { options: [null, ...MARKS], value: null } } },
     // Not drawn: no payment method on file, so the pays-with line offers to add one.
     'no-card': { ...planUsage, payMethod: undefined },
-    // Not drawn: the product sends its logo, so its tile carries it.
-    branded: branded(planUsage),
   }),
   '19c-pay-once': defineFixture({
     screen: AgentCard,
@@ -628,12 +626,12 @@ export const paymentFixtures: FixtureGroup = {
     },
   }),
   '19d-pay-step-up': card(stepUp, ['countdown.js']),
-  '19e-pay-confirm-bank': page(confirmBank, ['ago.js', 'logo.js'], { branded: branded(confirmBank) }),
+  '19e-pay-confirm-bank': page(confirmBank),
   '19f-pay-renewal-failed': page(renewalFailed, []),
   '19g-pay-limit-reached': card(limitReached, ['follow.js']),
   '20a-spending': card(spending),
   '20b-pay-methods': card(payMethods),
-  '20c-charge': card(charge, ['logo.js'], { branded: { ...charge, tiles: { left: BOT, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } }),
+  '20c-charge': card(charge, ['logo.js'], { branded: { ...charge, tiles: { left: CLAUDE_TILE, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } }),
   '20d-spend-rules': card(spendRules),
   '21a-pay-per-call': page(payPerCall, []),
   '21b-pay-wallet': page(payWallet, ['ago.js'], { denied: walletDenied, expired: walletExpired, 'needs-action': walletNeedsAction }),

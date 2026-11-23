@@ -3,8 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { productTile } from '../../agent-setup/tiles'
 import { connectFixtures, connectProps } from '../../gallery/fixtures/connect'
-import { paymentFixtures } from '../../gallery/fixtures/payments'
-import { setupFixtures, setupProps } from '../../gallery/fixtures/setup'
+import { setupProps } from '../../gallery/fixtures/setup'
 import { renderHtml } from '../../render'
 import { ConnectPlan } from './Connect'
 import { SetupPage } from './SetupPage'
@@ -46,20 +45,26 @@ describe('product branding', () => {
     const d = await dom(<ConnectPlan {...connectProps.plan} product={{ ...connectProps.plan.product, logo_url: 'https://www.auto.dev/logo.svg' }} client={{ ...connectProps.plan.client, logoUrl: 'https://claude.ai/logo.svg' }} />)
     expect([...d.querySelectorAll('.id-conn .id-tile img')].map((i) => i.getAttribute('src'))).toEqual(['https://claude.ai/logo.svg', 'https://www.auto.dev/logo.svg'])
   })
-  it('the gallery shows a branded state on the screens where the product is the subject, and loads the fallback script', () => {
-    const branded: [string, { derived: Record<string, unknown>; scripts: string[] }][] = [
-      ['9b', setupFixtures['9b-setup-running']!],
-      ['9e', setupFixtures['9e-setup-live']!],
-      ['19b', paymentFixtures['19b-pay-plan-usage']!],
-      ['19e', paymentFixtures['19e-pay-confirm-bank']!],
-      ['20c', paymentFixtures['20c-charge']!],
-      ['24a', connectFixtures['24a-connect-plan']!],
-      ['24b', connectFixtures['24b-connect-pay']!],
-      ['24c', connectFixtures['24c-connect-done']!],
-    ]
-    for (const [id, f] of branded) {
-      expect(f.derived['branded'], id).toBeDefined()
-      expect(f.scripts, id).toContain('logo.js')
+  it('every gallery setup page about Auto.dev has a branded state and loads the fallback script; other products keep their letters', async () => {
+    const { fixtures } = await import('../../gallery/fixtures')
+    const { AGENT_SCREENS, fixtureSlug } = await import('../../gallery/agent-setup-index')
+    const withBranded = AGENT_SCREENS.filter((s) => fixtures[fixtureSlug(s)]?.derived['branded']).map((s) => s.id)
+    // Auto.dev's setup run, its failure and payment states, the migration onto it, the charge, and Connect.
+    expect(withBranded).toEqual(['9b', '9c', '9d', '9e', '11a', '11b', '11c', '11d', '11f', '12d', '16a', '16b', '16c', '16d', '19b', '19e', '19f', '20c', '21b', '24a', '24b', '24c'])
+    for (const s of AGENT_SCREENS.filter((x) => withBranded.includes(x.id))) expect(fixtures[fixtureSlug(s)]!.scripts, s.id).toContain('logo.js')
+    // apis.email, apis.directory, headless.ly and APIs.ax have no mark in the repo yet.
+    for (const id of ['12a', '15a', '18b', '21a', '22a']) expect(withBranded, id).not.toContain(id)
+  })
+  it('Connect’s branded states carry Claude’s mark as auto.dev serves it, never a stored copy', async () => {
+    const d = new DOMParser().parseFromString(await renderHtml(connectFixtures['24a-connect-plan']!.derived['branded']!.render(), { title: 't' }), 'text/html')
+    expect([...d.querySelectorAll('.id-conn .id-tile img')].map((i) => i.getAttribute('src'))).toEqual(['https://www.auto.dev/logos/ai/claude.svg', '/brand/auto-dev.svg'])
+    expect([...d.querySelectorAll('.id-conn .id-tile')].map((t) => t.getAttribute('data-monogram'))).toEqual(['Cl', 'Ad'])
+  })
+  it('setup pages’ branded states carry Claude’s mark for Claude Code and the product’s own', async () => {
+    const { fixtures } = await import('../../gallery/fixtures')
+    for (const slug of ['9b-setup-running', '19b-pay-plan-usage', '20c-charge']) {
+      const d = new DOMParser().parseFromString(await renderHtml(fixtures[slug]!.derived['branded']!.render(), { title: 't' }), 'text/html')
+      expect([...d.querySelectorAll('.id-conn .id-tile img')].map((i) => i.getAttribute('src')), slug).toEqual(['https://www.auto.dev/logos/ai/claude.svg', '/brand/auto-dev.svg'])
     }
   })
 })

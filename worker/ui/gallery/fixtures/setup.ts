@@ -27,11 +27,28 @@ export const AUTO_DEV: Product = {
   terms_url: 'https://www.auto.dev/terms',
   privacy_url: 'https://www.auto.dev/privacy',
 }
-/** Auto.dev with its own mark (worker/ui/static/brand/auto-dev.svg), for the `branded` gallery states. */
+/**
+ * Auto.dev with its own mark (worker/ui/static/brand/auto-dev.svg), for the `branded` gallery
+ * states. It is the only product here with a mark in the repo; the others keep their letters
+ * until theirs exist (logos.md).
+ */
 export const AUTO_DEV_LOGO = '/brand/auto-dev.svg'
+/**
+ * Claude's mark for the `branded` states: the one auto.dev already uses, with no background,
+ * loaded from auto.dev's own site (never copied into this repo or redrawn, logos.md#rules).
+ * Claude's client document declares no logo_uri, and the icons claude.ai's own site serves are
+ * either on a filled square or refused when loaded from another site, so neither fits a tile.
+ */
+export const CLAUDE_LOGO = 'https://www.auto.dev/logos/ai/claude.svg'
+/** Claude Code's tile with Claude's mark; "Cc" stands in if it fails to load. */
+export const CLAUDE_TILE: TileContent = { kind: 'logo', src: CLAUDE_LOGO, monogram: 'Cc' }
 export const AUTO_DEV_BRANDED: Product = { ...AUTO_DEV, logo_url: AUTO_DEV_LOGO }
-/** The same screen with the product's own logo in its tile instead of its letters. */
-export const branded = (p: SetupPageProps): SetupPageProps => ({ ...p, setup: { ...p.setup, product: { ...p.setup.product, logo_url: AUTO_DEV_LOGO } } })
+/** The same screen with real marks in both tiles: Claude's for Claude Code, and the product's own. */
+export const branded = (p: SetupPageProps): SetupPageProps => ({
+  ...p,
+  agent: p.agent.name === 'Claude Code' ? { ...p.agent, tile: CLAUDE_TILE } : p.agent,
+  setup: { ...p.setup, product: { ...p.setup.product, logo_url: AUTO_DEV_LOGO } },
+})
 
 const APIS_EMAIL: Product = { id: 'apis.ax', api: 'apis.email', name: 'apis.email', tile: '@', dashboard_url: 'https://apis.email/dashboard' }
 
@@ -486,8 +503,24 @@ const paused: SetupPageProps = {
 /** The default props per screen, shared with the screens' unit tests. */
 export const setupProps = { approve, running, needsYou, stalled, live, callFailed, declined, noCard, liveWarn, rejected, cancelled, second, limitRaise, expiring, paused }
 
-const page = (props: SetupPageProps, scripts: ('ago.js' | 'copy.js' | 'follow.js' | 'disclose.js' | 'terms.js' | 'logo.js')[] = ['ago.js'], derived?: Record<string, SetupPageProps>) =>
-  defineFixture({ screen: SetupPage, title: (p) => `${p.title} · id.org.ai`, scripts, default: props, derived })
+type PageScript = 'ago.js' | 'copy.js' | 'follow.js' | 'disclose.js' | 'terms.js' | 'logo.js' | 'countdown.js' | 'stripe-fields.js'
+
+/**
+ * A setup page's fixture. When the product has a mark in the repo (Auto.dev) and the tile is
+ * the product's own, it also gets a `branded` state with that mark in the tile. The default
+ * keeps the letters, as drawn, so the comparison with the drawing stays exact (logos.md#rules).
+ */
+export function setupPage(props: SetupPageProps, scripts: PageScript[] = ['ago.js'], derived: Record<string, SetupPageProps> = {}) {
+  const hasMark = props.setup.product.name === 'Auto.dev' && !props.rightTile
+  return defineFixture({
+    screen: SetupPage,
+    title: (p) => `${p.title} · id.org.ai`,
+    scripts: hasMark && !scripts.includes('logo.js') ? [...scripts, 'logo.js'] : scripts,
+    default: props,
+    derived: hasMark ? { ...derived, branded: branded(props) } : derived,
+  })
+}
+const page = setupPage
 const card = (props: AgentCardProps, scripts: ('countdown.js' | 'follow.js')[] = []) => defineFixture({ screen: AgentCard, title: (p) => `${p.title} · id.org.ai`, scripts, default: props })
 
 export const setupFixtures: FixtureGroup = {
@@ -502,11 +535,10 @@ export const setupFixtures: FixtureGroup = {
       'no-card': { ...approve, payMethod: undefined },
     },
   }),
-  // `branded`: the product sends its logo, so its tile carries it (not drawn; the drawings use letters).
-  '9b-setup-running': page(running, ['ago.js', 'logo.js'], { branded: branded(running) }),
+  '9b-setup-running': page(running),
   '9c-setup-needs-you': page(needsYou, ['ago.js', 'follow.js']),
   '9d-setup-stalled': page(stalled, ['ago.js', 'copy.js']),
-  '9e-setup-live': page(live, ['logo.js'], { branded: branded(live) }),
+  '9e-setup-live': page(live, []),
   '11a-setup-call-failed': page(callFailed),
   '11b-setup-declined': page(declined),
   '11c-setup-no-card': page(noCard),

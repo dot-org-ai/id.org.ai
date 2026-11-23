@@ -8,9 +8,10 @@ import type { PlanOffer, Pricing } from '../../agent-setup/types'
 import { AgentCard, type AgentCardProps } from '../../screens/agent-setup/AgentCard'
 import { ConnectPay, ConnectPlan, type ConnectClient, type ConnectPayProps, type ConnectPlanProps } from '../../screens/agent-setup/Connect'
 import { defineFixture, type FixtureGroup } from '../types'
-import { AUTO_DEV, AUTO_DEV_BRANDED, AUTO_DEV_LOGO, PERSON, VISA } from './setup'
+import { AUTO_DEV, AUTO_DEV_BRANDED, AUTO_DEV_LOGO, CLAUDE_LOGO, PERSON, VISA } from './setup'
 
 const CLAUDE: ConnectClient = { id: 'claude', name: 'Claude', tile: 'Cl' }
+const CLAUDE_BRANDED: ConnectClient = { ...CLAUDE, logoUrl: CLAUDE_LOGO }
 const MARKS = [10000, 50000, 100000, 200000, 500000]
 const TRIAL = { days: 7, price: 100 }
 
@@ -126,7 +127,7 @@ export const connectFixtures: FixtureGroup = {
       // Not drawn (HANDOFF.md section 10): the yearly prices from section 8.
       yearly: { ...plan, billing: 'yearly' },
       // Not drawn: the product sends its logo, so its tile carries it.
-      branded: { ...plan, product: AUTO_DEV_BRANDED },
+      branded: { ...plan, product: AUTO_DEV_BRANDED, client: CLAUDE_BRANDED },
       // Not drawn: a product with no trial has no footer line, and one with no yearly price has no billing toggle.
       'no-trial': { ...plan, pricing: { ...AUTO_DEV_PRICING, plans: AUTO_DEV_PRICING.plans.map(({ trial: _trial, ...p }) => ({ ...p, price: { monthly: p.price.monthly } })) } },
     },
@@ -139,7 +140,7 @@ export const connectFixtures: FixtureGroup = {
     derived: {
       // Not drawn: how the page loads. The terms line is unticked and the primary action is disabled.
       unticked: { ...pay, termsChecked: false },
-      branded: { ...pay, product: AUTO_DEV_BRANDED },
+      branded: { ...pay, product: AUTO_DEV_BRANDED, client: CLAUDE_BRANDED },
       // HANDOFF.md section 6: without a trial the summary is "Today $299.00 / Data fees".
       'no-trial': { ...pay, plan: { ...growth, trial: undefined }, trialEnds: undefined },
       // Not drawn: the seller charges tax, so the summary says what it comes to before the person agrees.
@@ -151,6 +152,6 @@ export const connectFixtures: FixtureGroup = {
     title: (p) => `${p.title} · id.org.ai`,
     scripts: ['logo.js'],
     default: done,
-    derived: { branded: { ...done, tiles: { left: { kind: 'monogram', text: 'Cl' }, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } },
+    derived: { branded: { ...done, tiles: { left: { kind: 'logo', src: CLAUDE_LOGO, monogram: 'Cl' }, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } },
   }),
 }
