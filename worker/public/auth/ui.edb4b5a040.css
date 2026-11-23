@@ -2856,6 +2856,10 @@ button.id-link[hidden] {
   box-shadow: var(--id-sh-ctrl);
   color: var(--id-fg);
 }
+/* A quiet line on the page under the card, outside it. */
+.id-undercard {
+  padding: 16px 20px 0;
+}
 /* Stripe's fields sit straight on the card, as our own fields do: no sunk box around them. */
 .id-stripe {
   display: flex;

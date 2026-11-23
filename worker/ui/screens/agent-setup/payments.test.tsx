@@ -17,14 +17,14 @@ describe('19a · add a payment method', () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     const box = d.querySelector('[data-js=stripe-fields]')!
     expect(box.querySelectorAll('input, select, textarea')).toHaveLength(0)
-    // Whose fields they are is said once, centred, right under them; then a dotted rule, then the choice.
-    expect(box.textContent).not.toContain('id.org.ai never sees')
-    const note = box.nextElementSibling!
-    expect(note.matches('.id-footnote')).toBe(true)
-    expect(text(note)).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
-    expect(note.closest('.id-card__foot')).toBeNull()
-    expect(note.nextElementSibling!.matches('.id-rule')).toBe(true)
-    expect(note.nextElementSibling!.nextElementSibling!.matches('label.id-check')).toBe(true)
+    // Whose fields they are is said once, on the page under the card, outside it.
+    expect(d.querySelector('.id-card')!.textContent).not.toContain('id.org.ai never sees')
+    const under = d.querySelector('.id-undercard')!
+    expect(under.closest('.id-card')).toBeNull()
+    expect(text(under)).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
+    // Inside the card, a dotted rule sets the fields apart from the choice under them.
+    expect(box.nextElementSibling!.matches('.id-rule')).toBe(true)
+    expect(box.nextElementSibling!.nextElementSibling!.matches('label.id-check')).toBe(true)
   })
   it('keeps the consent sentence whole', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)

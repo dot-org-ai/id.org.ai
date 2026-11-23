@@ -6,7 +6,8 @@
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { rich, type Rich } from '../../agent-setup/rich'
-import { Card, CardFoot, CardHead, Connector, Countdown, Page, SingleTile, type ConnectorState, type TileContent } from '../../components'
+import { Card, CardFoot, CardHead, Connector, Countdown, FootNote, Page, SingleTile, type ConnectorState, type TileContent } from '../../components'
+import type { IconName } from '../../icons'
 import { Blocks, Foot, footPosts, type Block, type FootProps } from './blocks'
 
 export interface AgentCardProps {
@@ -16,6 +17,8 @@ export interface AgentCardProps {
   description: Rich
   blocks: Block[]
   foot?: FootProps
+  /** One quiet, centred line on the page under the card, outside it (19a: whose card fields these are). */
+  under?: { icon: IconName; text: string }
   /** A request that expires (12b, 19c, 19d): the header countdown, as on 5b. */
   secondsLeft?: number
   action?: string
@@ -49,6 +52,11 @@ export function AgentCard(p: AgentCardProps): JSX.Element {
       ) : (
         card
       )}
+      {p.under ? (
+        <div class="id-undercard">
+          <FootNote icon={p.under.icon}>{p.under.text}</FootNote>
+        </div>
+      ) : null}
     </Page>
   )
 }

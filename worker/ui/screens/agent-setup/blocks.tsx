@@ -63,8 +63,6 @@ export type Block =
   | { kind: 'well'; label?: string; items: KV[]; excerpt?: string; link?: { href: string; label: string }; tight?: boolean }
   /** A centred 13px line in the body (9e's pointer to the developer dashboard). */
   | { kind: 'line'; text: Rich }
-  /** A centred 12px line with a 14px icon (19a: whose fields these are, right under them). */
-  | { kind: 'iconline'; icon: IconName; text: string }
   | { kind: 'select'; id: string; name: string; label: string; options: SelectOption[]; selected: string }
   | { kind: 'textarea'; id: string; name: string; label: string; placeholder?: string }
   | { kind: 'checkbox'; id: string; name: string; label: string; detail?: string; checked?: boolean }
@@ -129,8 +127,6 @@ export function BlockView({ block: b }: { block: Block }): JSX.Element {
     }
     case 'line':
       return <FootText fill>{rich(b.text)}</FootText>
-    case 'iconline':
-      return <FootNote icon={b.icon}>{b.text}</FootNote>
     case 'select':
       return (
         <Field id={b.id} label={b.label}>
