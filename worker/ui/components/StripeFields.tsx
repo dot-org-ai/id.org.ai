@@ -13,6 +13,11 @@ export interface StripeFieldsProps {
   /** Without a client secret: let Stripe render for saving a method (`setup`) before any intent exists. */
   mode?: 'setup'
   /**
+   * Who the card is saved with, as Stripe's consent line names them ("you allow {name} to charge
+   * your card…"). Without it Stripe uses the name on the Stripe account behind the key.
+   */
+  businessName?: string
+  /**
    * The methods Stripe will offer as tabs, in order, for the picture. Which ones a person really
    * sees is Stripe's decision at mount. Link is not a tab: Stripe offers it inside the card form.
    */
@@ -88,9 +93,9 @@ function Pictured({ label, placeholder, value, chevron }: { label: string; place
  * when the element mounts. It carries no note of its own; the page says whose fields these are
  * (19a's foot).
  */
-export function StripeFields({ publishableKey, clientSecret, mode, methods = ['Card', 'US bank account'] }: StripeFieldsProps): JSX.Element {
+export function StripeFields({ publishableKey, clientSecret, mode, businessName, methods = ['Card', 'US bank account'] }: StripeFieldsProps): JSX.Element {
   return (
-    <div class="id-stripe" data-js="stripe-fields" data-publishable-key={publishableKey} data-client-secret={clientSecret} data-mode={mode} data-appearance={publishableKey ? JSON.stringify(STRIPE_APPEARANCE) : undefined}>
+    <div class="id-stripe" data-js="stripe-fields" data-publishable-key={publishableKey} data-client-secret={clientSecret} data-mode={mode} data-business-name={businessName} data-appearance={publishableKey ? JSON.stringify(STRIPE_APPEARANCE) : undefined}>
       <div data-stripe-mount hidden></div>
       <div class="id-stripe__picture" data-stripe-picture aria-hidden="true">
         {/* Stripe's Payment Element draws its own method tabs, as icon-over-label tiles; the picture shows the same. */}

@@ -631,7 +631,8 @@ export const paymentFixtures: FixtureGroup = {
   '19g-pay-limit-reached': card(limitReached, ['follow.js']),
   '20a-spending': card(spending),
   '20b-pay-methods': card(payMethods),
-  '20c-charge': card(charge, ['logo.js'], { branded: { ...charge, tiles: { left: CLAUDE_TILE, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } }),
+  // Real marks by default (owner direction, 2026-11-23); `letters` is the drawing's version.
+  '20c-charge': card({ ...charge, tiles: { left: CLAUDE_TILE, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } }, ['logo.js'], { letters: charge }),
   '20d-spend-rules': card(spendRules),
   '21a-pay-per-call': page(payPerCall, []),
   '21b-pay-wallet': page(payWallet, ['ago.js'], { denied: walletDenied, expired: walletExpired, 'needs-action': walletNeedsAction }),

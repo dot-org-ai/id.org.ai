@@ -50,7 +50,7 @@ describe('product branding', () => {
     const { AGENT_SCREENS, fixtureSlug } = await import('../../gallery/agent-setup-index')
     const withBranded = AGENT_SCREENS.filter((s) => fixtures[fixtureSlug(s)]?.derived['branded']).map((s) => s.id)
     // Auto.dev's setup run, its failure and payment states, the migration onto it, the charge, and Connect.
-    expect(withBranded).toEqual(['9b', '9c', '9d', '9e', '11a', '11b', '11c', '11d', '11f', '12d', '16a', '16b', '16c', '16d', '19b', '19e', '19f', '20c', '21b', '24a', '24b', '24c'])
+    expect(withBranded).toEqual(['9b', '9c', '9d', '9e', '11a', '11b', '11c', '11d', '11f', '12d', '16a', '16b', '16c', '16d', '19b', '19e', '19f', '21b', '24a', '24b', '24c'])
     for (const s of AGENT_SCREENS.filter((x) => withBranded.includes(x.id))) expect(fixtures[fixtureSlug(s)]!.scripts, s.id).toContain('logo.js')
     // apis.email, apis.directory, headless.ly and APIs.ax have no mark in the repo yet.
     for (const id of ['12a', '15a', '18b', '21a', '22a']) expect(withBranded, id).not.toContain(id)
@@ -62,8 +62,10 @@ describe('product branding', () => {
   })
   it('setup pages’ branded states carry Claude’s mark for Claude Code and the product’s own', async () => {
     const { fixtures } = await import('../../gallery/fixtures')
+    // 20c carries the marks by default; the others in their branded state.
     for (const slug of ['9b-setup-running', '19b-pay-plan-usage', '20c-charge']) {
-      const d = new DOMParser().parseFromString(await renderHtml(fixtures[slug]!.derived['branded']!.render(), { title: 't' }), 'text/html')
+      const f = fixtures[slug]!
+      const d = new DOMParser().parseFromString(await renderHtml((f.derived['branded'] ?? f.default).render(), { title: 't' }), 'text/html')
       expect([...d.querySelectorAll('.id-conn .id-tile img')].map((i) => i.getAttribute('src')), slug).toEqual(['https://www.auto.dev/logos/ai/claude.svg', '/brand/auto-dev.svg'])
     }
   })

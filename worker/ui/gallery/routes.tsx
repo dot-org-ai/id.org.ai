@@ -87,7 +87,7 @@ galleryRoutes.get('/__design/19a-stripe-live', async (c, next) => {
   const key = (c.env as unknown as Record<string, string | undefined>).STRIPE_PUBLISHABLE_KEY
   if (!enabled(c.env) || !key?.startsWith('pk_test_')) return next()
   const props = paymentProps.payAdd
-  const live = { ...props, blocks: props.blocks.map((b) => (b.kind === 'stripe' ? { ...b, stripe: { publishableKey: key, mode: 'setup' as const } } : b)) }
+  const live = { ...props, blocks: props.blocks.map((b) => (b.kind === 'stripe' ? { ...b, stripe: { publishableKey: key, mode: 'setup' as const, businessName: 'id.org.ai' } } : b)) }
   return renderPage(c, <AgentCard {...live} />, { title: 'Add a payment method (live Stripe fields) · id.org.ai', scripts: ['stripe-fields.js'], stripe: true })
 })
 

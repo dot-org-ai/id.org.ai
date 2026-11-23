@@ -668,7 +668,7 @@
       ],
       "kind": "screen",
       "phase": 7,
-      "departs": "One action, \"View receipt\": \"Ask for a refund\" is not offered yet (owner direction, 2026-11-23)."
+      "departs": "One action, \"View receipt\": \"Ask for a refund\" is not offered yet (owner direction, 2026-11-23). Its tiles carry Claude's and Auto.dev's marks by default (owner direction, 2026-11-23); ?state=letters is the drawn version."
     },
     {
       "id": "20d",

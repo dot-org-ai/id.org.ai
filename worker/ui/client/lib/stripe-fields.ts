@@ -35,7 +35,7 @@ export function resolveAppearance(json: string, css: CSSStyleDeclaration): unkno
 }
 
 export function initStripeFields(box: HTMLElement, make = (window as unknown as { Stripe?: (key: string) => StripeLike }).Stripe): void {
-  const { publishableKey, clientSecret, mode, appearance: json } = box.dataset
+  const { publishableKey, clientSecret, mode, businessName: name, appearance: json } = box.dataset
   const mount = box.querySelector<HTMLElement>('[data-stripe-mount]')
   if (!publishableKey || !(clientSecret || mode) || !make || !mount || !json) return
   const appearance = resolveAppearance(json, getComputedStyle(box)) as { variables: Record<string, string>; rules: Record<string, Record<string, string>> }
@@ -54,7 +54,8 @@ export function initStripeFields(box: HTMLElement, make = (window as unknown as 
   })
   // No `terms` option: Stripe's mandate under the card fields is the consent for charging later
   // (19a carries no sentence of its own for it), so it must always show.
-  elements.create('payment', { layout: 'tabs' }).mount(mount)
+  // `business.name` is who that mandate names; without it, the Stripe account's own name.
+  elements.create('payment', { layout: 'tabs', ...(name && { business: { name } }) }).mount(mount)
   mount.hidden = false
   for (const p of box.querySelectorAll<HTMLElement>('[data-stripe-picture]')) p.hidden = true
 }

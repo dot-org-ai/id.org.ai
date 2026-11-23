@@ -117,6 +117,12 @@ What follows for these screens:
 - **Seller notices.** Stripe requires product warnings at checkout when a seller supplies them (safety, Prop 65). They are for physical goods.
 - **Agent checkout for physical goods** (catalog feeds, fulfilment, orders). Private preview, and not what these APIs sell.
 
+### Who the consent line names
+
+id.org.ai holds the payment methods (HANDOFF.md section 7; owner confirmed 2026-11-23), so Stripe's consent line on 19a must name id.org.ai, and 19a carries no product logo. The Payment Element takes `business.name` for that: `StripeFields` has a `businessName` prop. Checked on Nov 23, 2026 with a test key from a different account: the line read "you allow id.org.ai to charge your card…". Production still needs id.org.ai's own Stripe account key.
+
+20a to 20d stay standalone pages, so an agent can hand a person the link; the dashboard will also carry them as sections (to be designed).
+
 ### Product logos
 
 The drawings use letter tiles only ("No real product logos"). By owner direction (2026-11-23) a product may send `logo_url` with its `tile` letters, and every screen about that product then carries its logo in the tile. The letters remain required: they show when there is no logo, when the URL is refused (not https and not a first-party `/brand/` file), or when the image fails to load. A connecting app (24) can carry its registered logo the same way.

@@ -41,7 +41,7 @@ describe('19a · add a payment method', () => {
     expect(JSON.stringify(STRIPE_APPEARANCE)).not.toContain('"terms"')
     const { readFileSync } = await import('node:fs')
     const script = readFileSync('worker/ui/client/lib/stripe-fields.ts', 'utf8')
-    expect(script).toContain("elements.create('payment', { layout: 'tabs' })")
+    expect(script).toContain("elements.create('payment', { layout: 'tabs', ...(name && { business: { name } }) })")
     expect(script).not.toMatch(/terms\s*:/)
   })
   it('leaves the method tabs to Stripe: none of our own, and the picture shows where Stripe draws them', async () => {
