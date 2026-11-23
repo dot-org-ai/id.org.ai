@@ -5,6 +5,7 @@
 import type { FixtureGroup } from '../types'
 import { accountsFixtures } from './accounts'
 import { agentsFixtures } from './agents'
+import { agentsManageFixtures } from './agents-manage'
 import { authorizeFixtures } from './authorize'
 import { deviceFixtures } from './devices'
 import { emailsFixtures } from './emails'
@@ -24,4 +25,5 @@ export const fixtures: FixtureGroup = {
   ...emailsFixtures,
   // Agent setup, payments and connect (docs/agent-setup)
   ...setupFixtures,
+  ...agentsManageFixtures,
 }

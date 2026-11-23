@@ -8,6 +8,8 @@ import { AGENT_ROUTES } from '../../agent-setup/routes'
 import { rich, type Rich } from '../../agent-setup/rich'
 import {
   Actions,
+  ActivityRow,
+  AgentRow,
   Amount,
   Bar,
   Button,
@@ -32,7 +34,10 @@ import {
   ToggleRow,
   Well,
   Who,
+  type ActivityRowProps,
+  type ConnectionRowProps,
   type KV,
+  type MiniTileContent,
   type PermissionItem,
   type SelectOption,
   type SpendProps,
@@ -58,8 +63,25 @@ export type Block =
   | { kind: 'quote'; text: string }
   | { kind: 'permissions'; heading: string; items: PermissionItem[] }
   | { kind: 'spend'; spend: SpendProps }
+  /** The agents list (10a): one expandable row each. */
+  | { kind: 'agents'; agents: AgentItem[] }
+  /** What an agent did (10e), under a day label. */
+  | { kind: 'activity'; label: string; rows: ActivityRowProps[] }
   /** The month against a limit (19g): label and amount, the bar, then what made it up. */
   | { kind: 'limit'; label: string; amount: string; of: string; percent: number; lines: KV[] }
+
+export interface AgentItem {
+  tile: MiniTileContent
+  name: string
+  chip?: string
+  line: string
+  open?: boolean
+  facts?: KV[]
+  connections?: ConnectionRowProps[]
+  pauseHref?: string
+  removeHref?: string
+  links?: { href: string; label: string }[]
+}
 
 export function BlockView({ block: b }: { block: Block }): JSX.Element {
   switch (b.kind) {
@@ -125,6 +147,46 @@ export function BlockView({ block: b }: { block: Block }): JSX.Element {
       return <PermissionList heading={b.heading} items={b.items} />
     case 'spend':
       return <Spend {...b.spend} />
+    case 'agents':
+      return (
+        <div class="id-stack id-stack--10">
+          {b.agents.map((a) => (
+            <AgentRow
+              tile={a.tile}
+              name={a.name}
+              chip={a.chip}
+              line={a.line}
+              open={a.open}
+              facts={a.facts}
+              connections={a.connections}
+              links={a.links}
+              actions={
+                a.pauseHref && a.removeHref ? (
+                  <Actions>
+                    <Button variant="secondary" block href={a.pauseHref} icon="pause">
+                      Pause
+                    </Button>
+                    <Button variant="secondary" block href={a.removeHref} icon="trash">
+                      Remove
+                    </Button>
+                  </Actions>
+                ) : undefined
+              }
+            />
+          ))}
+        </div>
+      )
+    case 'activity':
+      return (
+        <div class="id-stack id-stack--4">
+          <div class="id-group-label">{b.label}</div>
+          <div>
+            {b.rows.map((r) => (
+              <ActivityRow {...r} />
+            ))}
+          </div>
+        </div>
+      )
     case 'limit':
       return (
         <Well>
@@ -164,6 +226,8 @@ export interface ActionSpec {
   busyLabel?: string
   /** The label follows a control: its name and a template with `{label}`. */
   follows?: { control: string; template: string }
+  /** Draw the right-hand action as a second secondary (10e's Export, 20a's two links). */
+  quiet?: boolean
 }
 
 export interface FootProps {
@@ -193,7 +257,7 @@ export function Foot({ terms, secondary, primary, note, noteIcon }: FootProps): 
       {both ? (
         <Actions>
           <ActionButton a={secondary} variant="secondary" />
-          <ActionButton a={primary} variant="primary" needsTerms={Boolean(terms)} />
+          <ActionButton a={primary} variant={primary.quiet ? 'secondary' : 'primary'} needsTerms={Boolean(terms)} />
         </Actions>
       ) : primary ? (
         <ActionButton a={primary} variant="primary" needsTerms={Boolean(terms)} />

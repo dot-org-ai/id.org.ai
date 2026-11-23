@@ -2299,8 +2299,15 @@ button.id-link[hidden] {
 /* ── Two-line checkbox, terms line ──────────────────────────────────────── */
 
 .id-check--top {
+  position: relative;
   align-items: flex-start;
   line-height: 20px;
+}
+/* One or two 20px lines: the hit area reaches 44px. */
+.id-check--top::before {
+  content: '';
+  position: absolute;
+  inset: -12px 0;
 }
 .id-check--top .id-check__box {
   margin-top: 2px;
