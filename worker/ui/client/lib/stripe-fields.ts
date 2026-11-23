@@ -23,37 +23,52 @@ function colour(el: Element, token: string): string {
 }
 
 export function initStripeFields(box: HTMLElement, make = (window as unknown as { Stripe?: (key: string) => StripeLike }).Stripe): void {
-  const { publishableKey, clientSecret } = box.dataset
+  const { publishableKey, clientSecret, mode } = box.dataset
   const mount = box.querySelector<HTMLElement>('[data-stripe-mount]')
-  if (!publishableKey || !clientSecret || !make || !mount) return
+  if (!publishableKey || !(clientSecret || mode) || !make || !mount) return
   const css = getComputedStyle(box)
   const c = (t: string) => colour(box, t)
   const v = (t: string) => css.getPropertyValue(t).trim()
-  const edge = `1px solid ${c('--id-line-2')}`
-  const field = { backgroundColor: c('--id-panel'), border: edge, boxShadow: 'none' }
+  const phone = matchMedia('(max-width: 480px), (pointer: coarse)').matches
+  const line = c('--id-line-2')
+  const flat = { boxShadow: 'none', outline: 'none' }
+  const field = { ...flat, backgroundColor: c('--id-panel'), border: `1px solid ${line}`, padding: phone ? '13px 14px' : '12px 14px', lineHeight: '18px' }
+  const tab = { ...flat, backgroundColor: 'transparent', border: '1px solid transparent', color: c('--id-fg-2'), padding: '8px 12px' }
+  const tabOn = { ...tab, backgroundColor: c('--id-raised'), borderColor: line, color: c('--id-fg') }
   const elements = make(publishableKey).elements({
-    clientSecret,
+    // A client secret when the intent exists; otherwise Stripe renders ahead of it (deferred),
+    // offering only what an agent can be allowed to charge later.
+    ...(clientSecret ? { clientSecret } : { mode, currency: 'usd', paymentMethodTypes: ['card', 'us_bank_account', 'link'] }),
+    // Geist inside Stripe's frame, from our own origin (the font files allow cross-origin use).
+    fonts: [{ family: 'Geist', src: 'url(https://id.org.ai/fonts/geist/Geist-Variable.woff2)', weight: '100 900' }],
     appearance: {
       theme: 'night',
       variables: {
         fontFamily: v('--id-font'),
         // Stripe asks for 16px inputs on phones (iOS zooms below that), as our own fields use.
-        fontSizeBase: matchMedia('(max-width: 480px), (pointer: coarse)').matches ? '16px' : '14px',
+        fontSizeBase: phone ? '16px' : '14px',
+        fontSizeSm: '13px',
         borderRadius: v('--id-r-control'),
+        gridRowSpacing: '12px',
+        gridColumnSpacing: '12px',
         colorBackground: c('--id-panel'),
         colorText: c('--id-fg'),
         colorTextSecondary: c('--id-fg-2'),
         colorTextPlaceholder: c('--id-fg-3'),
         colorPrimary: c('--id-fg'),
         colorDanger: c('--id-accent'),
+        iconColor: c('--id-fg-3'),
       },
       // The element's own parts, matched to ours: labels, fields, and its method tabs as the segmented cells.
       rules: {
-        '.Label': { fontSize: '13px', fontWeight: '500', color: c('--id-fg-2') },
+        '.Label': { fontSize: '13px', fontWeight: '500', color: c('--id-fg-2'), marginBottom: '6px' },
         '.Input': field,
-        '.Input:focus': { ...field, borderColor: c('--id-fg') },
-        '.Tab': { ...field, backgroundColor: 'transparent', borderColor: 'transparent', color: c('--id-fg-2') },
-        '.Tab--selected': { ...field, backgroundColor: c('--id-raised'), color: c('--id-fg') },
+        '.Input:focus': { ...field, borderColor: c('--id-fg-2') },
+        '.Tab': tab,
+        '.Tab:hover': { ...tab, color: c('--id-fg') },
+        '.Tab--selected': tabOn,
+        '.Tab--selected:focus': tabOn,
+        '.TabLabel': { fontSize: '13px', fontWeight: '500' },
       },
     },
   })

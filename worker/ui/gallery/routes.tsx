@@ -16,7 +16,9 @@ import { EMAIL_PREVIEW_CSP, renderPage, securityHeaders } from '../render'
 import { AGENT_SCREENS, AgentSetupIndex, fixtureSlug } from './agent-setup-index'
 import { ComponentSheet } from './components-sheet'
 import type { Env, Variables } from '../../types'
+import { AgentCard } from '../screens/agent-setup/AgentCard'
 import { fixtures } from './fixtures'
+import { paymentProps } from './fixtures/payments'
 import type { BoundFixture, Variant } from './types'
 
 type ManifestScreen = { id: string; slug: string; title: string; kind: string; states: { name: string }[] }
@@ -74,6 +76,19 @@ galleryRoutes.get('/__design/components', async (c, next) => {
 galleryRoutes.get('/__design/agent-setup', async (c, next) => {
   if (!enabled(c.env)) return next()
   return renderPage(c, <AgentSetupIndex fixtures={fixtures} />, { title: 'Agent setup screens · id.org.ai', styles: ['gallery.css'] })
+})
+
+/**
+ * 19a with Stripe's real Payment Element, for matching it to the card by eye. Dev only, and only
+ * when STRIPE_PUBLISHABLE_KEY (a test key, `pk_test_…`) is passed to `wrangler dev`: the key is
+ * never in the repo. No intent is created and nothing can be charged.
+ */
+galleryRoutes.get('/__design/19a-stripe-live', async (c, next) => {
+  const key = (c.env as unknown as Record<string, string | undefined>).STRIPE_PUBLISHABLE_KEY
+  if (!enabled(c.env) || !key?.startsWith('pk_test_')) return next()
+  const props = paymentProps.payAdd
+  const live = { ...props, blocks: props.blocks.map((b) => (b.kind === 'stripe' ? { ...b, stripe: { publishableKey: key, mode: 'setup' as const } } : b)) }
+  return renderPage(c, <AgentCard {...live} />, { title: 'Add a payment method (live Stripe fields) · id.org.ai', scripts: ['stripe-fields.js'], stripe: true })
 })
 
 /** A manifest entry may share another screen's fixture (`renders`); none does now that the phone drawings are unlisted. */

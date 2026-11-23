@@ -98,7 +98,13 @@ What follows for these screens:
 
 - It is themed through the Appearance API: `variables` for colours, font and radius, and `rules` for its own parts (`.Label`, `.Input`, `.Tab`, `.Tab--selected`). The colour variables accept no `rgba()` and no `var()`, so the mount script resolves our tokens to plain colours first.
 - Stripe asks for inputs of at least 16px on phones; the script uses 16px there, 14px on desktop, as our own fields do.
-- **Not yet seen against Stripe.** The script and its styling are written from the docs; matching the element to the card by eye needs a test publishable key.
+- **Seen against Stripe on Nov 23, 2026** with a test publishable key, in deferred mode (no intent, nothing chargeable), at desktop and phone width. `/__design/19a-stripe-live` renders it when `wrangler dev` is started with `--var STRIPE_PUBLISHABLE_KEY:pk_test_…`; `node test-visual/stripe-live-shot.mjs out.png` puts it beside the picture. The key is never in the repo. What that showed:
+  - Inputs, labels, spacing, radius and colours match the card (44px inputs on desktop, 48px and 16px text on phones).
+  - Stripe's tabs are Card and US bank account. **Link is not a tab**: Stripe offers it inside the card form ("Secure, fast checkout with Link"). The picture now shows those two tabs and Stripe's own field labels ("Expiration date", "ZIP code").
+  - Stripe's tabs carry an icon above the label, so they are taller than our 36px segmented cells. The Appearance API can restyle them but not remove the icon.
+  - On a phone Stripe stacks Country and ZIP code. The handoff asks for two-up; that layout is Stripe's.
+  - Stripe prints its own mandate under the card fields ("By providing your card information, you allow {account name} to charge your card for future payments…"), using the Stripe account's name. It sits next to our consent sentence in the foot. It can be turned off for cards (`terms: { card: 'never' }`), which makes our sentence the only mandate; that is an open decision. Bank accounts must keep Stripe's.
+  - The deferred mode is limited to `card`, `us_bank_account` and `link`; without that Stripe also offered Cash App Pay, Klarna and Amazon Pay.
 - The fetched pages do not say whether Appearance works with a SetupIntent or a deferred intent; Stripe now recommends the Checkout Sessions API for the Payment Element. Confirm which one 19a uses before building it.
 
 ### Not built, on purpose

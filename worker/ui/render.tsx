@@ -102,12 +102,14 @@ export function Document({
   styles = [],
   frozen,
   refreshTo,
+  stripe,
   children,
 }: {
   title: string
   scripts?: ClientScript[]
   styles?: Stylesheet[]
   frozen?: boolean
+  stripe?: boolean
   refreshTo?: RenderOptions['refreshTo']
   children: JSX.Element
 }): JSX.Element {
@@ -123,6 +125,8 @@ export function Document({
         {styles.map((s) => (
           <link rel="stylesheet" href={assetUrl(s)} />
         ))}
+        {/* Stripe.js, always from js.stripe.com (Stripe forbids self-hosting it), before the script that mounts its fields. */}
+        {stripe ? <script src="https://js.stripe.com/v3/"></script> : null}
         {scripts.map((s) => (
           <script type="module" src={assetUrl(s)}></script>
         ))}
@@ -134,9 +138,9 @@ export function Document({
   )
 }
 
-export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'styles' | 'frozen' | 'refreshTo'>): Promise<string> {
+export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions, 'title' | 'scripts' | 'styles' | 'frozen' | 'refreshTo' | 'stripe'>): Promise<string> {
   const doc = (
-    <Document title={opts.title} scripts={opts.scripts} styles={opts.styles} frozen={opts.frozen} refreshTo={opts.refreshTo}>
+    <Document title={opts.title} scripts={opts.scripts} styles={opts.styles} frozen={opts.frozen} refreshTo={opts.refreshTo} stripe={opts.stripe}>
       {element}
     </Document>
   )

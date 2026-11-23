@@ -10,9 +10,11 @@ export interface StripeFieldsProps {
    */
   publishableKey?: string
   clientSecret?: string
+  /** Without a client secret: let Stripe render for saving a method (`setup`) before any intent exists. */
+  mode?: 'setup'
   /**
-   * The methods Stripe will offer, in order, for the picture's tabs. Which ones a person really
-   * sees is Stripe's decision at mount (Link, for one, is US and Canada only).
+   * The methods Stripe will offer as tabs, in order, for the picture. Which ones a person really
+   * sees is Stripe's decision at mount. Link is not a tab: Stripe offers it inside the card form.
    */
   methods?: string[]
 }
@@ -35,9 +37,9 @@ function Pictured({ label, placeholder, value, chevron }: { label: string; place
  * the picture inside is aria-hidden, holds no form controls, and is replaced
  * when the element mounts.
  */
-export function StripeFields({ publishableKey, clientSecret, methods = ['Card', 'Bank account', 'Link'] }: StripeFieldsProps): JSX.Element {
+export function StripeFields({ publishableKey, clientSecret, mode, methods = ['Card', 'US bank account'] }: StripeFieldsProps): JSX.Element {
   return (
-    <div class="id-well id-well--12" data-js="stripe-fields" data-publishable-key={publishableKey} data-client-secret={clientSecret}>
+    <div class="id-well id-well--12" data-js="stripe-fields" data-publishable-key={publishableKey} data-client-secret={clientSecret} data-mode={mode}>
       <div data-stripe-mount hidden></div>
       <div class="id-stripe__picture" data-stripe-picture aria-hidden="true">
         {/* Stripe's Payment Element draws its own method tabs; the picture shows where they sit. */}
@@ -48,12 +50,12 @@ export function StripeFields({ publishableKey, clientSecret, methods = ['Card', 
         </div>
         <Pictured label="Card number" placeholder="1234 1234 1234 1234" />
         <div class="id-stripe__pair">
-          <Pictured label="Expiry" placeholder="MM / YY" />
+          <Pictured label="Expiration date" placeholder="MM / YY" />
           <Pictured label="Security code" placeholder="CVC" />
         </div>
         <div class="id-stripe__pair">
           <Pictured label="Country" value="United States" chevron />
-          <Pictured label="ZIP" placeholder="12345" />
+          <Pictured label="ZIP code" placeholder="12345" />
         </div>
       </div>
       <span class="id-sr" data-stripe-picture>

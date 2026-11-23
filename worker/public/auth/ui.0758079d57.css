@@ -2840,6 +2840,10 @@ button.id-link[hidden] {
   flex-direction: column;
   gap: 12px;
 }
+/* Once Stripe's element mounts, the picture and its spoken stand-in go. */
+.id-stripe__picture[hidden] {
+  display: none;
+}
 .id-stripe__pair {
   display: flex;
   gap: 12px;

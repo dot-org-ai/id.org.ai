@@ -27,7 +27,7 @@ describe('19a · add a payment method', () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     expect(d.querySelectorAll('input[type=radio]')).toHaveLength(0)
     const tabs = [...d.querySelectorAll('.id-stripe__picture .id-seg__cell')]
-    expect(tabs.map((t) => t.textContent)).toEqual(['Card', 'Bank account', 'Link'])
+    expect(tabs.map((t) => t.textContent)).toEqual(['Card', 'US bank account'])
     expect(tabs[0]!.className).toContain('id-seg__cell--on')
     expect(tabs[0]!.closest('[aria-hidden=true]')).not.toBeNull()
   })
