@@ -295,9 +295,10 @@ describe('phones (the repo’s phone rules, applied to the new components)', () 
   it('two quiet actions keep their order when stacked; a primary still goes on top', () => {
     expect(phone).toMatch(/\.id-actions > \.id-btn--secondary:last-child \{\s*order: 0;/)
   })
-  it('the title and description fill the line instead of balancing', async () => {
-    expect(phone).toMatch(/\.id-head--fill \.id-title,\s*\.id-head--fill \.id-desc \{\s*text-wrap: wrap;/)
-    expect(css).toMatch(/\.id-foottext--fill \{\s*text-wrap: wrap;/)
+  it('the title and description fill the line instead of balancing, with no lone last word', async () => {
+    expect(phone).toMatch(/\.id-head--fill \.id-title,\s*\.id-head--fill \.id-desc \{\s*text-wrap: wrap;\s*text-wrap: pretty;/)
+    expect(css).toMatch(/\.id-foottext--fill \{\s*text-wrap: wrap;\s*text-wrap: pretty;/)
+    expect(css).not.toMatch(/id-(head|foottext)--fill[^}]*balance/)
   })
   it('method tabs and the pictured Stripe fields are 48px with 16px text, as real fields are', () => {
     expect(phone).toMatch(/\.id-seg__cell \{\s*height: 40px;/)

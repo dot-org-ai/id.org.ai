@@ -1809,6 +1809,17 @@ button.id-link[hidden] {
 /* ── Phones (layout.md#phones-viewport--480px) ─────────────────────────── */
 
 @media (max-width: 480px) {
+  /* No gap around the card: it starts where the header ends, short cards included (so it sits
+     at the top, not the middle of the screen), and the footer follows it directly; the footer
+     keeps its own 24px (owner direction, 2026-11-23). */
+  .id-main:not(.id-main--top) {
+    padding-top: 0;
+    padding-bottom: 0;
+    align-items: flex-start;
+  }
+  .id-main--top {
+    padding-bottom: 0;
+  }
   .id-card {
     align-self: stretch !important;
     width: auto !important;

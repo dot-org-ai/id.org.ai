@@ -93,4 +93,10 @@ describe('every screen size', () => {
     expect(render).toMatch(/<meta name="viewport" content="width=device-width, initial-scale=1" \/>/)
     expect(render).not.toMatch(/maximum-scale|user-scalable/)
   })
+
+  it('no gap around the card on phones: it starts where the header ends, and the footer follows it', () => {
+    const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
+    expect(phone).toMatch(/\.id-main:not\(\.id-main--top\) \{\s*padding-top: 0;\s*padding-bottom: 0;\s*align-items: flex-start;/)
+    expect(phone).toMatch(/\.id-main--top \{\s*padding-bottom: 0;/)
+  })
 })

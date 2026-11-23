@@ -376,9 +376,11 @@
   color: var(--id-fg);
 }
 
-/* A line under the actions, or in the body, fills before it wraps (balanced lines break early). */
+/* A line under the actions, or in the body, fills before it wraps (balanced lines break
+   early), without leaving one word alone on the last line. */
 .id-foottext--fill {
   text-wrap: wrap;
+  text-wrap: pretty;
 }
 
 /* A button whose icon follows its label (the arrow on actions that leave for another site). */
@@ -1443,11 +1445,13 @@
   .id-stripe__box {
     height: var(--id-control-h-phone);
   }
-  /* The title and description fill each line before wrapping: balanced lines break too
-     early on a narrow screen. */
+  /* The title and description fill each line before wrapping (balanced lines break too early
+     on a narrow screen), but never leave one word alone on the last line: `pretty` moves a
+     word or two down so the ending looks even. Browsers without it wrap plainly. */
   .id-head--fill .id-title,
   .id-head--fill .id-desc {
     text-wrap: wrap;
+    text-wrap: pretty;
   }
 }
 
