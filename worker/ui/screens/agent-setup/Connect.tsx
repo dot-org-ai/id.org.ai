@@ -131,6 +131,8 @@ export interface ConnectPayProps {
   trialEnds?: string
   /** "Per call, billed monthly": how the product bills usage. */
   feesNote: string
+  /** Tax on the plan, as the seller (through Stripe) computes it: "$24.67/month, Florida sales tax". Omitted when there is none. */
+  tax?: string
   spend: SpendOffer
   /** "Visa ending 4417". None: the line offers to add one (the flow sends the person to 19a first). */
   payMethod?: string
@@ -144,14 +146,14 @@ export interface ConnectPayProps {
 }
 
 /** 24b's charge summary: with a trial, today's trial price and what follows; without, today's price. */
-export function chargeSummary(p: Pick<ConnectPayProps, 'plan' | 'billing' | 'trialEnds' | 'feesNote'>): [string, string][] {
+export function chargeSummary(p: Pick<ConnectPayProps, 'plan' | 'billing' | 'trialEnds' | 'feesNote' | 'tax'>): [string, string][] {
   const yearly = p.billing === 'yearly' && p.plan.price.yearly_per_month !== undefined
   const price = yearly ? `${usdExact(p.plan.price.yearly_per_month as number)}/month, billed yearly` : `${usdExact(p.plan.price.monthly)}/month`
-  const fees: [string, string] = ['Data fees', p.feesNote]
+  const after: [string, string][] = [['Data fees', p.feesNote], ...(p.tax ? [['Tax', p.tax] as [string, string]] : [])]
   if (p.plan.trial && p.trialEnds) {
-    return [['Today', `${usdExact(p.plan.trial.price)} for ${p.plan.trial.days} days`], [`From ${p.trialEnds}`, price], fees]
+    return [['Today', `${usdExact(p.plan.trial.price)} for ${p.plan.trial.days} days`], [`From ${p.trialEnds}`, price], ...after]
   }
-  return [['Today', yearly ? price : usdExact(p.plan.price.monthly)], fees]
+  return [['Today', yearly ? price : usdExact(p.plan.price.monthly)], ...after]
 }
 
 export function ConnectPay(p: ConnectPayProps): JSX.Element {

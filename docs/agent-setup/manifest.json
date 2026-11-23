@@ -547,7 +547,8 @@
         1000
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "Stripe's Payment Element draws its own method tabs, so the tabs sit inside Stripe's well instead of above it as a separate control (owner direction, 2026-11-23)."
     },
     {
       "id": "19b",
@@ -693,7 +694,8 @@
         900
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "Calls are counted and billed monthly, not charged one by one, and there is no \"no key\" claim (owner direction, 2026-11-23)."
     },
     {
       "id": "21b",
@@ -706,7 +708,8 @@
         920
       ],
       "kind": "screen",
-      "phase": 7
+      "phase": 7,
+      "departs": "Link asks at its own approval page and a request lasts 30 minutes (Stripe's Link wallet docs); the step says when it runs out instead of \"sent to your phone\"."
     },
     {
       "id": "22a",

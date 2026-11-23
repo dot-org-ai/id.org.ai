@@ -10,6 +10,11 @@ export interface StripeFieldsProps {
    */
   publishableKey?: string
   clientSecret?: string
+  /**
+   * The methods Stripe will offer, in order, for the picture's tabs. Which ones a person really
+   * sees is Stripe's decision at mount (Link, for one, is US and Canada only).
+   */
+  methods?: string[]
 }
 
 function Pictured({ label, placeholder, value, chevron }: { label: string; placeholder?: string; value?: string; chevron?: boolean }): JSX.Element {
@@ -30,11 +35,17 @@ function Pictured({ label, placeholder, value, chevron }: { label: string; place
  * the picture inside is aria-hidden, holds no form controls, and is replaced
  * when the element mounts.
  */
-export function StripeFields({ publishableKey, clientSecret }: StripeFieldsProps): JSX.Element {
+export function StripeFields({ publishableKey, clientSecret, methods = ['Card', 'Bank account', 'Link'] }: StripeFieldsProps): JSX.Element {
   return (
     <div class="id-well id-well--12" data-js="stripe-fields" data-publishable-key={publishableKey} data-client-secret={clientSecret}>
       <div data-stripe-mount hidden></div>
       <div class="id-stripe__picture" data-stripe-picture aria-hidden="true">
+        {/* Stripe's Payment Element draws its own method tabs; the picture shows where they sit. */}
+        <div class="id-seg">
+          {methods.map((m, i) => (
+            <span class={i === 0 ? 'id-seg__cell id-seg__cell--on' : 'id-seg__cell'}>{m}</span>
+          ))}
+        </div>
         <Pictured label="Card number" placeholder="1234 1234 1234 1234" />
         <div class="id-stripe__pair">
           <Pictured label="Expiry" placeholder="MM / YY" />

@@ -53,7 +53,7 @@ If the subscription fails, issue no grant. Free plan: no Stripe call at all.
 2. **Where the agent limit is enforced.** Proposed: the product calls id.org.ai's `authorize` before every charge.
 3. **When data fees bill.** Auto.dev's pricing page says only "billed monthly". Month end, or sooner past a mark.
 4. **Who decides a refund:** the API or .do.
-5. **Shared payment tokens and a monthly limit.** Stripe's overview describes a token as covering a single transaction; the token docs mention usage limits and expiry. Unconfirmed whether one token can back a month.
+5. ~~Shared payment tokens and a monthly limit.~~ Answered in section 6: a token can be recurring with a per-period limit, but covers one seller.
 6. **Third-party sellers.** Section 22 only matters if other people sell through APIs.ax.
 7. **Trial for agents and connectors.** Drawn in 24b and 24c, not in 19b.
 8. **Access.** Machine payments need a request to Stripe, and accepting stablecoins is limited to US businesses.
@@ -65,3 +65,44 @@ If the subscription fails, issue no grant. Free plan: no Stripe call at all.
 - Link's wallet for agents: https://stripe.com/blog/giving-agents-the-ability-to-pay
 - Claude custom connectors: https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
 - Auto.dev pricing: https://www.auto.dev/pricing
+
+## 6. Checked against Stripe's docs, Nov 23, 2026
+
+Read in full: docs.stripe.com/agentic-commerce and every page under it, /payments/machine (MPP, x402, sessions), the Link agent wallet pages, /billing/subscriptions/usage-based/alerts, /elements/appearance-api and /security/guide. Most of it is preview API and the pages disagree in places (the token API version, which countries have stablecoins), so re-read before building the backend. Where this section and sections 2 to 4 differ, this section wins.
+
+### What changes in section 2
+
+| Screen | Was | Is |
+| --- | --- | --- |
+| 19a Add a payment method | We draw Card, Bank account and Link tabs above Stripe's fields | Stripe's Payment Element draws its own method tabs. Ours are gone; the picture shows Stripe's, inside the well. Which methods appear is Stripe's call at mount (Link agent payments are US and Canada only) |
+| 19a, 19e | Not stated | Both pages run Stripe.js, so they are rendered with `stripe: true`, which adds Stripe's hosts to that page's security policy and no other: script `js.stripe.com`, `*.js.stripe.com`; frames those plus `hooks.stripe.com` (3DS) and `link.com`; connect `api.stripe.com`, `link.com` |
+| 19e Bank confirmation | "The person completes it on Stripe's screen" | The token or payment goes to `requires_action` with `next_action.type: "use_stripe_sdk"`; the page calls `stripe.handleNextAction` and Stripe shows the bank's challenge in its own frame, then returns to `return_url` |
+| 21a Pay per call | Stripe machine payments, one payment per call | Calls are counted and billed monthly on the saved method (owner direction). Nothing is charged per call, so the 0.50 USD card minimum for machine payments never applies, and no stablecoin wallet is needed |
+| 21b Wallet | One waiting state; "sent to your phone" | Link asks at the `approval_url` it returns, on its site or app. The person has 30 minutes. A spend request is `created`, `pending_approval`, `requires_action`, `approved`, `submitted`, `succeeded`, `failed`, `denied`, `expired` or `canceled`. Built: waiting (with the time it runs out), denied, ran out, and "Link needs you", which shows Link's `next_action.display_message` as written |
+| Spend alerts (19b, 24b, 23c) | "Stripe Billing usage alerts at each mark, or the product's own meter" | The product's own meter. Stripe's alerts count meter units, not dollars, fire once per customer (`recurrence: one_time`), and cap at 25 per meter and customer. Dollar alerts that repeat each month can't be built on them; spend alerts are early access |
+| Terms (19b, 24b) | Terms and privacy | Unchanged. Stripe asks retail sellers for a return policy too; that is for physical goods. An API's refund terms live in its terms page |
+| Tax | Not shown | A purchase (19c) and a subscription summary (24b) can carry a tax row when the seller charges it. Stripe computes it; the screen shows what it comes to before the person agrees |
+
+### Shared payment tokens: what is now known
+
+Open decision 5 is answered. A token is a grant to use the customer's payment method, scoped to **one seller** (`seller_details[network_business_profile]`), with `usage_limits[max_amount]`, `usage_limits[currency]` and `usage_limits[expires_at]`. It stays usable until it expires, is revoked (`POST /v1/shared_payment/issued_tokens/{id}/revoke`), or captured payments reach the maximum. It can be recurring (`usage_limits[recurring_interval]`, for example `month`), where the amount is the limit per period; the seller then charges it off-session. Statuses: `active`, `requires_action`, `deactivated`.
+
+What follows for these screens:
+
+- **The agent limit is still ours to hold.** A token covers one seller, and the agent limit covers every API the agent touches. id.org.ai issues one token per seller, never for more than what is left of the limit, and answers `authorize` itself (open decision 2 stands).
+- **Pause and remove map to revoke.** Revoking is final, so resume issues a new token.
+- **Revoking does not cancel a subscription with the seller.** That is why 10b keeps "Also cancel the subscription" as its own choice.
+- **Availability:** US, Canada and 32 European countries.
+
+### The Payment Element
+
+- It is themed through the Appearance API: `variables` for colours, font and radius, and `rules` for its own parts (`.Label`, `.Input`, `.Tab`, `.Tab--selected`). The colour variables accept no `rgba()` and no `var()`, so the mount script resolves our tokens to plain colours first.
+- Stripe asks for inputs of at least 16px on phones; the script uses 16px there, 14px on desktop, as our own fields do.
+- **Not yet seen against Stripe.** The script and its styling are written from the docs; matching the element to the card by eye needs a test publishable key.
+- The fetched pages do not say whether Appearance works with a SetupIntent or a deferred intent; Stripe now recommends the Checkout Sessions API for the Payment Element. Confirm which one 19a uses before building it.
+
+### Not built, on purpose
+
+- **Stablecoin and x402.** Stripe accepts x402 natively and settles it to the seller's balance, so adding it later changes nothing on the seller side. It is left out now (owner direction): nothing here charges per call, the payer would need a funded wallet, and id.org.ai does not hold money. `PaymentMethodKind` in the contract lists card, bank and Link only.
+- **Seller notices.** Stripe requires product warnings at checkout when a seller supplies them (safety, Prop 65). They are for physical goods.
+- **Agent checkout for physical goods** (catalog feeds, fulfilment, orders). Private preview, and not what these APIs sell.

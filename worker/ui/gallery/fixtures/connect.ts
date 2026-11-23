@@ -139,6 +139,8 @@ export const connectFixtures: FixtureGroup = {
       unticked: { ...pay, termsChecked: false },
       // HANDOFF.md section 6: without a trial the summary is "Today $299.00 / Data fees".
       'no-trial': { ...pay, plan: { ...growth, trial: undefined }, trialEnds: undefined },
+      // Not drawn: the seller charges tax, so the summary says what it comes to before the person agrees.
+      'with-tax': { ...pay, tax: '$24.67/month, Florida sales tax' },
     },
   }),
   '24c-connect-done': defineFixture({ screen: AgentCard, title: (p) => `${p.title} · id.org.ai`, default: done }),

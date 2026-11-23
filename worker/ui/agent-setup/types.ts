@@ -110,3 +110,17 @@ export type MoneyEvent = 'charge.succeeded' | 'charge.failed' | 'charge.needs_pe
 
 /** What `authorize(agent_id, product, amount, kind)` answers before any charge. */
 export type AuthorizeAnswer = 'allow' | 'ask_person' | 'refuse'
+
+/**
+ * A Link wallet spend request's status, as Stripe names them
+ * (docs.stripe.com/agentic-commerce/agents/link-agent-wallet). The person has 30 minutes to
+ * answer a `pending_approval` request before it becomes `expired`.
+ */
+export type LinkSpendStatus = 'created' | 'pending_approval' | 'requires_action' | 'approved' | 'submitted' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'canceled'
+
+/**
+ * What a workspace can pay with. Stablecoin wallets (x402, MPP on Tempo) are left out on
+ * purpose (owner direction, 2026-11-23): nothing here charges per call, and a wallet would
+ * mean holding money. Adding one later is a new member here and a row in the pays-with line.
+ */
+export type PaymentMethodKind = 'card' | 'bank' | 'link'

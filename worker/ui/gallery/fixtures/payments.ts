@@ -30,18 +30,8 @@ const payAdd: AgentCardProps = {
   description: ['For ', DRIVLY, '. Agents you approve charge it, inside the limits you set.'],
   blocks: [
     { kind: 'dotted' },
-    {
-      kind: 'segtabs',
-      legend: 'Payment method type',
-      name: 'method_type',
-      options: [
-        { value: 'card', label: 'Card' },
-        { value: 'bank', label: 'Bank account' },
-        { value: 'link', label: 'Link' },
-      ],
-      selected: 'card',
-    },
-    // Stripe's Payment Element mounts here. No key in the gallery, so it shows the picture.
+    // Stripe's Payment Element mounts here and draws its own Card, Bank account and Link tabs.
+    // No key in the gallery, so it shows the picture.
     { kind: 'stripe' },
     { kind: 'checkbox', id: 'pay-agents', name: 'agents_can_charge', label: 'Agents can charge this', detail: 'Only agents you approved, and only inside their limit.', checked: true },
   ],
@@ -423,23 +413,24 @@ const spendRules: AgentCardProps = {
 const APIS_EMAIL: Product = { id: 'apis.ax', api: 'apis.email', name: 'apis.email', tile: '@', dashboard_url: 'https://apis.email/dashboard' }
 
 const payPerCall: SetupPageProps = {
-  // Pay per call: no plan, no key. Three steps.
+  // Pay per call: no plan to pick. Calls are counted and billed monthly, on the saved method (owner
+  // direction, 2026-11-23). Nothing is charged per call, so the card minimum never comes into it.
   setup: run('su_ppc3', APIS_EMAIL, 'live', [
     { id: 'approved', title: 'Agent approved', detail: UP_TO_500, state: 'done', at: at('14') },
-    { id: 'first_paid_call', title: 'First paid call', detail: 'The call was the payment. 200 in 180 ms.', state: 'done', at: at('15') },
+    { id: 'first_paid_call', title: 'First paid call', detail: 'Counted toward this month’s bill. 200 in 180 ms.', state: 'done', at: at('15') },
     { id: 'production', title: 'Ready for production', detail: 'Backed off and retried after a 429.', state: 'done', at: at('16') },
   ]),
   agent: CLAUDE_CODE,
   title: 'apis.email is live, paying per call',
-  description: 'No plan to pick and no key to store. Claude Code pays for each call as it makes it.',
+  description: 'No plan to pick. Claude Code pays only for the calls it makes, billed monthly.',
   top: [
     {
       kind: 'well',
       items: [
         { k: 'Price', v: '[PRICE]/call' },
-        { k: 'Pays with', v: 'Visa ending 4417, through Stripe' },
+        { k: 'Billed', v: 'Monthly, for the calls made' },
+        { k: 'Pays with', v: VISA },
         { k: 'Spend limit', v: '$500/month' },
-        { k: 'Key', v: 'None. Each call carries its own payment.' },
       ],
     },
   ],
@@ -450,24 +441,52 @@ const payPerCall: SetupPageProps = {
   },
 }
 
+// 21b: Link asks the person, on Link's own site or app, at the approval URL Link returns. A request
+// lasts 30 minutes (docs.stripe.com/agentic-commerce/agents/link-agent-wallet). Link agent payments
+// are for US and Canadian customers, so this ending only appears for them.
+const LINK_APPROVAL = 'https://app.link.com/activity/approve/lsrq_gallery'
+const walletSteps = (wallet: SetupStep): SetupStep[] => [approved('Trusted in Drivly. No card on file here.'), testKey(CAPPED), firstCallDone(), wallet, liveKeyTodo('Issued as soon as Link says yes.'), productionTodo()]
+const useCardInstead = { label: 'Use a card here instead', href: R.paymentMethodNew }
+
 const payWallet: SetupPageProps = {
-  setup: autoDev('needs_wallet_approval', [
-    approved('Trusted in Drivly. No card on file here.'),
-    testKey(CAPPED),
-    firstCallDone(),
-    { id: 'wallet', title: 'Approve in Link', detail: 'Link sent a request for $299 to your phone.', state: 'you' },
-    liveKeyTodo('Issued as soon as Link says yes.'),
-    productionTodo(),
-  ]),
+  setup: autoDev('needs_wallet_approval', walletSteps({ id: 'wallet', title: 'Approve in Link', detail: 'Link is asking you to approve $299. The request runs out at 2:46 PM.', state: 'you' })),
   agent: CLAUDE_CODE,
   title: 'Approve this in Link',
   description: 'Claude Code is paying from your Link wallet, so Link asks you, not id.org.ai.',
   sinceSeconds: 12,
   foot: {
-    secondary: { label: 'Use a card here instead', href: R.paymentMethodNew },
-    primary: { label: 'Open Link', href: 'https://app.link.com', icon: 'arrow_ur', newTab: true },
+    secondary: useCardInstead,
+    primary: { label: 'Open Link', href: LINK_APPROVAL, icon: 'arrow_ur', newTab: true },
     note: 'A wallet keeps its own limits. id.org.ai still shows every charge.',
   },
+}
+
+/** Link's other answers (its spend request statuses: denied, expired, requires_action). Not drawn. */
+const walletDenied: SetupPageProps = {
+  ...payWallet,
+  setup: autoDev('payment_declined', walletSteps({ id: 'wallet', title: 'Approve in Link', detail: 'You said no in Link. Nothing was charged.', state: 'fail', label: 'Denied' })),
+  title: 'You denied this in Link',
+  description: 'Claude Code can’t go live on Auto.dev without a way to pay. The test key still works.',
+  sinceSeconds: 8,
+  foot: { secondary: useCardInstead, primary: { label: 'Ask Link again', value: 'retry_wallet', busyLabel: 'Asking…' }, note: 'Nothing is charged until you approve.' },
+  csrf: 'gallery',
+}
+const walletExpired: SetupPageProps = {
+  ...payWallet,
+  setup: autoDev('needs_wallet_approval', walletSteps({ id: 'wallet', title: 'Approve in Link', detail: 'Link’s request ran out after 30 minutes without an answer.', state: 'you', label: 'Ran out' })),
+  title: 'Link’s request ran out',
+  description: 'Claude Code is still waiting with a working test key. Ask again when you’re ready.',
+  sinceSeconds: 60,
+  foot: { secondary: useCardInstead, primary: { label: 'Ask Link again', value: 'retry_wallet', busyLabel: 'Asking…' }, note: 'Nothing was charged.' },
+  csrf: 'gallery',
+}
+const walletNeedsAction: SetupPageProps = {
+  ...payWallet,
+  // Link says what it needs, in its own words (`next_action.display_message`), shown as written.
+  setup: autoDev('needs_wallet_approval', walletSteps({ id: 'wallet', title: 'Approve in Link', detail: 'Verify your identity in Link to finish this payment.', state: 'you', label: 'Link needs you' })),
+  title: 'Link needs one more thing',
+  description: 'Only you can do this. Claude Code can’t answer Link for you.',
+  foot: { secondary: useCardInstead, primary: { label: 'Open Link', href: LINK_APPROVAL, icon: 'arrow_ur', newTab: true }, note: 'A wallet keeps its own limits. id.org.ai still shows every charge.' },
 }
 
 // ── 22 · Seller payouts ──────────────────────────────────────────────────────
@@ -581,7 +600,23 @@ export const paymentFixtures: FixtureGroup = {
     // Not drawn: no payment method on file, so the pays-with line offers to add one.
     'no-card': { ...planUsage, payMethod: undefined },
   }),
-  '19c-pay-once': card(payOnce, ['countdown.js']),
+  '19c-pay-once': defineFixture({
+    screen: AgentCard,
+    title: (p) => `${p.title} · id.org.ai`,
+    scripts: ['countdown.js'],
+    default: payOnce,
+    derived: {
+      // Not drawn: a purchase with tax, as Stripe's checkout totals carry it (subtotal, tax, total).
+      'with-tax': {
+        ...payOnce,
+        blocks: payOnce.blocks.map((b) =>
+          b.kind === 'well'
+            ? { ...b, items: [{ k: 'Buying', v: '[YOUR DOMAIN], one year' }, { k: 'From', v: '[YOUR DOMAIN API]' }, { k: 'Price', v: '[PRICE]' }, { k: 'Tax', v: '[TAX]' }, { k: 'Total', v: '[TOTAL]' }, { k: 'Left this month', v: '$201 of $500' }] }
+            : b,
+        ),
+      },
+    },
+  }),
   '19d-pay-step-up': card(stepUp, ['countdown.js']),
   '19e-pay-confirm-bank': page(confirmBank),
   '19f-pay-renewal-failed': page(renewalFailed, []),
@@ -591,7 +626,7 @@ export const paymentFixtures: FixtureGroup = {
   '20c-charge': card(charge),
   '20d-spend-rules': card(spendRules),
   '21a-pay-per-call': page(payPerCall, []),
-  '21b-pay-wallet': page(payWallet),
+  '21b-pay-wallet': page(payWallet, ['ago.js'], { denied: walletDenied, expired: walletExpired, 'needs-action': walletNeedsAction }),
   '22a-payout-setup': page(payoutSetup),
   '22b-payout-more': page(payoutMore),
   '22c-payout-on': page(payoutOn, []),

@@ -574,6 +574,7 @@
   position: absolute;
   inset: -4px 0;
 }
+.id-seg__cell--on,
 .id-seg__cell:has(.id-hidden-input:checked) {
   background: var(--id-raised);
   color: var(--id-fg);
@@ -774,6 +775,10 @@
 
 /* ── Stripe's fields (19a) ──────────────────────────────────────────────── */
 
+/* Inside Stripe's well the tab strip is a shade up from the well, so it still reads as a strip. */
+.id-stripe__picture .id-seg {
+  background: var(--id-panel);
+}
 /* Stripe's Payment Element mounts here. Until it does, the box holds a picture
    of it (aria-hidden, never real inputs), which the element replaces. */
 .id-stripe__picture {

@@ -35,3 +35,18 @@ describe('renderHtml', () => {
     )
   })
 })
+
+describe('Stripe pages', () => {
+  it('only a page that opts in admits Stripe: its script, frames (3DS included) and API, and Link', () => {
+    const plain = contentSecurityPolicy()
+    expect(plain).not.toMatch(/stripe|link\.com|frame-src/)
+    const stripe = contentSecurityPolicy([], true)
+    expect(stripe).toContain("script-src 'self' https://js.stripe.com https://*.js.stripe.com")
+    expect(stripe).toContain('frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com')
+    expect(stripe).toContain("connect-src 'self' https://api.stripe.com https://link.com https://*.link.com")
+    // Everything else stays as strict as before.
+    expect(stripe).toContain("default-src 'none'")
+    expect(stripe).toContain("style-src 'self'")
+    expect(stripe).not.toContain("'unsafe-inline'")
+  })
+})

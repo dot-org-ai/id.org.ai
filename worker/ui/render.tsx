@@ -19,6 +19,12 @@ export interface RenderOptions {
    * already-validated origins (for example the OAuth redirect_uri's origin).
    */
   formActionOrigins?: string[]
+  /**
+   * This page mounts Stripe's Payment Element (19a) or completes a bank confirmation (19e):
+   * its policy also admits Stripe's script, frames and API, as docs.stripe.com/security/guide
+   * lists them, and Link's. No other page gets them.
+   */
+  stripe?: boolean
   /** Gallery only: `<html data-frozen>`, so client scripts never tick, poll, redirect or autofocus. */
   frozen?: boolean
   /**
@@ -49,15 +55,23 @@ export function bareOrigin(candidate: string): string | null {
 }
 
 /** The CSP from spec/security.md. `form-action` extends 'self' with validated origins only. */
-export function contentSecurityPolicy(formActionOrigins: readonly string[] = []): string {
+/** Stripe.js and Link, from docs.stripe.com/security/guide#content-security-policy. hooks.stripe.com carries 3DS. */
+export const STRIPE_CSP = {
+  script: 'https://js.stripe.com https://*.js.stripe.com',
+  frame: 'https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com',
+  connect: 'https://api.stripe.com https://link.com https://*.link.com',
+} as const
+
+export function contentSecurityPolicy(formActionOrigins: readonly string[] = [], stripe = false): string {
   const extra = formActionOrigins.map(bareOrigin).filter((o): o is string => o !== null)
   return [
     "default-src 'none'",
     "style-src 'self'",
-    "script-src 'self'",
+    stripe ? `script-src 'self' ${STRIPE_CSP.script}` : "script-src 'self'",
     "img-src 'self' https: data:",
     "font-src 'self'",
-    "connect-src 'self'",
+    stripe ? `connect-src 'self' ${STRIPE_CSP.connect}` : "connect-src 'self'",
+    ...(stripe ? [`frame-src ${STRIPE_CSP.frame}`] : []),
     `form-action ${["'self'", ...new Set(extra)].join(' ')}`,
     "frame-ancestors 'none'",
     "base-uri 'none'",
@@ -132,6 +146,6 @@ export async function renderHtml(element: JSX.Element, opts: Pick<RenderOptions,
 export async function renderPage(_c: Context, element: JSX.Element, opts: RenderOptions): Promise<Response> {
   const html = await renderHtml(element, opts)
   const headers = new Headers(opts.headers)
-  for (const [k, v] of Object.entries(securityHeaders(contentSecurityPolicy(opts.formActionOrigins)))) headers.set(k, v)
+  for (const [k, v] of Object.entries(securityHeaders(contentSecurityPolicy(opts.formActionOrigins, opts.stripe)))) headers.set(k, v)
   return new Response(html, { status: opts.status ?? 200, headers })
 }

@@ -23,13 +23,13 @@ describe('19a · add a payment method', () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     expect(text(d.querySelector('.id-foottext'))).toBe('By saving, you let agents you approve for Drivly charge this card inside the limits you set. Remove it anytime.')
   })
-  it('offers Card, Bank account and Link, with Card selected', async () => {
+  it('leaves the method tabs to Stripe: none of our own, and the picture shows where Stripe draws them', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
-    expect([...d.querySelectorAll<HTMLInputElement>('input[name=method_type]')].map((r) => [r.value, r.checked])).toEqual([
-      ['card', true],
-      ['bank', false],
-      ['link', false],
-    ])
+    expect(d.querySelectorAll('input[type=radio]')).toHaveLength(0)
+    const tabs = [...d.querySelectorAll('.id-stripe__picture .id-seg__cell')]
+    expect(tabs.map((t) => t.textContent)).toEqual(['Card', 'Bank account', 'Link'])
+    expect(tabs[0]!.className).toContain('id-seg__cell--on')
+    expect(tabs[0]!.closest('[aria-hidden=true]')).not.toBeNull()
   })
 })
 
@@ -147,10 +147,12 @@ describe('20 · money views', () => {
 })
 
 describe('21 and 22 · alternate endings and sellers', () => {
-  it('21a: pay per call has three steps, no plan and no key', async () => {
+  it('21a: pay per call has three steps and no plan; calls are billed monthly, never charged one by one', async () => {
     const d = await dom(<SetupPage {...P.payPerCall} />)
     expect([...d.querySelectorAll('.id-sstep__title')].map((t) => t.firstChild!.textContent)).toEqual(['Agent approved', 'First paid call', 'Ready for production'])
-    expect(d.body.textContent).toContain('None. Each call carries its own payment.')
+    expect(text(d.querySelector('.id-desc'))).toBe('No plan to pick. Claude Code pays only for the calls it makes, billed monthly.')
+    expect([...d.querySelectorAll('.id-well .id-kv')].map((r) => text(r))).toEqual(['Price[PRICE]/call', 'BilledMonthly, for the calls made', 'Pays withVisa ending 4417', 'Spend limit$500/month'])
+    expect(d.body.textContent).not.toMatch(/call was the payment|carries its own payment|stablecoin|USDC|wallet/i)
   })
   it('21b: the approval is in Link, which opens in a new tab so this page can finish', async () => {
     const d = await dom(<SetupPage {...P.payWallet} />)
@@ -158,10 +160,43 @@ describe('21 and 22 · alternate endings and sellers', () => {
     expect(open.getAttribute('target')).toBe('_blank')
     expect(open.getAttribute('rel')).toBe('noopener noreferrer')
   })
+  it('21b: Link’s other answers each get a state: denied (X), ran out (ask again), needs the person (Link’s words)', async () => {
+    const f = paymentFixtures['21b-pay-wallet']!.derived
+    const render = async (k: string) => new DOMParser().parseFromString(await renderHtml(f[k]!.render(), { title: 't' }), 'text/html')
+    const denied = await render('denied')
+    expect(denied.querySelector('.id-conn')!.getAttribute('data-state')).toBe('fail')
+    expect(text(denied.querySelector('.id-sstep--fail .id-sstep__when'))).toBe('Denied')
+    const expired = await render('expired')
+    expect(expired.querySelector('.id-conn')!.getAttribute('data-state')).toBe('hold')
+    expect(text(expired.querySelector('.id-sstep--you .id-sstep__when'))).toBe('Ran out')
+    expect(text(expired.querySelector('.id-btn--primary'))).toBe('Ask Link again')
+    const action = await render('needs-action')
+    expect(text(action.querySelector('.id-sstep--you .id-sstep__when'))).toBe('Link needs you')
+    expect(action.querySelector('.id-btn--primary')!.getAttribute('href')).toMatch(/^https:\/\/app\.link\.com\/activity\/approve\//)
+  })
+  it('21b: the waiting step says when Link’s request runs out', async () => {
+    const d = await dom(<SetupPage {...P.payWallet} />)
+    expect(text(d.querySelector('.id-sstep--you .id-sstep__detail'))).toBe('Link is asking you to approve $299. The request runs out at 2:46 PM.')
+  })
   it('22b: Stripe’s due date is the step’s label', async () => {
     const d = await dom(<SetupPage {...P.payoutMore} />)
     expect(text(d.querySelector('.id-sstep--you .id-sstep__when'))).toBe('Due [DATE]')
     expect(text(d.querySelector('.id-hstatus'))).toBe('Updated 1 min ago')
+  })
+})
+
+describe('tax, when the seller charges it', () => {
+  it('24b lists it in the charge summary before the person agrees; with none, there is no row', async () => {
+    const { chargeSummary } = await import('./Connect')
+    const { AUTO_DEV_PRICING } = await import('../../gallery/fixtures/connect')
+    const plan = AUTO_DEV_PRICING.plans[1]!
+    expect(chargeSummary({ plan, trialEnds: 'Nov 29', feesNote: 'Per call, billed monthly', tax: '$24.67/month, Florida sales tax' }).at(-1)).toEqual(['Tax', '$24.67/month, Florida sales tax'])
+    expect(chargeSummary({ plan, trialEnds: 'Nov 29', feesNote: 'Per call, billed monthly' }).map(([k]) => k)).not.toContain('Tax')
+  })
+  it('19c can show tax and a total for one purchase', async () => {
+    const f = paymentFixtures['19c-pay-once']!.derived['with-tax']!
+    const d = new DOMParser().parseFromString(await renderHtml(f.render(), { title: 't' }), 'text/html')
+    expect([...d.querySelectorAll('.id-well .id-kv__key')].map((k) => k.textContent)).toEqual(['Buying', 'From', 'Price', 'Tax', 'Total', 'Left this month'])
   })
 })
 
