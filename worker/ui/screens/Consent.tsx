@@ -19,6 +19,12 @@
  *   The host is the name (never the self-asserted client_name), the warning
  *   callout replaces the rule under the head.
  * Cancel is secondary on the left and Allow is primary on the right for every trust level.
+ *
+ * A listed resource's brand (`resourceBrand`, worker/utils/resource-brands.ts)
+ * changes two things and no decision: the sentences name the brand ("Claude
+ * wants to use Auto.dev as you") and the left tile shows its mark. The real
+ * host is then added to the source row's details ("Resource: mcp.auto.dev"),
+ * so a person can still check where the access goes.
  */
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import {
@@ -44,6 +50,7 @@ import {
   type PermissionItem,
   type SelectOption,
   type SourceRowProps,
+  type AppBrandProps,
   type TileContent,
 } from '../components'
 
@@ -89,6 +96,12 @@ export interface ConsentProps {
   client: ConsentClient
   /** The API resource host ("api.sb"). */
   resource: string
+  /**
+   * The resource's brand, when the operators list one (consent-props.ts looks it
+   * up from the full resource URL). Shown in place of the host in the sentences
+   * and as the left tile; the host moves to a "Resource" details row.
+   */
+  resourceBrand?: Pick<AppBrandProps, 'name' | 'monogram' | 'markUrl'>
   /**
    * What the app wants, after "{app} wants to". Defaults to "use {resource} as you"
    * (3a); the scope registry words a read-only request ("read your Startups", 3c).
@@ -159,7 +172,9 @@ export function clientTile(c: Pick<ConsentClient, 'displayName' | 'host' | 'veri
 /** The source row: the CIMD URL (or client_id) with copy, the details (plus Verified: No), the app's links under the shown name. */
 function sourceRow(p: ConsentProps, v: ConsentVariant, app: string): Omit<SourceRowProps, 'icon' | 'copied'> {
   const value = p.client.cimdUrl ?? p.hidden.client_id ?? p.client.host
-  const details = p.sourceDetails.filter((d) => d.k !== 'Verified')
+  const details = p.sourceDetails.filter((d) => d.k !== 'Verified' && d.k !== 'Resource')
+  // The brand's name stands in for the host above, so the host itself is shown here.
+  if (p.resourceBrand) details.push({ k: 'Resource', v: p.resource, mono: true })
   if (v === 'unverified') details.push({ k: 'Verified', v: 'No' })
   const links: { href: string; label: string }[] = []
   if (p.client.privacyUrl) links.push({ href: p.client.privacyUrl, label: `${app} privacy policy` })
@@ -173,21 +188,33 @@ interface View {
   app: string
 }
 
+/** What the sentences call the resource: its listed brand's name, else its host. */
+function resourceName(p: ConsentProps): string {
+  return p.resourceBrand?.name ?? p.resource
+}
+
+/** The left tile: the resource's mark when it has a listed brand, else id.org.ai's. */
+function resourceTile(p: ConsentProps): TileContent {
+  const b = p.resourceBrand
+  return b?.markUrl ? { kind: 'logo', src: b.markUrl, monogram: b.monogram } : ORG
+}
+
 /** Title and description per variant (screens.md#3a, mocks 3b and 3c). */
 function heading(p: ConsentProps, { v, app }: View): { title: string; description: string } {
+  const resource = resourceName(p)
   switch (v) {
     case 'basic':
       return { title: `Sign in to ${app}`, description: `${app} will get your ${p.scopesSummary ?? 'name and email address'}.` }
     case 'unverified': {
       const where = p.client.runsOnThisComputer ? 'It runs on your computer and asked' : 'It asked'
-      const title = `${app} wants to ${p.intent ?? `use ${p.resource} as you`}`
+      const title = `${app} wants to ${p.intent ?? `use ${resource} as you`}`
       // Without an access level the request is for identity only (no API access to name).
       if (!p.access) return { title, description: `${where} to see your name, email and photo.` }
       const level = p.access.value === 'act' ? 'read and act' : 'read'
-      return { title, description: `${where} for ${level} access to ${p.resource}.` }
+      return { title, description: `${where} for ${level} access to ${resource}.` }
     }
     default:
-      return { title: `${app} wants to ${p.intent ?? `use ${p.resource} as you`}`, description: 'Choose what it can do. You can change this or revoke it anytime.' }
+      return { title: `${app} wants to ${p.intent ?? `use ${resource} as you`}`, description: 'Choose what it can do. You can change this or revoke it anytime.' }
   }
 }
 
@@ -224,7 +251,7 @@ function Body({ p, view }: { p: ConsentProps; view: View }): JSX.Element {
   const permissions = v !== 'basic' && p.permissions && p.permissions.length ? p.permissions : null
   return (
     <Stack gap={22}>
-      <CardHead connector={<Connector left={ORG} right={clientTile(p.client)} state={p.busy ? 'connecting' : 'idle'} />} title={title} description={description} />
+      <CardHead connector={<Connector left={resourceTile(p)} right={clientTile(p.client)} state={p.busy ? 'connecting' : 'idle'} />} title={title} description={description} />
       {v === 'unverified' ? (
         <WarningCallout title="id.org.ai can’t vouch for this app">{`Only continue if you trust ${app} and started this yourself.`}</WarningCallout>
       ) : (

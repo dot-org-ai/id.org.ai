@@ -11,6 +11,7 @@ import type { ConsentViewModel } from '../../src/sdk/oauth/consent-view'
 import { describeScopes } from '../../src/sdk/oauth/scope-registry'
 import type { KV, SelectOption } from './components'
 import type { ConsentProps } from './screens/Consent'
+import { resourceBrand } from '../utils/resource-brands'
 
 export interface ConsentPageContext {
   account: { name: string; email: string; avatar?: string }
@@ -68,6 +69,8 @@ function scopesSummary(scopes: string[]): string {
 export function consentProps(vm: ConsentViewModel, ctx: ConsentPageContext): ConsentProps {
   const selected = ctx.workspaces.find((w) => w.id === ctx.selectedOrgId)
   const resourceHost = vm.resource ? hostOf(vm.resource) : 'id.org.ai'
+  // A listed resource (mcp.auto.dev → Auto.dev) is shown by its brand; the screen keeps the host in the details.
+  const brand = resourceBrand(vm.resource)
   const appName = vm.client.verified ? vm.client.displayName : vm.client.host
   const readOnly = vm.scopes.includes('sb:read') && !vm.scopes.includes('sb:do')
   const workspaces: SelectOption[] = ctx.workspaces.map((w) => ({ value: w.id, label: w.name }))
@@ -85,6 +88,7 @@ export function consentProps(vm: ConsentViewModel, ctx: ConsentPageContext): Con
       ...(vm.client.termsUrl && { termsUrl: vm.client.termsUrl }),
     },
     resource: resourceHost,
+    ...(brand && { resourceBrand: { name: brand.name, monogram: brand.monogram, markUrl: brand.markUrl } }),
     // 3c words a read-only sb request (mock 3c), and an identity-only one, by what it does.
     ...(!vm.client.verified && readOnly && { intent: 'read your Startups' }),
     ...(!vm.client.verified && vm.request === 'basic' && { intent: 'sign you in' }),

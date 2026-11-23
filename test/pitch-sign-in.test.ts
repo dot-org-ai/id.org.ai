@@ -10,6 +10,7 @@
  *      goes back to the deck.
  *   3. provider=GoogleOAuth: straight to Google through WorkOS, and back.
  */
+import { withRelayOrigins } from '../worker/utils/redirect-relays'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { SELF, fetchMock, env } from 'cloudflare:test'
 import { authService } from './helpers/auth-service'
@@ -156,6 +157,11 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     // no picker, no email form: straight to the code screen, the code already sent
     expect(r2.status).toBe(303)
     const codePath = r2.headers.get('location')!
+    // the flow cookie must reach the code screen when the deck's own page started the flow (another site):
+    // a Strict cookie is not sent on a navigation another site started, and the screen would read as expired
+    const flowSetCookie = r2.headers.getSetCookie().find((l) => /id_code=/.test(l))!
+    expect(flowSetCookie).toMatch(/SameSite=Lax/i)
+    expect(flowSetCookie).not.toMatch(/SameSite=Strict/i)
     expect(codePath).toMatch(/^\/login\/code\/[0-9a-f]{48}$/)
     expect(sends.n).toBe(1)
 
@@ -234,7 +240,10 @@ describe('email: WorkOS’s code, and only the code screen', () => {
     const sends = mockSends('direct@fund-one.example')
     const direct = await SELF.fetch(`${BASE}/login?provider=email&login_hint=direct%40fund-one.example&continue=%2Fdash%2Fprofile`, { redirect: 'manual' })
     expect(direct.status).toBe(200)
-    expect(await direct.text()).toContain('Choose a provider')
+    // The sign-in page (1a) replaced the old picker, whose "Choose a provider" this used to look for.
+    const page = await direct.text()
+    expect(page).toContain('<title>Sign in · id.org.ai</title>')
+    expect(page).toContain('href="/login?provider=GitHubOAuth')
     expect(sends.n).toBe(0)
   })
 
@@ -289,6 +298,14 @@ describe('continueOrigins (1b form-action)', () => {
     expect(continueOrigins(`${BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(`${PITCH}/auth/callback`)}`, BASE)).toEqual([PITCH])
     expect(continueOrigins(`${BASE}/oauth/authorize?redirect_uri=javascript%3Aalert(1)`, BASE)).toEqual([])
   })
+
+  it('adds a listed app’s relay origin (chatgpt.com -> platform.openai.com)', () => {
+    const authorize = (to: string) => `${BASE}/oauth/authorize?redirect_uri=${encodeURIComponent(to)}`
+    expect(continueOrigins(authorize('https://chatgpt.com/connector/oauth/abc'), BASE)).toEqual(['https://chatgpt.com', 'https://platform.openai.com'])
+    // exact origin only
+    expect(continueOrigins(authorize('https://chatgpt.com.evil.example/cb'), BASE)).toEqual(['https://chatgpt.com.evil.example'])
+    expect(continueOrigins('https://chatgpt.com/after', BASE)).toEqual(['https://chatgpt.com'])
+  })
 })
 
 describe('referringHost (1b connector)', () => {
@@ -298,5 +315,12 @@ describe('referringHost (1b connector)', () => {
     expect(referringHost('https://headless.ly/after', BASE)).toBe('headless.ly')
     expect(referringHost(authorize('http://pitch.startups.studio/auth/callback'), BASE)).toBeUndefined()
     expect(referringHost('/dash/profile', BASE)).toBeUndefined()
+  })
+})
+
+describe('withRelayOrigins', () => {
+  it('ignores inherited object keys', () => {
+    expect(withRelayOrigins('constructor')).toEqual(['constructor'])
+    expect(withRelayOrigins('https://chatgpt.com')).toEqual(['https://chatgpt.com', 'https://platform.openai.com'])
   })
 })

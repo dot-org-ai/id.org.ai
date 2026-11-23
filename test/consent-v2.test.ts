@@ -313,3 +313,20 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(c).not.toContain('Verified &lt;img')
   })
 })
+
+describe('consent v2: relay origins', () => {
+  it('form-action allows chatgpt.com and platform.openai.com', async () => {
+    const cookies = await signIn('user_01CONSENT_A')
+    const redirect = 'https://chatgpt.com/connector/oauth/abc123'
+    const reg = await SELF.fetch(`${BASE}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'ChatGPT', redirect_uris: [redirect], token_endpoint_auth_method: 'none' }),
+    })
+    expect(reg.status).toBe(201)
+    const { client_id } = (await reg.json()) as { client_id: string }
+    const page = await SELF.fetch(authorizeUrl(client_id, redirect, await challenge()), { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
+    expect(page.status).toBe(200)
+    expect(page.headers.get('content-security-policy')).toContain("form-action 'self' https://chatgpt.com https://platform.openai.com;")
+  })
+})

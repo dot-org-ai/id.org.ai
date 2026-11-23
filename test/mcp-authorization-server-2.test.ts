@@ -159,9 +159,11 @@ describe('Client ID Metadata Documents through the worker', () => {
     const page = await SELF.fetch(url, { redirect: 'manual', headers: { cookie: cookieHeader(cookies) } })
     expect(page.status).toBe(200)
     const html = await page.text()
-    // Named by its CIMD host, never the name its document gives it (D3, 3c).
-    expect(html).toMatch(/>claude\.ai wants to read your Startups</)
-    expect(html).not.toContain('Claude Code')
+    // claude.ai is on VERIFIED_CLIENT_HOSTS since 2026-11-16 (worker/wrangler.jsonc), so every client document
+    // it hosts, this one included, is shown by the name it gives itself and without the 3c warning (D3).
+    // Before that date this page named it by its host: "claude.ai wants to read your Startups".
+    expect(html).toMatch(/>Claude Code wants to use api\.sb as you</)
+    expect(html).not.toContain('can’t vouch for this app')
     const back = await consent(url, cookies) // served from the cache: the mock answered once
     expect(`${back.origin}${back.pathname}`).toBe(redirect)
     expect(back.searchParams.get('iss')).toBe(BASE)

@@ -2,6 +2,7 @@
 import type { PermissionItem } from '../../components'
 import { AdminApprove, type AdminApproveProps } from '../../screens/AdminApprove'
 import { Consent, consentAppName, consentTitle, type ConsentProps } from '../../screens/Consent'
+import { resourceBrand } from '../../../utils/resource-brands'
 import { defineFixture, type FixtureGroup } from '../types'
 
 const account = { name: 'Bryant Skarda', email: 'bryant@driv.ly' }
@@ -183,6 +184,48 @@ const approve: AdminApproveProps = {
   csrf: 'gallery',
 }
 
+// ── Claude connecting to Auto.dev (a listed resource brand) ────────────────
+
+/**
+ * Claude's Auto.dev connector asking for mcp.auto.dev: a verified client
+ * (claude.ai is on VERIFIED_CLIENT_HOSTS) and a listed resource
+ * (worker/utils/resource-brands.ts). The sentence names Auto.dev, the left
+ * tile is its mark, and the details keep the real host. Derived state only.
+ */
+const AUTO_DEV = resourceBrand('https://mcp.auto.dev/mcp')!
+const autoDev: ConsentProps = {
+  variant: 'full',
+  client: {
+    displayName: 'Claude',
+    host: 'claude.ai',
+    verified: true,
+    runsOnThisComputer: false,
+    redirectHost: 'claude.ai',
+    cimdUrl: 'https://claude.ai/oauth/mcp-oauth-client-metadata',
+  },
+  resource: 'mcp.auto.dev',
+  resourceBrand: { name: AUTO_DEV.name, monogram: AUTO_DEV.monogram, markUrl: AUTO_DEV.markUrl },
+  account,
+  switchHref,
+  workspaces: [
+    { value: 'org_do', label: '.do Industries' },
+    { value: 'org_drivly', label: 'Drivly' },
+  ],
+  selectedWorkspace: 'org_drivly',
+  permissions: [
+    { icon: 'user', title: 'See your name, email and photo', detail: 'Your profile from id.org.ai. Never your other apps or workspaces.', scope: 'openid profile email' },
+    { icon: 'clock', title: 'Stay connected while you’re away', detail: 'Keeps a refresh token until you revoke it in Connected apps.', scope: 'offline_access' },
+  ],
+  sourceDetails: [
+    { k: 'Runs on', v: 'claude.ai' },
+    { k: 'Returns to', v: 'https://claude.ai/api/mcp/auth_callback', mono: true },
+    { k: 'Identified by', v: 'claude.ai' },
+  ],
+  hidden: hidden('https://claude.ai/oauth/mcp-oauth-client-metadata', 'https://claude.ai/api/mcp/auth_callback', 'openid profile email offline_access', 'https://mcp.auto.dev/mcp'),
+  action: '/oauth/authorize',
+  csrf: 'gallery',
+}
+
 const consentScripts: ['copy.js', 'submit.js', 'logo.js'] = ['copy.js', 'submit.js', 'logo.js']
 
 export const authorizeFixtures: FixtureGroup = {
@@ -196,6 +239,9 @@ export const authorizeFixtures: FixtureGroup = {
       logo: { ...consent, client: { ...consent.client, logoUrl: PLACEHOLDER_LOGO } },
       'codex-logo': { ...consent, client: { ...consent.client, logoUrl: CODEX_LOGO_URI } },
       busy: { ...consent, busy: true },
+      'auto-dev': autoDev,
+      // The same request from a client that isn't on the verified list: the brand stays, so does every warning.
+      'auto-dev-unverified': { ...autoDev, client: { ...autoDev.client, verified: false } },
     },
   }),
   '3b-consent-basic': defineFixture({
