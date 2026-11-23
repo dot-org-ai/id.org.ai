@@ -63,6 +63,8 @@ export type Block =
   | { kind: 'well'; label?: string; items: KV[]; excerpt?: string; link?: { href: string; label: string }; tight?: boolean }
   /** A centred 13px line in the body (9e's pointer to the developer dashboard). */
   | { kind: 'line'; text: Rich }
+  /** A centred 12px line with a 14px icon (19a: whose fields these are, right under them). */
+  | { kind: 'iconline'; icon: IconName; text: string }
   | { kind: 'select'; id: string; name: string; label: string; options: SelectOption[]; selected: string }
   | { kind: 'textarea'; id: string; name: string; label: string; placeholder?: string }
   | { kind: 'checkbox'; id: string; name: string; label: string; detail?: string; checked?: boolean }
@@ -127,6 +129,8 @@ export function BlockView({ block: b }: { block: Block }): JSX.Element {
     }
     case 'line':
       return <FootText fill>{rich(b.text)}</FootText>
+    case 'iconline':
+      return <FootNote icon={b.icon}>{b.text}</FootNote>
     case 'select':
       return (
         <Field id={b.id} label={b.label}>
@@ -292,8 +296,6 @@ export interface FootProps {
   note?: Rich
   /** A 14px icon before the note (13a's "Admins get an email"). */
   noteIcon?: IconName
-  /** A second, smaller line with a lock: whose fields the page holds (19a). */
-  secure?: string
 }
 
 function ActionButton({ a, variant, needsTerms }: { a: ActionSpec; variant: 'primary' | 'secondary'; needsTerms?: boolean }): JSX.Element {
@@ -305,7 +307,7 @@ function ActionButton({ a, variant, needsTerms }: { a: ActionSpec; variant: 'pri
 }
 
 /** The action band's content: the terms line, the two actions (secondary left, primary right), then one note. */
-export function Foot({ terms, secondary, primary, note, noteIcon, secure }: FootProps): JSX.Element {
+export function Foot({ terms, secondary, primary, note, noteIcon }: FootProps): JSX.Element {
   const both = secondary && primary
   return (
     <>
@@ -321,7 +323,6 @@ export function Foot({ terms, secondary, primary, note, noteIcon, secure }: Foot
         <ActionButton a={secondary} variant="secondary" />
       ) : null}
       {note ? noteIcon ? <FootNote icon={noteIcon}>{rich(note)}</FootNote> : <FootText fill>{rich(note)}</FootText> : null}
-      {secure ? <FootNote icon="lock">{secure}</FootNote> : null}
     </>
   )
 }
