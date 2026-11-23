@@ -26,7 +26,10 @@ export function FootNote({ icon, children }: { icon?: IconName; children: Child 
   )
 }
 
-/** A text-only foot line: 13/20, fg-3, centred. */
-export function FootText({ children }: { children: Child }): JSX.Element {
-  return <div class="id-foottext">{children}</div>
+/**
+ * A text-only foot line: 13/20, fg-3, centred. `fill` lets each line fill before it wraps,
+ * instead of balancing the lines (owner direction, 2026-11-23, for the agent setup screens).
+ */
+export function FootText({ children, fill }: { children: Child; fill?: boolean }): JSX.Element {
+  return <div class={fill ? 'id-foottext id-foottext--fill' : 'id-foottext'}>{children}</div>
 }

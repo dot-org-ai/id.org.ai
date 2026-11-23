@@ -67,6 +67,8 @@ export interface InputProps {
 
 export function Input(p: InputProps): JSX.Element {
   const describedBy = p.error ? `${p.id}-error` : p.hint ? `${p.id}-hint` : undefined
+  // An address is typed as is: phone keyboards don't capitalise or correct it.
+  const literal = p.type === 'email'
   return (
     <input
       class="id-input"
@@ -76,6 +78,9 @@ export function Input(p: InputProps): JSX.Element {
       value={p.value}
       placeholder={p.placeholder}
       autocomplete={p.autocomplete}
+      autocapitalize={literal ? 'none' : undefined}
+      autocorrect={literal ? 'off' : undefined}
+      spellcheck={literal ? false : undefined}
       required={p.required ? true : undefined}
       autofocus={p.autofocus ? true : undefined}
       maxlength={p.maxlength}
@@ -88,6 +93,8 @@ export function Input(p: InputProps): JSX.Element {
 export interface SelectOption {
   value: string
   label: string
+  /** A shorter name for an action label that follows this select ("$750" for "$750/month"). */
+  short?: string
 }
 
 /** Select: the input box, no native arrow, a chevrons-up-down icon at the right. */
@@ -96,7 +103,7 @@ export function Select({ id, name, options, selected, describedBy, invalid }: { 
     <div class="id-select-wrap">
       <select class="id-input id-select" id={id} name={name} aria-describedby={describedBy} aria-invalid={invalid ? 'true' : undefined}>
         {options.map((o) => (
-          <option value={o.value} selected={o.value === selected ? true : undefined}>
+          <option value={o.value} selected={o.value === selected ? true : undefined} data-short={o.short}>
             {o.label}
           </option>
         ))}

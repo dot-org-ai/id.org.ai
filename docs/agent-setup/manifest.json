@@ -1,0 +1,829 @@
+{
+  "version": 1,
+  "note": "The agent setup, payment and connect screens (HANDOFF.md section 2). 9f, 9g and 9h, phone drawings of 9b, 9a and 9c, are not listed: the pages are responsive, and their phone layout follows the repo's phone rules rather than those drawings (owner direction, 2026-11-23). `reference` screens are not built as pages. `departs` says why a page deliberately differs from its drawing; the comparison reports those without failing.",
+  "screens": [
+    {
+      "id": "9a",
+      "slug": "9a-setup-approve",
+      "file": "screens/html/9a-SetupApprove.html",
+      "png": "screens/png/9a-SetupApprove.png",
+      "title": "Approve an agent that a product's setup sent",
+      "size": [
+        720,
+        1100
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "9b",
+      "slug": "9b-setup-running",
+      "file": "screens/html/9b-SetupRunning.html",
+      "png": "screens/png/9b-SetupRunning.png",
+      "title": "Setup in progress",
+      "size": [
+        720,
+        880
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "9c",
+      "slug": "9c-setup-needs-you",
+      "file": "screens/html/9c-SetupNeedsYou.html",
+      "png": "screens/png/9c-SetupNeedsYou.png",
+      "title": "Waiting on the person: approve spending",
+      "size": [
+        720,
+        1220
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "9d",
+      "slug": "9d-setup-stalled",
+      "file": "screens/html/9d-SetupStalled.html",
+      "png": "screens/png/9d-SetupStalled.png",
+      "title": "Agent went quiet",
+      "size": [
+        720,
+        920
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "9e",
+      "slug": "9e-setup-live",
+      "file": "screens/html/9e-SetupLive.html",
+      "png": "screens/png/9e-SetupLive.png",
+      "title": "Done, with the link to the developer dashboard",
+      "size": [
+        720,
+        1060
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "9i",
+      "slug": "9i-setup-terminal",
+      "file": "screens/html/9i-SetupTerminal.html",
+      "png": "screens/png/9i-SetupTerminal.png",
+      "title": "The same run in the agent's terminal. Reference, not a web screen",
+      "size": [
+        800,
+        560
+      ],
+      "kind": "reference",
+      "phase": 2
+    },
+    {
+      "id": "10a",
+      "slug": "10a-agents",
+      "file": "screens/html/10a-Agents.html",
+      "png": "screens/png/10a-Agents.png",
+      "title": "Your agents",
+      "size": [
+        720,
+        1140
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "10b",
+      "slug": "10b-agent-remove",
+      "file": "screens/html/10b-AgentRemove.html",
+      "png": "screens/png/10b-AgentRemove.png",
+      "title": "Remove an agent",
+      "size": [
+        720,
+        740
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "10c",
+      "slug": "10c-agents-empty",
+      "file": "screens/html/10c-AgentsEmpty.html",
+      "png": "screens/png/10c-AgentsEmpty.png",
+      "title": "No agents yet",
+      "size": [
+        720,
+        640
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "10d",
+      "slug": "10d-agent-pause",
+      "file": "screens/html/10d-AgentPause.html",
+      "png": "screens/png/10d-AgentPause.png",
+      "title": "Pause an agent",
+      "size": [
+        720,
+        760
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "10e",
+      "slug": "10e-agent-activity",
+      "file": "screens/html/10e-AgentActivity.html",
+      "png": "screens/png/10e-AgentActivity.png",
+      "title": "What one agent did",
+      "size": [
+        720,
+        860
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "11a",
+      "slug": "11a-setup-call-failed",
+      "file": "screens/html/11a-SetupCallFailed.html",
+      "png": "screens/png/11a-SetupCallFailed.png",
+      "title": "The call keeps failing",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "11b",
+      "slug": "11b-setup-declined",
+      "file": "screens/html/11b-SetupDeclined.html",
+      "png": "screens/png/11b-SetupDeclined.png",
+      "title": "Payment declined",
+      "size": [
+        720,
+        840
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "11c",
+      "slug": "11c-setup-no-card",
+      "file": "screens/html/11c-SetupNoCard.html",
+      "png": "screens/png/11c-SetupNoCard.png",
+      "title": "No payment method",
+      "size": [
+        720,
+        900
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "11d",
+      "slug": "11d-setup-live-warn",
+      "file": "screens/html/11d-SetupLiveWarn.html",
+      "png": "screens/png/11d-SetupLiveWarn.png",
+      "title": "Live, production check failed",
+      "size": [
+        720,
+        940
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "11e",
+      "slug": "11e-setup-rejected",
+      "file": "screens/html/11e-SetupRejected.html",
+      "png": "screens/png/11e-SetupRejected.png",
+      "title": "Person rejected the agent",
+      "size": [
+        720,
+        640
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "11f",
+      "slug": "11f-setup-cancelled",
+      "file": "screens/html/11f-SetupCancelled.html",
+      "png": "screens/png/11f-SetupCancelled.png",
+      "title": "Setup cancelled",
+      "size": [
+        720,
+        640
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "12a",
+      "slug": "12a-setup-second",
+      "file": "screens/html/12a-SetupSecond.html",
+      "png": "screens/png/12a-SetupSecond.png",
+      "title": "A second API, no approval needed",
+      "size": [
+        720,
+        880
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "12b",
+      "slug": "12b-limit-raise",
+      "file": "screens/html/12b-LimitRaise.html",
+      "png": "screens/png/12b-LimitRaise.png",
+      "title": "Agent asks for a higher limit (phone)",
+      "size": [
+        390,
+        844
+      ],
+      "kind": "screen",
+      "phase": 2,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
+    },
+    {
+      "id": "12c",
+      "slug": "12c-agent-expiring",
+      "file": "screens/html/12c-AgentExpiring.html",
+      "png": "screens/png/12c-AgentExpiring.png",
+      "title": "Agent expires in 3 days",
+      "size": [
+        720,
+        740
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "12d",
+      "slug": "12d-setup-paused",
+      "file": "screens/html/12d-SetupPaused.html",
+      "png": "screens/png/12d-SetupPaused.png",
+      "title": "Setup held because the agent is paused",
+      "size": [
+        720,
+        840
+      ],
+      "kind": "screen",
+      "phase": 2
+    },
+    {
+      "id": "13a",
+      "slug": "13a-agent-blocked",
+      "file": "screens/html/13a-AgentBlocked.html",
+      "png": "screens/png/13a-AgentBlocked.png",
+      "title": "Workspace needs an admin for agent spending",
+      "size": [
+        720,
+        780
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "13b",
+      "slug": "13b-agent-admin-approve",
+      "file": "screens/html/13b-AgentAdminApprove.html",
+      "png": "screens/png/13b-AgentAdminApprove.png",
+      "title": "Admin approves agent spending",
+      "size": [
+        720,
+        1020
+      ],
+      "kind": "screen",
+      "phase": 3
+    },
+    {
+      "id": "14a",
+      "slug": "14a-mail-needs-you",
+      "file": "screens/html/14a-MailNeedsYou.html",
+      "png": "screens/png/14a-MailNeedsYou.png",
+      "title": "Email: agent needs you",
+      "size": [
+        640,
+        640
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "14b",
+      "slug": "14b-mail-stalled",
+      "file": "screens/html/14b-MailStalled.html",
+      "png": "screens/png/14b-MailStalled.png",
+      "title": "Email: setup stalled",
+      "size": [
+        640,
+        600
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "14c",
+      "slug": "14c-mail-live",
+      "file": "screens/html/14c-MailLive.html",
+      "png": "screens/png/14c-MailLive.png",
+      "title": "Email: live, with receipt",
+      "size": [
+        640,
+        640
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "15a",
+      "slug": "15a-add-running",
+      "file": "screens/html/15a-AddRunning.html",
+      "png": "screens/png/15a-AddRunning.png",
+      "title": "apis.directory: adding an API, in progress",
+      "size": [
+        720,
+        940
+      ],
+      "kind": "screen",
+      "phase": 5
+    },
+    {
+      "id": "15b",
+      "slug": "15b-add-pick-review",
+      "file": "screens/html/15b-AddPickReview.html",
+      "png": "screens/png/15b-AddPickReview.png",
+      "title": "apis.directory: pick the review",
+      "size": [
+        720,
+        1180
+      ],
+      "kind": "screen",
+      "phase": 5
+    },
+    {
+      "id": "15c",
+      "slug": "15c-add-domain-failed",
+      "file": "screens/html/15c-AddDomainFailed.html",
+      "png": "screens/png/15c-AddDomainFailed.png",
+      "title": "apis.directory: domain not proved",
+      "size": [
+        720,
+        1000
+      ],
+      "kind": "screen",
+      "phase": 5
+    },
+    {
+      "id": "15d",
+      "slug": "15d-add-in-review",
+      "file": "screens/html/15d-AddInReview.html",
+      "png": "screens/png/15d-AddInReview.png",
+      "title": "apis.directory: in review",
+      "size": [
+        720,
+        800
+      ],
+      "kind": "screen",
+      "phase": 5
+    },
+    {
+      "id": "15e",
+      "slug": "15e-add-listed",
+      "file": "screens/html/15e-AddListed.html",
+      "png": "screens/png/15e-AddListed.png",
+      "title": "apis.directory: listed",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 5
+    },
+    {
+      "id": "16a",
+      "slug": "16a-mig-running",
+      "file": "screens/html/16a-MigRunning.html",
+      "png": "screens/png/16a-MigRunning.png",
+      "title": "Migration: old and new API run side by side",
+      "size": [
+        720,
+        1000
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "16b",
+      "slug": "16b-mig-decide",
+      "file": "screens/html/16b-MigDecide.html",
+      "png": "screens/png/16b-MigDecide.png",
+      "title": "Migration: two calls with no match, person chooses",
+      "size": [
+        720,
+        1120
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "16c",
+      "slug": "16c-mig-switch",
+      "file": "screens/html/16c-MigSwitch.html",
+      "png": "screens/png/16c-MigSwitch.png",
+      "title": "Migration: ready to switch, waiting on the person",
+      "size": [
+        720,
+        1000
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "16d",
+      "slug": "16d-mig-done",
+      "file": "screens/html/16d-MigDone.html",
+      "png": "screens/png/16d-MigDone.png",
+      "title": "Migration: done",
+      "size": [
+        720,
+        1000
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "17a",
+      "slug": "17a-job-approve",
+      "file": "screens/html/17a-JobApprove.html",
+      "png": "screens/png/17a-JobApprove.png",
+      "title": "One approval and one limit across three APIs",
+      "size": [
+        720,
+        1140
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "17b",
+      "slug": "17b-job-running",
+      "file": "screens/html/17b-JobRunning.html",
+      "png": "screens/png/17b-JobRunning.png",
+      "title": "A job across three APIs, each step tagged",
+      "size": [
+        720,
+        940
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "17c",
+      "slug": "17c-job-done",
+      "file": "screens/html/17c-JobDone.html",
+      "png": "screens/png/17c-JobDone.png",
+      "title": "Job done, one bill",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "18a",
+      "slug": "18a-saas-map",
+      "file": "screens/html/18a-SaasMap.html",
+      "png": "screens/png/18a-SaasMap.png",
+      "title": "Headless SaaS: two import columns need mapping",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "18b",
+      "slug": "18b-saas-running",
+      "file": "screens/html/18b-SaasRunning.html",
+      "png": "screens/png/18b-SaasRunning.png",
+      "title": "Headless SaaS: waiting for a real webhook event",
+      "size": [
+        720,
+        980
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "18c",
+      "slug": "18c-saas-live",
+      "file": "screens/html/18c-SaasLive.html",
+      "png": "screens/png/18c-SaasLive.png",
+      "title": "Headless SaaS: live",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 6
+    },
+    {
+      "id": "19a",
+      "slug": "19a-pay-add",
+      "file": "screens/html/19a-PayAdd.html",
+      "png": "screens/png/19a-PayAdd.png",
+      "title": "Add a payment method (Stripe fields)",
+      "size": [
+        720,
+        1000
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "19b",
+      "slug": "19b-pay-plan-usage",
+      "file": "screens/html/19b-PayPlanUsage.html",
+      "png": "screens/png/19b-PayPlanUsage.png",
+      "title": "Agent flow: approve a plan plus usage",
+      "size": [
+        720,
+        1300
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "19c",
+      "slug": "19c-pay-once",
+      "file": "screens/html/19c-PayOnce.html",
+      "png": "screens/png/19c-PayOnce.png",
+      "title": "One purchase over the ask-first amount (phone)",
+      "size": [
+        390,
+        844
+      ],
+      "kind": "screen",
+      "phase": 7,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
+    },
+    {
+      "id": "19d",
+      "slug": "19d-pay-step-up",
+      "file": "screens/html/19d-PayStepUp.html",
+      "png": "screens/png/19d-PayStepUp.png",
+      "title": "Passkey before a bigger limit (phone)",
+      "size": [
+        390,
+        844
+      ],
+      "kind": "screen",
+      "phase": 7,
+      "departs": "Drawn at phone width; the page follows the repo's phone rules instead (owner direction, 2026-11-23)."
+    },
+    {
+      "id": "19e",
+      "slug": "19e-pay-confirm-bank",
+      "file": "screens/html/19e-PayConfirmBank.html",
+      "png": "screens/png/19e-PayConfirmBank.png",
+      "title": "The bank demands the person",
+      "size": [
+        720,
+        900
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "19f",
+      "slug": "19f-pay-renewal-failed",
+      "file": "screens/html/19f-PayRenewalFailed.html",
+      "png": "screens/png/19f-PayRenewalFailed.png",
+      "title": "A renewal was declined after go-live",
+      "size": [
+        720,
+        880
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "19g",
+      "slug": "19g-pay-limit-reached",
+      "file": "screens/html/19g-PayLimitReached.html",
+      "png": "screens/png/19g-PayLimitReached.png",
+      "title": "The agent's limit is reached",
+      "size": [
+        720,
+        800
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "20a",
+      "slug": "20a-spending",
+      "file": "screens/html/20a-Spending.html",
+      "png": "screens/png/20a-Spending.png",
+      "title": "Spend by agent and recent charges, across every API",
+      "size": [
+        720,
+        1140
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "20b",
+      "slug": "20b-pay-methods",
+      "file": "screens/html/20b-PayMethods.html",
+      "png": "screens/png/20b-PayMethods.png",
+      "title": "Payment methods and billing details",
+      "size": [
+        720,
+        860
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "20c",
+      "slug": "20c-charge",
+      "file": "screens/html/20c-Charge.html",
+      "png": "screens/png/20c-Charge.png",
+      "title": "One charge, traced to the approval that allowed it",
+      "size": [
+        720,
+        840
+      ],
+      "kind": "screen",
+      "phase": 7,
+      "departs": "One action, \"View receipt\": \"Ask for a refund\" is not offered yet (owner direction, 2026-11-23)."
+    },
+    {
+      "id": "20d",
+      "slug": "20d-spend-rules",
+      "file": "screens/html/20d-SpendRules.html",
+      "png": "screens/png/20d-SpendRules.png",
+      "title": "Workspace spending rules",
+      "size": [
+        720,
+        960
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "21a",
+      "slug": "21a-pay-per-call",
+      "file": "screens/html/21a-PayPerCall.html",
+      "png": "screens/png/21a-PayPerCall.png",
+      "title": "Live with pay per call: no plan, no key",
+      "size": [
+        720,
+        900
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "21b",
+      "slug": "21b-pay-wallet",
+      "file": "screens/html/21b-PayWallet.html",
+      "png": "screens/png/21b-PayWallet.png",
+      "title": "Agent pays from a Link wallet; approval is in Link",
+      "size": [
+        720,
+        920
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "22a",
+      "slug": "22a-payout-setup",
+      "file": "screens/html/22a-PayoutSetup.html",
+      "png": "screens/png/22a-PayoutSetup.png",
+      "title": "Seller: set up payouts with Stripe",
+      "size": [
+        720,
+        1020
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "22b",
+      "slug": "22b-payout-more",
+      "file": "screens/html/22b-PayoutMore.html",
+      "png": "screens/png/22b-PayoutMore.png",
+      "title": "Seller: Stripe needs one more thing",
+      "size": [
+        720,
+        840
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "22c",
+      "slug": "22c-payout-on",
+      "file": "screens/html/22c-PayoutOn.html",
+      "png": "screens/png/22c-PayoutOn.png",
+      "title": "Seller: selling, payouts on",
+      "size": [
+        720,
+        980
+      ],
+      "kind": "screen",
+      "phase": 7
+    },
+    {
+      "id": "23a",
+      "slug": "23a-mail-bank",
+      "file": "screens/html/23a-MailBank.html",
+      "png": "screens/png/23a-MailBank.png",
+      "title": "Email: bank needs to confirm",
+      "size": [
+        640,
+        640
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "23b",
+      "slug": "23b-mail-pay-failed",
+      "file": "screens/html/23b-MailPayFailed.html",
+      "png": "screens/png/23b-MailPayFailed.png",
+      "title": "Email: renewal failed",
+      "size": [
+        640,
+        640
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "23c",
+      "slug": "23c-mail-usage",
+      "file": "screens/html/23c-MailUsage.html",
+      "png": "screens/png/23c-MailUsage.png",
+      "title": "Email: automatic spend alert",
+      "size": [
+        640,
+        640
+      ],
+      "kind": "email",
+      "phase": 4
+    },
+    {
+      "id": "24a",
+      "slug": "24a-connect-plan",
+      "file": "screens/html/24a-ConnectPlan.html",
+      "png": "screens/png/24a-ConnectPlan.png",
+      "title": "Connect from Claude: pick a plan",
+      "size": [
+        720,
+        1200
+      ],
+      "kind": "screen",
+      "phase": 8
+    },
+    {
+      "id": "24b",
+      "slug": "24b-connect-pay",
+      "file": "screens/html/24b-ConnectPay.html",
+      "png": "screens/png/24b-ConnectPay.png",
+      "title": "Connect from Claude: subscribe and connect",
+      "size": [
+        720,
+        1080
+      ],
+      "kind": "screen",
+      "phase": 8
+    },
+    {
+      "id": "24c",
+      "slug": "24c-connect-done",
+      "file": "screens/html/24c-ConnectDone.html",
+      "png": "screens/png/24c-ConnectDone.png",
+      "title": "Connect from Claude: connected",
+      "size": [
+        720,
+        700
+      ],
+      "kind": "screen",
+      "phase": 8
+    }
+  ]
+}

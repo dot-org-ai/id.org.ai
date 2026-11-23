@@ -10,8 +10,9 @@ export type TileContent =
   | { kind: 'icon'; icon: IconName }
   | { kind: 'logo'; src: string; monogram: string }
 
-/** Monogram size: 22px for one letter, 19px for two, 20px for a dotted pair (".d"). */
+/** Monogram size: 22px for one letter, 19px for two or for a symbol ("@"), 20px for a dotted pair (".d"). */
 function monogramClass(text: string): string {
+  if (!/[a-z0-9]/i.test(text)) return 'id-tile id-tile--m2'
   if (text.length <= 1) return 'id-tile id-tile--m1'
   if (text.includes('.')) return 'id-tile'
   return 'id-tile id-tile--m2'
@@ -30,7 +31,7 @@ export function AppTile({ content }: { content: TileContent }): JSX.Element {
     case 'icon':
       return (
         <div class="id-tile">
-          <Icon name={content.icon} size={content.icon === 'bot' ? 26 : 24} />
+          <Icon name={content.icon} size={content.icon === 'bot' || content.icon === 'fingerprint' ? 26 : 24} />
         </div>
       )
     case 'logo': {
@@ -49,4 +50,12 @@ export function AppTile({ content }: { content: TileContent }): JSX.Element {
 /** The 36px icon tile used inside wells (the SSO organisation). */
 export function IconTile({ icon, text }: { icon?: IconName; text?: string }): JSX.Element {
   return <div class="id-icontile">{icon ? <Icon name={icon} size={16} /> : text}</div>
+}
+
+/** What a 36px mini tile shows: an agent's letters, or an icon. */
+export type MiniTileContent = { kind: 'monogram'; text: string } | { kind: 'icon'; icon: IconName }
+
+/** The 36px version of the 56px tile, radius 11 (10a, 20a). */
+export function MiniTile({ content }: { content: MiniTileContent }): JSX.Element {
+  return <span class="id-minitile">{content.kind === 'icon' ? <Icon name={content.icon} size={18} /> : content.text}</span>
 }

@@ -55,3 +55,10 @@
 .id-sheet__wide {
   max-width: none;
 }
+
+/* Agent setup index (/__design/agent-setup) */
+.id-gallery__id {
+  font-family: var(--id-mono);
+  color: var(--id-fg-2);
+  min-width: 28px;
+}

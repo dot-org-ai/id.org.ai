@@ -148,6 +148,30 @@ describe('Field, Select, CodeInput', () => {
     expect(Array.from(group.children).map((c) => c.tagName)).toEqual(['INPUT', 'INPUT', 'INPUT', 'INPUT', 'SPAN', 'INPUT', 'INPUT', 'INPUT', 'INPUT'])
     expect(Array.from(d.querySelectorAll('input')).map((b) => b.value).join('')).toBe('WDJBMJHT')
   })
+
+  it('CodeInput for devices: no one-time-code (phones would offer an emailed code), no autocorrect', async () => {
+    const d = await dom(<CodeInput length={8} label="Enter the code" />)
+    const boxes = Array.from(d.querySelectorAll('input'))
+    expect(boxes.map((b) => b.getAttribute('autocomplete'))).toEqual(Array(8).fill('off'))
+    expect(boxes.every((b) => b.getAttribute('autocorrect') === 'off' && b.getAttribute('autocapitalize') === 'characters')).toBe(true)
+  })
+
+  it('Input for email: no capitalising, autocorrect or spellcheck; other fields keep the defaults', async () => {
+    const d = await dom(
+      <>
+        <Input id="e" name="email" type="email" autocomplete="email" />
+        <Input id="n" name="name" autocomplete="name" />
+      </>,
+    )
+    const email = d.getElementById('e')!
+    expect(email.getAttribute('autocapitalize')).toBe('none')
+    expect(email.getAttribute('autocorrect')).toBe('off')
+    expect(email.getAttribute('spellcheck')).toBe('false')
+    const name = d.getElementById('n')!
+    expect(name.hasAttribute('autocapitalize')).toBe(false)
+    expect(name.hasAttribute('autocorrect')).toBe(false)
+    expect(name.hasAttribute('spellcheck')).toBe(false)
+  })
 })
 
 describe('RadioGroup, RadioCard, Checkbox', () => {

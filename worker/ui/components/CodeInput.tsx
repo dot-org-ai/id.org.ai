@@ -33,7 +33,9 @@ export function CodeInput({ length, value = '', focusIndex, label, errorId, disa
         maxlength={i === 0 ? undefined : 1}
         inputmode={device ? 'text' : 'numeric'}
         autocapitalize={device ? 'characters' : undefined}
-        autocomplete={i === 0 ? 'one-time-code' : 'off'}
+        autocorrect={device ? 'off' : undefined}
+        // A device code isn't a one-time code: phones would offer the last emailed one.
+        autocomplete={i === 0 && !device ? 'one-time-code' : 'off'}
         spellcheck={false}
         aria-label={`Character ${i + 1} of ${length}`}
         aria-invalid={errorId ? 'true' : undefined}

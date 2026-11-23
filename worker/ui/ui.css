@@ -18,7 +18,14 @@
 
 /* ── Base ────────────────────────────────────────────────────────────────── */
 
+/* iOS doesn't inflate text in landscape; pinch zoom still works. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
+  /* No grey or blue flash on tap: controls show their own pressed and focus states. */
+  -webkit-tap-highlight-color: transparent;
   margin: 0;
   background: var(--id-bg);
   color: var(--id-fg);
@@ -163,6 +170,34 @@ details[data-x][open] > summary [data-chev-d] {
   padding: 18px 24px;
   min-height: 72px;
   box-sizing: border-box;
+
+  /* Stays at the top while the page scrolls, so the brand and the header's right slot (a
+     countdown, a setup's status) are always in view. Glass, not a slab: the page colour at
+     part opacity over a blur of what scrolls beneath. At rest it sits on the page colour and
+     looks exactly as before (owner direction, 2026-11-23). */
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in oklch, var(--id-bg) 72%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+/* Without backdrop blur, or when the person asks for less transparency, the bar is solid. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .id-header {
+    background: var(--id-bg);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .id-header {
+    background: var(--id-bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+/* A field or heading scrolled to by focus or a link stops below the bar, not under it. */
+html {
+  scroll-padding-top: 72px;
 }
 
 .id-brand {
@@ -287,6 +322,9 @@ details[data-x][open] > summary [data-chev-d] {
 .id-stack {
   display: flex;
   flex-direction: column;
+}
+.id-stack--2 {
+  gap: 2px;
 }
 .id-stack--4 {
   gap: 4px;
@@ -507,6 +545,9 @@ details[data-x][open] > summary [data-chev-d] {
   color: var(--id-accent);
 }
 .id-input {
+  /* No native field styling (iOS Safari's inner shadow and corners). */
+  -webkit-appearance: none;
+  appearance: none;
   box-sizing: border-box;
   width: 100%;
   min-height: var(--id-control-h);
@@ -522,6 +563,19 @@ details[data-x][open] > summary [data-chev-d] {
 }
 .id-input:focus {
   border-color: var(--id-select);
+  box-shadow: var(--id-sh-input), var(--id-ring);
+}
+/* Autofill keeps the card's colours: Chrome and Safari otherwise paint the
+   field light blue or yellow behind an !important background, and Firefox
+   filters it. An inset shadow paints over that background. */
+.id-input:-webkit-autofill {
+  -webkit-text-fill-color: var(--id-fg);
+  caret-color: var(--id-fg);
+  box-shadow: var(--id-sh-input), inset 0 0 0 100px var(--id-panel);
+  filter: none;
+}
+.id-input:-webkit-autofill:focus {
+  box-shadow: var(--id-sh-input), inset 0 0 0 100px var(--id-panel), var(--id-ring);
 }
 .id-select-wrap {
   position: relative;
@@ -550,8 +604,16 @@ details[data-x][open] > summary [data-chev-d] {
    (Chrome 135+), its list matches the card instead of the OS menu. It stays a
    real <select>: keyboard, screen readers, autofill and form posts work with
    no script. Safari and Firefox keep their native list. Our chevron replaces
-   the built-in picker icon. */
-@supports (appearance: base-select) {
+   the built-in picker icon.
+
+   Safari is kept out on purpose (owner direction, 2026-11-23). It now accepts
+   the styleable select but drew this list invisible, so on an iPhone a
+   dropdown looked dead. `font: -apple-system-body` is a value only Safari's
+   engine supports, which makes it the test for "this is Safari" (every iOS
+   browser included): there the select stays native, the one list that always
+   works. Take the exclusion out only after checking the styled list on a
+   real iPhone. */
+@supports (appearance: base-select) and (not (font: -apple-system-body)) {
   .id-select,
   .id-select::picker(select) {
     appearance: base-select;
@@ -577,20 +639,15 @@ details[data-x][open] > summary [data-chev-d] {
     background: var(--id-card);
     box-shadow: var(--id-sh-card);
     color: var(--id-fg);
-    opacity: 0;
-    translate: 0 -4px;
+    /* Visible is the resting state. The fade-in below is the only thing layered on it, so a
+       browser that misreads any of this loses the animation, never the list. (It used to rest
+       hidden and rely on the popover's open state to show it, which Safari never matched.) */
     transition:
       opacity 140ms var(--id-ease-out),
-      translate 140ms var(--id-ease-out),
-      display 140ms allow-discrete,
-      overlay 140ms allow-discrete;
-  }
-  .id-select::picker(select):popover-open {
-    opacity: 1;
-    translate: 0 0;
+      translate 140ms var(--id-ease-out);
   }
   @starting-style {
-    .id-select::picker(select):popover-open {
+    .id-select::picker(select) {
       opacity: 0;
       translate: 0 -4px;
     }
@@ -1783,14 +1840,49 @@ button.id-link[hidden] {
 /* ── Phones (layout.md#phones-viewport--480px) ─────────────────────────── */
 
 @media (max-width: 480px) {
+  /* The card fills the screen between the header and the footer links (owner direction,
+     2026-11-23): no gap above or below it, and its action band sits at the bottom, so a short
+     card puts its buttons in thumb reach instead of floating above empty space. A long card
+     is unchanged: the buttons still come after the content. Nothing is pinned to the
+     viewport, so nobody can approve past what they haven't scrolled through. */
+  .id-page {
+    min-height: 100dvh;
+  }
+  /* The card takes the whole screen under the header, so the Privacy, Terms and Status links
+     sit just below the fold: there when scrolled to, never taking space from the card (owner
+     direction, 2026-11-23). Branded sign-in keeps "Secured by id.org.ai" in view: it says who
+     is asking for the password. */
+  .id-page:not(:has(.id-footer--secured)) .id-main {
+    min-height: calc(100dvh - 72px);
+    box-sizing: border-box;
+  }
+  /* Every page, the one that pins its card to the top on desktop (4b) included: on a phone
+     the card already starts at the header, so its top edge stays still either way. */
+  .id-main,
+  .id-main--top {
+    padding-top: 0;
+    padding-bottom: 0;
+    align-items: stretch;
+  }
+  /* Only the form that wraps the card grows: a page may hold another, empty form (1b's resend). */
+  .id-column > .id-form:has(.id-card),
+  .id-main .id-card {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .id-main .id-card__body {
+    flex-grow: 1;
+  }
   .id-card {
     align-self: stretch !important;
     width: auto !important;
     max-width: none !important;
     margin: 0 -20px !important;
     border-radius: 0 !important;
-    border-left: 0 !important;
-    border-right: 0 !important;
+    /* No outer border at all on phones: the card is the screen, and its surface colour is
+       enough against the header (owner direction, 2026-11-23; top and bottom were kept before). */
+    border: 0 !important;
     box-shadow: none !important;
   }
   .id-card__body {
@@ -1806,11 +1898,56 @@ button.id-link[hidden] {
   .id-actions > * {
     min-height: var(--id-control-h-phone) !important;
   }
+  /* Two quiet actions have no primary, so they keep their order when stacked: Pause above
+     Remove, Back above Export (owner direction, 2026-11-23). */
+  .id-actions > .id-btn--secondary:last-child {
+    order: 0;
+  }
+  /* Titles, descriptions and foot lines fill each line before wrapping (balanced lines break
+     too early on a narrow screen) and never leave one word alone on the last line. Browsers
+     without `pretty` wrap plainly (owner direction, 2026-11-23). */
+  .id-title,
+  .id-desc,
+  .id-foottext {
+    text-wrap: wrap;
+    text-wrap: pretty;
+  }
   /* Side-by-side radio cards (3a's Access) stack, in DOM order (owner direction, 2026-10-01). */
   .id-radios--row {
     flex-direction: column;
   }
   .id-radios--row > .id-radio {
     flex-basis: auto;
+  }
+  /* The connector shrinks (owner direction, 2026-10-06): 48px tiles (56 × 0.857,
+     content and ring with them) and the middle three dots. The middle dot still
+     becomes the verdict, and the pulse still runs toward the destination. */
+  .id-tile-wrap {
+    zoom: 0.857;
+  }
+  .id-conn__dot--0,
+  .id-conn__dot--4 {
+    display: none;
+  }
+  /* Every md control is 48px, as the action band's buttons are (owner direction, 2026-10-06). */
+  .id-input:not(.id-textarea),
+  .id-btn:not(.id-btn--sm) {
+    min-height: var(--id-control-h-phone);
+  }
+  .id-check {
+    min-height: 44px;
+  }
+}
+
+/* Phones and touch screens (owner direction, 2026-10-06). Field text is 16px:
+   below that, iOS Safari zooms the page when a field takes focus. A coarse
+   pointer covers landscape phones, which are wider than 480px. */
+@media (max-width: 480px), (pointer: coarse) {
+  .id-input,
+  .id-select option {
+    font-size: 16px;
+  }
+  .id-select option {
+    min-height: 44px;
   }
 }

@@ -6,3 +6,8 @@ export function Pill({ children, accent, normalLine }: { children: Child; accent
   const cls = ['id-pill', accent ? 'id-pill--accent' : '', normalLine ? 'id-pill--normal' : ''].filter(Boolean).join(' ')
   return <span class={cls}>{children}</span>
 }
+
+/** A state chip beside a name: "Setting up", "Paused", "Default", "Running". */
+export function Chip({ children }: { children: Child }): JSX.Element {
+  return <span class="id-chip">{children}</span>
+}

@@ -61,9 +61,37 @@ import {
 } from '../components'
 import { Icon, type IconName } from '../icons'
 import { CodeHint, FootLinks, OrgRow, ProviderAction, Resend } from '../components'
+import {
+  ActivityRow,
+  AgentRow,
+  Amount,
+  Bar,
+  CallResult,
+  ChargeRow,
+  Chip,
+  CompareWell,
+  FieldMapRow,
+  HeaderStatus,
+  Listening,
+  MethodRow,
+  MiniTile,
+  PayLine,
+  PlanPicker,
+  PromptWell,
+  SegTabs,
+  Spend,
+  SpendRow,
+  StepItem,
+  StepList,
+  StripeFields,
+  TermsAgree,
+  Toggle,
+  ToggleRow,
+  Total,
+} from '../components'
 
-const ICONS: IconName[] = ['chev_r', 'chev_d', 'chev_ud', 'check', 'key', 'mail', 'copy', 'user', 'search', 'pen', 'laptop', 'terminal', 'shield', 'alert', 'clock', 'plus', 'globe', 'logout', 'lock', 'x', 'send', 'commit', 'building', 'bot', 'external']
-const STATES: ConnectorState[] = ['idle', 'connecting', 'done', 'broken', 'ok', 'fail']
+const ICONS: IconName[] = ['chev_r', 'chev_d', 'chev_ud', 'check', 'key', 'mail', 'copy', 'user', 'search', 'pen', 'laptop', 'terminal', 'shield', 'alert', 'clock', 'plus', 'globe', 'logout', 'lock', 'x', 'send', 'commit', 'building', 'bot', 'external', 'pause', 'play', 'trash', 'shield_check', 'card', 'bank', 'zap', 'flask', 'arrow_ur', 'layers', 'bell', 'fingerprint']
+const STATES: ConnectorState[] = ['idle', 'connecting', 'done', 'broken', 'ok', 'fail', 'hold']
 
 function Section({ title, children }: { title: string; children: Child }): JSX.Element {
   return (
@@ -256,6 +284,151 @@ export function ComponentSheet(): JSX.Element {
             <RadioGroup legend="How far to sign out" layout="stack" hideLabel>
               <RadioCard id="sheet-s1" name="sheet-scope" value="app" checked title="This app" description="Sign out of headless.ly only." />
             </RadioGroup>
+          </Section>
+          <Section title="Agent setup: header status, mini tile, chip">
+            <div class="id-sheet__row">
+              <HeaderStatus tone="ok" verb="Updated" seconds={4} />
+              <HeaderStatus tone="warn" verb="Last seen" seconds={600} />
+              <MiniTile content={{ kind: 'icon', icon: 'bot' }} />
+              <MiniTile content={{ kind: 'monogram', text: 'Cx' }} />
+              <Chip>Setting up</Chip>
+              <Chip>Default</Chip>
+            </div>
+          </Section>
+          <Section title="Step list: every step state">
+            <StepList label="Setup steps">
+              <StepItem state="done" title="Agent approved" when="2:14 PM" detail="Trusted in Drivly, up to $500/month." />
+              <StepItem state="done" title="Test key issued" when="2:14 PM" />
+              <StepItem state="now" title="First real call" when="Now" detail="Waiting for Claude Code to call Auto.dev with the test key.">
+                <Listening text="Listening on test key …a91c" elapsed="0:42" note="A call copied from the docs example doesn’t count." />
+              </StepItem>
+              <StepItem state="you" title="Approve spending" when="Waiting on you" detail="Claude Code subscribes inside the limit you set." />
+              <StepItem state="fail" title="Live key" when="Declined" detail="Drivly’s card ending 4417 was declined." />
+              <StepItem state="held" title="First real email" when="Paused" tag="apis.email" detail="Calls are refused while it’s paused." />
+              <StepItem state="todo" title="Ready for production" detail="Auto.dev checks that it backs off and retries." />
+            </StepList>
+          </Section>
+          <Section title="Evidence">
+            <CallResult
+              method="GET"
+              path="/vin/1HGCM82633A004352"
+              status={200}
+              result="212 ms"
+              rows={[['Vehicle', '2003 Honda Accord Cpe'], ['Trim', 'EX Auto V6 w/Leather'], ['Engine', '3.0, V6 Cylinder Engine']]}
+              link={{ href: '#', label: 'View full response' }}
+            />
+            <CallResult method="GET" path="/vin/1HGCM82633A00435" status={400} result="INVALID_VIN_FORMAT" />
+            <PromptWell label="Paste this to Claude Code" text="Continue the Auto.dev setup. Read apis.ax/setup/su_8f2k and do what “next” says." />
+            <PromptWell label="Give this to your agent" text="Set up Auto.dev through apis.ax. Follow [AGENT GUIDE URL]." copied />
+            <CompareWell
+              rows={[
+                { name: 'Decode a VIN', text: '250 of 250 match', state: 'ok' },
+                { name: 'Search listings', text: '181 of 250 so far', state: 'running' },
+              ]}
+              note="A difference stops the switch and shows you both answers."
+            />
+            <Well variant="default">
+              <FieldMapRow id="sheet-map1" name="map_lead_src" column="lead_src" options={['Source', 'A new field: lead_src', 'Skip this column']} value="Source" />
+              <FieldMapRow id="sheet-map2" name="map_acct_mgr" column="acct_mgr" options={['Owner', 'A new field: acct_mgr', 'Skip this column']} value="Owner" />
+            </Well>
+          </Section>
+          <Section title="Paying: pays-with line, spend block, terms, toggle">
+            <PayLine method="Visa ending 4417" href="#" addHref="#" />
+            <PayLine href="#" addHref="#" />
+            <Spend id="sheet-spend" planPrice="$299" limit={{ options: [null, 10000, 50000, 100000, 200000, 500000], value: null }} alerts={{ marks: [10000, 50000, 100000, 200000, 500000], on: true, open: true }} />
+            <Spend id="sheet-alerts-only" alerts={{ marks: [10000, 50000, 100000, 200000, 500000], on: false }} />
+            <Spend id="sheet-limit-only" planPrice="$299" limit={{ options: [null, 10000, 50000], value: 50000 }} />
+            <div class="id-sheet__row">
+              <Toggle id="sheet-toggle-on" name="t1" checked label="On" />
+              <Toggle id="sheet-toggle-off" name="t2" label="Off" />
+            </div>
+            <ToggleRow id="sheet-receipt" name="receipts" checked title="Email a receipt for every charge" sub="Sent to bryant@driv.ly." />
+            <Checkbox id="sheet-c3" name="cancel_sub" detail="Left on, Growth keeps billing Drivly at $299/month.">Also cancel the Auto.dev subscription</Checkbox>
+            <Checkbox id="sheet-c4" name="agents_can_charge" checked detail="Only agents you approved, and only inside their limit.">Agents can charge this</Checkbox>
+          </Section>
+          <Section title="Terms: the primary action waits for the tick">
+            <Card
+              foot={
+                <CardFoot>
+                  <TermsAgree id="sheet-terms" product="Auto.dev" termsHref="https://www.auto.dev/terms" privacyHref="https://www.auto.dev/privacy" />
+                  <Actions>
+                    <Button variant="secondary" block type="button">Not now</Button>
+                    <Button variant="primary" block type="button" needsTerms>Approve Growth</Button>
+                  </Actions>
+                </CardFoot>
+              }
+            >
+              <Note>Unticked on load: the button stays disabled until the line is ticked.</Note>
+            </Card>
+          </Section>
+          <Section title="Plans: radio group, separate disclosure, billing toggle">
+            <Card
+              foot={
+                <CardFoot>
+                  <Actions>
+                    <Button variant="secondary" block type="button">Cancel</Button>
+                    <Button variant="primary" block type="button" follows={{ control: 'sheet-plan', template: 'Continue with {label}' }}>Continue with Growth</Button>
+                  </Actions>
+                </CardFoot>
+              }
+            >
+              <PlanPicker
+                name="sheet-plan"
+                plans={[
+                  { id: 'free', name: 'Free', price: '$0', summary: '1,000 calls a month · 5 requests a second', included: [{ label: 'Global VIN Decode', value: 'Included' }, { label: 'MCP server, CLI and SDK' }], selected: false, open: false },
+                  { id: 'growth', name: 'Growth', price: '$299', priceYearly: '$249', priceNote: '/month + data fees', summary: 'Unlimited calls · 10 requests a second', included: [{ label: 'Global VIN Decode', value: '$0.0025/call' }, { label: 'Vehicle Listings', value: '$0.0015' }, { label: 'Priority email support' }], selected: true, open: true },
+                  { id: 'scale', name: 'Scale', price: '$599', priceYearly: '$499', priceNote: '/month + data fees', summary: 'Unlimited calls · 50 requests a second', included: [{ label: 'Everything in Growth, at lower data fees' }], selected: false, open: false },
+                ]}
+              />
+            </Card>
+          </Section>
+          <Section title="Payment method: segmented tabs and Stripe’s fields">
+            <SegTabs legend="Payment method type" name="sheet-method" selected="card" options={[{ value: 'card', label: 'Card' }, { value: 'bank', label: 'Bank account' }, { value: 'link', label: 'Link' }]} />
+            <StripeFields />
+          </Section>
+          <Section title="Agents and activity">
+            <AgentRow
+              tile={{ kind: 'icon', icon: 'bot' }}
+              name="Claude Code"
+              line="Trusted · active 2 min ago"
+              open
+              facts={[{ k: 'Identity', v: 'ed25519 · 7f3a…c21d', mono: true }, { k: 'Spent this month', v: '$299 of $500' }]}
+              connections={[
+                { name: 'Auto.dev', state: 'Live · key ends in 4f2a', link: { href: '#', label: 'Open dashboard' } },
+                { name: 'apis.email', state: 'Setting up · first real call', link: { href: '#', label: 'Watch' } },
+              ]}
+              actions={
+                <Actions>
+                  <Button variant="secondary" block href="#" icon="pause">Pause</Button>
+                  <Button variant="secondary" block href="#" icon="trash">Remove</Button>
+                </Actions>
+              }
+              links={[{ href: '#', label: 'View activity' }, { href: '#', label: 'Spending' }]}
+            />
+            <AgentRow tile={{ kind: 'monogram', text: 'Cx' }} name="Codex" chip="Setting up" line="Sandboxed · this computer" />
+            <div>
+              <ActivityRow icon="shield_check" text="Passed the production check on Auto.dev" when="2:17 PM" />
+              <ActivityRow icon="card" text="Subscribed to Growth at $299/month" more="Spent money, inside your $500 limit." money when="2:17 PM" />
+              <ActivityRow icon="zap" text="Made its first real call to Auto.dev" more="GET /vin/1HGCM82633A004352 · 200" mono when="2:16 PM" />
+            </div>
+          </Section>
+          <Section title="Money">
+            <Total amount="$441.20" note="of $850 your agents may spend · $41.20 still running" />
+            <div>
+              <SpendRow tile={{ kind: 'icon', icon: 'bot' }} name="Claude Code" amount="$340.20" limit="$500" percent={68} line="Auto.dev" href="#" />
+              <SpendRow tile={{ kind: 'monogram', text: 'Su' }} name="Susan" amount="$250.00" limit="$250" percent={100} line="headless.ly · at its limit" href="#" />
+            </div>
+            <div>
+              <ChargeRow name="Auto.dev · data fees" chip="Running" line="16,480 calls so far · billed Dec 22" amount="$41.20" href="#" />
+              <ChargeRow name="Auto.dev · Growth" line="Nov 22 · Claude Code" amount="$299.00" href="#" />
+            </div>
+            <MethodRow icon="card" title="Visa ending 4417" chip="Default" sub="Expires 08/28 · charged by 3 agents" link={{ href: '#', label: 'Replace' }} />
+            <MethodRow icon="bank" title="Bank account ending 2210" sub="Agents can’t charge this" link={{ href: '#', label: 'Allow agents' }} />
+            <div class="id-sheet__row">
+              <Amount amount="$500.00" of="$500" />
+            </div>
+            <Bar percent={40} />
+            <Bar percent={100} full />
           </Section>
           <Section title="Icons">
             <div class="id-sheet__row">

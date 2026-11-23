@@ -86,7 +86,13 @@
     "test:visual": "node scripts/test-visual.mjs",
     "gate": "node scripts/gate.mjs",
     "test:stub-smoke": "node test-visual/stub-smoke.mjs",
-    "test:motion": "node test-visual/motion-check.mjs"
+    "test:motion": "node test-visual/motion-check.mjs",
+    "test:agent-visual": "node test-visual/agent-diff.mjs",
+    "test:agent-check": "node test-visual/agent-check.mjs",
+    "test:agent-behaviour": "node test-visual/agent-behaviour.mjs",
+    "test:phone": "node test-visual/phone-check.mjs",
+    "test:phone-shell": "node test-visual/phone-shell-audit.mjs",
+    "test:selects": "node test-visual/select-open-check.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",

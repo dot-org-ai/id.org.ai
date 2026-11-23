@@ -182,7 +182,7 @@ describe('5a · Approve an agent', () => {
     expect(ok.querySelector('.id-desc')!.textContent).toBe('It can start working in Drivly now. You can close this tab.')
     expect(ok.querySelector('.id-desc .id-em')!.textContent).toBe('Drivly')
     // The server knows what was stored, so the page lists the policy.
-    expect(Array.from(ok.querySelectorAll('.id-kv')).map((r) => r.textContent)).toEqual(['Trust levelTrusted', 'Spend limit$50 a month', 'ExpiresIn 30 days'])
+    expect(Array.from(ok.querySelectorAll('.id-kv')).map((r) => r.textContent)).toEqual(['Trust levelTrusted', 'Spend limit$50/month', 'ExpiresIn 30 days'])
     expect(ok.querySelector('.id-foottext a')!.getAttribute('href')).toBe('/account/agents')
     expect(ok.querySelector('[role="status"][data-status]')!.textContent).toBe('Claude Code approved.')
     const no = (await render(<AgentApprove {...approve} state="rejected" />)).doc

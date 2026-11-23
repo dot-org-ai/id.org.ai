@@ -1,0 +1,1 @@
+function o(e,n){for(let t of document.querySelectorAll(`[data-js="${e}"]`))t.dataset.jsReady||(t.dataset.jsReady="1",n(t))}function r(e){let n=e.closest("form, [data-card]")?.querySelectorAll("[data-needs-terms]")??[],t=()=>{for(let a of n)a.disabled=!e.checked};e.addEventListener("change",t),t()}o("terms",e=>r(e));

@@ -1,0 +1,1470 @@
+/* ── Agent setup, payments and connect (screens 9 to 24, docs/agent-setup) ── */
+
+/* Radii these screens use that tokens.css doesn't name. */
+:root {
+  --id-r-minitile: 11px; /* 36px mini tile */
+  --id-r-tag: 6px; /* step tag */
+  --id-r-method: 7px; /* 40×28 payment method mark */
+}
+
+/* ── Header status (setup pages, header right slot) ─────────────────────── */
+
+.id-hstatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--id-fg-2);
+}
+.id-sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-green);
+  flex-shrink: 0;
+}
+.id-sdot--warn {
+  background: var(--id-accent);
+}
+/* Still working: the listening dot and a comparison that is still running. */
+.id-sdot--busy {
+  background: var(--id-fg);
+  animation: idlisten 1.6s ease-in-out infinite;
+}
+
+/* ── Connector: hold (not moving, needs someone) ────────────────────────── */
+
+.id-conn[data-state='hold'] .id-conn__dot--2 {
+  background: var(--id-accent);
+  opacity: 1;
+}
+
+/* ── Mini tile and chip ─────────────────────────────────────────────────── */
+
+.id-minitile {
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-minitile);
+  background: var(--id-bezel-bg);
+  border: 1px solid var(--id-bezel-border);
+  box-shadow: var(--id-bezel-shadow-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--id-fg);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.id-chip {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-raised);
+  color: var(--id-fg-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ── Step list ──────────────────────────────────────────────────────────── */
+
+.id-steps {
+  display: flex;
+  flex-direction: column;
+}
+.id-sstep {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 14px;
+}
+.id-sstep__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.id-sstep__glyph {
+  width: 18px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.id-sstep--done .id-sstep__glyph {
+  color: var(--id-green);
+}
+.id-sstep--fail .id-sstep__glyph {
+  color: var(--id-accent);
+}
+.id-sstep--held .id-sstep__glyph {
+  color: var(--id-fg-2);
+}
+.id-sstep--done .id-sstep__glyph .id-icon,
+.id-sstep--fail .id-sstep__glyph .id-icon {
+  stroke-width: 2.25;
+}
+.id-sstep__dot {
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
+  display: block;
+  position: relative;
+}
+.id-sstep--you .id-sstep__dot {
+  background: var(--id-accent);
+}
+.id-sstep--todo .id-sstep__dot {
+  width: 5.6px;
+  height: 5.6px;
+  opacity: 0.3;
+}
+.id-sstep__pulse {
+  position: absolute;
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
+  animation: idpulse 2s var(--id-ease-out) infinite;
+}
+.id-sstep__line {
+  flex-grow: 1;
+  width: 2px;
+  margin: 5px 0 5px;
+  background-image: radial-gradient(circle at 1px 1px, var(--id-rail) 1px, transparent 1.3px);
+  background-size: 2px 7px;
+  background-repeat: repeat-y;
+}
+.id-sstep--done .id-sstep__line {
+  background-image: radial-gradient(circle at 1px 1px, var(--id-rail-done) 1px, transparent 1.3px);
+}
+.id-sstep__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 18px;
+  min-width: 0;
+}
+.id-sstep:last-child .id-sstep__body {
+  padding-bottom: 0;
+}
+/* No rail after the last step. */
+.id-sstep:last-child .id-sstep__line {
+  display: none;
+}
+.id-sstep__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-sstep__title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+.id-sstep--todo .id-sstep__title {
+  color: var(--id-fg-3);
+}
+.id-sstep__when {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.id-sstep--done .id-sstep__when {
+  font-family: var(--id-mono);
+  color: var(--id-fg-3);
+}
+.id-sstep--you .id-sstep__when,
+.id-sstep--fail .id-sstep__when {
+  font-weight: 500;
+  color: var(--id-accent);
+}
+.id-sstep__detail {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-2);
+  text-wrap: pretty;
+}
+.id-sstep--done .id-sstep__detail,
+.id-sstep--todo .id-sstep__detail {
+  color: var(--id-fg-3);
+}
+.id-sstep__evidence {
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.id-steptag {
+  display: inline-block;
+  font-family: var(--id-mono);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--id-fg-2);
+  border: 1px solid var(--id-line-2);
+  border-radius: var(--id-r-tag);
+  padding: 0 6px;
+  margin-right: 7px;
+  white-space: nowrap;
+}
+
+/* ── Evidence ───────────────────────────────────────────────────────────── */
+
+/* A well with a 10px gap (call result, field mapping) or 12px (Stripe's fields). */
+.id-well--ten,
+.id-well--10 {
+  gap: 10px;
+}
+.id-well--12 {
+  gap: 12px;
+}
+.id-well--prompt {
+  gap: 6px;
+  padding-top: 10px;
+}
+.id-well--quoted {
+  padding: 14px 16px;
+}
+.id-evrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-evrow--wrap {
+  flex-wrap: wrap;
+}
+.id-listen {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.id-listen__text {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-listen__time {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-3);
+  flex-shrink: 0;
+}
+/* 13/19 helper text: evidence notes, the spend helper line, sub lines. */
+.id-help {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+}
+.id-help--top {
+  padding-top: 2px;
+}
+.id-call__req {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.id-call__method {
+  color: var(--id-fg-3);
+}
+.id-call__status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+}
+.id-call__rows {
+  border-top: 1px solid var(--id-line);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.id-prompt__text {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+}
+.id-compare__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.id-compare__row + .id-compare__row {
+  border-top: 1px solid var(--id-line);
+  padding-top: 8px;
+}
+.id-compare__name {
+  color: var(--id-fg);
+}
+.id-compare__state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--id-mono);
+  font-size: 12px;
+  color: var(--id-fg-2);
+  white-space: nowrap;
+}
+.id-fieldmap {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: center;
+}
+.id-fieldmap__col {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+}
+/* Rates under a plan's price, inside the plan evidence well. */
+.id-rates {
+  border-top: 1px solid var(--id-line);
+  margin-top: 2px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Pays-with line ─────────────────────────────────────────────────────── */
+
+.id-payline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 0 2px;
+}
+.id-payline__method {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--id-fg-2);
+  min-width: 0;
+}
+.id-fg {
+  color: var(--id-fg);
+}
+
+/* A line under the actions, or in the body, fills before it wraps (balanced lines break
+   early), without leaving one word alone on the last line. */
+.id-foottext--fill {
+  text-wrap: wrap;
+  text-wrap: pretty;
+}
+
+/* A button whose icon follows its label (the arrow on actions that leave for another site). */
+.id-btn--icon-end .id-icon {
+  order: 1;
+}
+
+/* ── Two-line checkbox, terms line ──────────────────────────────────────── */
+
+.id-check--top {
+  position: relative;
+  align-items: flex-start;
+  line-height: 20px;
+}
+/* One or two 20px lines: the hit area reaches 44px. */
+.id-check--top::before {
+  content: '';
+  position: absolute;
+  inset: -12px 0;
+}
+.id-check--top .id-check__box {
+  margin-top: 2px;
+}
+.id-check--top .id-check__tick .id-icon {
+  stroke-width: 3.25;
+}
+.id-check--terms {
+  padding: 0 2px;
+}
+.id-check__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.id-check__sub {
+  color: var(--id-fg-3);
+}
+/* The primary action waits for the terms line: dimmed here, and terms.js sets
+   `disabled` too. The checkbox is `required`, so the form can't post without it. */
+.id-card:has([data-terms]:not(:checked)) [data-needs-terms] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ── Toggle (role="switch") ─────────────────────────────────────────────── */
+
+.id-toggle {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+/* Small by design (36×22): the hit area is 44px. */
+.id-toggle::before {
+  content: '';
+  position: absolute;
+  inset: -11px -4px;
+}
+.id-toggle__track {
+  width: 36px;
+  height: 22px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-pill);
+  background: var(--id-line-2);
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s;
+}
+.id-toggle__knob {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg-2);
+  margin-left: 2px;
+  box-shadow: var(--id-sh-knob);
+  transition: margin-left 0.15s var(--id-ease-out), background-color 0.15s;
+}
+.id-toggle:has(.id-hidden-input:checked) .id-toggle__track {
+  background: var(--id-fg);
+}
+.id-toggle:has(.id-hidden-input:checked) .id-toggle__knob {
+  background: var(--id-bg);
+  margin-left: 16px;
+}
+.id-toggle:has(.id-hidden-input:focus-visible) .id-toggle__track {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+/* A labelled toggle row (20d): text on the left, the switch on the right. */
+.id-togglerow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+  min-height: 44px;
+}
+.id-line14 {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--id-fg);
+}
+
+/* ── Spend alerts row ───────────────────────────────────────────────────── */
+
+.id-alerts__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.id-alerts__title {
+  flex-grow: 1;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--id-fg);
+  cursor: pointer;
+}
+.id-alerts__row .id-toggle {
+  margin: -1px 2px -1px 0;
+}
+.id-alerts__panel {
+  padding: 0 0 12px 28px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-2);
+}
+.id-alerts__panel[hidden] {
+  display: none;
+}
+/* A bare chevron button that shows or hides a panel (aria-expanded). */
+.id-chevbtn {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--id-fg-3);
+  cursor: pointer;
+  border-radius: var(--id-r-sm);
+}
+.id-chevbtn::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+}
+.id-chevbtn .id-icon {
+  transition: transform 0.2s;
+}
+.id-chevbtn--r[aria-expanded='true'] .id-icon {
+  transform: rotate(90deg);
+}
+.id-chevbtn--d[aria-expanded='true'] .id-icon {
+  transform: rotate(180deg);
+}
+
+/* ── Segmented tabs (19a) and the billing toggle (24a) ──────────────────── */
+
+.id-seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--id-r-option);
+  background: var(--id-sunk);
+  border: 1px solid var(--id-line);
+}
+.id-seg__cell {
+  flex: 1 1 0;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--id-fg-2);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+/* 36px cells: the hit area is 44px. */
+.id-seg__cell::before {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+.id-seg__cell:has(.id-hidden-input:checked) {
+  background: var(--id-raised);
+  color: var(--id-fg);
+  border-color: var(--id-line-2);
+  box-shadow: var(--id-sh-ctrl);
+}
+.id-seg__cell:has(.id-hidden-input:focus-visible),
+.id-billing__cell:has(.id-hidden-input:focus-visible) {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+.id-billing {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-sunk);
+  border: 1px solid var(--id-line);
+}
+.id-billing__cell {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--id-r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--id-fg-3);
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+/* 26px cells, small by design: the hit area is 44px. */
+.id-billing__cell::before {
+  content: '';
+  position: absolute;
+  inset: -9px 0;
+}
+.id-billing__cell:has(.id-hidden-input:checked) {
+  background: var(--id-raised);
+  color: var(--id-fg);
+  box-shadow: var(--id-sh-knob);
+}
+
+/* ── Plan cards (24a) ───────────────────────────────────────────────────── */
+
+.id-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.id-plans__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-plans__list {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Monthly is the default; the yearly price shows when the Yearly cell is picked. */
+.id-plans [data-price='yearly'],
+.id-plans:has([data-billing='yearly']:checked) [data-price='monthly'] {
+  display: none;
+}
+.id-plans:has([data-billing='yearly']:checked) [data-price='yearly'] {
+  display: inline;
+}
+.id-plan {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+  transition: border-color 0.15s, background 0.15s;
+}
+.id-plan:has(.id-hidden-input:checked) {
+  border-color: var(--id-select);
+  background: var(--id-raised);
+  box-shadow: var(--id-sh-ctrl), var(--id-ring);
+}
+.id-plan:has(.id-hidden-input:focus-visible) {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+.id-plan__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+}
+.id-plan__pick {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-grow: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+/* The radio's hit area fills the card's padding, up to the chevron's own. */
+.id-plan__pick::before {
+  content: '';
+  position: absolute;
+  inset: -14px 0 -14px -14px;
+}
+.id-plan:has(.id-hidden-input:checked) .id-radio__ring {
+  border-color: var(--id-fg);
+}
+.id-plan:has(.id-hidden-input:checked) .id-radio__dot {
+  display: block;
+}
+.id-plan__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-plan__title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+/* The name takes the spare room, so the price sits at the right; on a narrow
+   phone the price and its note drop to their own line, under the name. */
+.id-plan__name {
+  flex-grow: 1;
+}
+.id-plan__cost {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.id-plan__price {
+  font-variant-numeric: tabular-nums;
+}
+.id-plan__note {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--id-fg-3);
+}
+/* "$299/month + data fees": a note that starts with a slash sits against the price. */
+.id-plan__note--slash {
+  margin-left: -6px;
+}
+.id-plan__more {
+  margin-top: 3px;
+}
+.id-plan__panel {
+  margin: 0 14px 14px 42px;
+  padding-top: 12px;
+  border-top: 1px solid var(--id-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.id-plan__panel[hidden] {
+  display: none;
+}
+.id-plan__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.id-plan__label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--id-fg-2);
+  min-width: 0;
+}
+.id-plan__label .id-icon {
+  color: var(--id-fg-3);
+  stroke-width: 2;
+}
+.id-plan__value {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  color: var(--id-fg-2);
+  white-space: nowrap;
+}
+
+/* ── Stripe's fields (19a) ──────────────────────────────────────────────── */
+
+/* Stripe's Payment Element mounts here. Until it does, the box holds a picture
+   of it (aria-hidden, never real inputs), which the element replaces. */
+.id-stripe__picture {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.id-stripe__pair {
+  display: flex;
+  gap: 12px;
+}
+.id-stripe__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.id-stripe__box {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: var(--id-r-control);
+  background: var(--id-panel);
+  border: 1px solid var(--id-line-2);
+  box-shadow: var(--id-sh-input);
+  color: var(--id-fg-3);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+/* A pictured field never wraps: it truncates, as a real input would. */
+.id-stripe__text {
+  min-width: 0;
+  /* Room for a glyph's overhang, so truncation never clips the last letter's edge. */
+  padding: 0 2px;
+  margin: 0 -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-stripe__box--value {
+  color: var(--id-fg);
+}
+.id-stripe__box .id-icon {
+  color: var(--id-fg-3);
+  margin-right: -3px;
+}
+.id-stripe__note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--id-fg-3);
+  padding-top: 2px;
+}
+
+/* ── Agents list (10a) and activity (10e) ───────────────────────────────── */
+
+.id-agentrow {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+}
+.id-agentrow__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  min-height: 60px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+}
+.id-rowtext {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-rowtext--fit {
+  flex-grow: 0;
+}
+.id-rowtext__name {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+.id-rowtext__name--plain {
+  line-height: 20px;
+  font-weight: 400;
+}
+.id-rowtext__sub {
+  font-size: 13px;
+  color: var(--id-fg-3);
+}
+.id-rowtext__sub--clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-agentrow__panel {
+  padding: 2px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.id-agentrow__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--id-line);
+}
+.id-connrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+.id-connrow + .id-connrow {
+  border-top: 1px solid var(--id-line);
+}
+.id-linkrow {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+.id-activity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0;
+}
+.id-activity + .id-activity {
+  border-top: 1px solid var(--id-line);
+}
+.id-activity__icon {
+  display: flex;
+  color: var(--id-fg-2);
+  padding-top: 2px;
+}
+.id-activity--money .id-activity__icon {
+  color: var(--id-accent);
+}
+.id-activity__text {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.id-activity__more {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+  overflow-wrap: anywhere;
+}
+.id-activity--money .id-activity__more {
+  color: var(--id-accent);
+}
+.id-when {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Money: methods, spend, charges, bar, total (19g, 20a to 20c) ───────── */
+
+.id-method {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 60px;
+}
+.id-method > .id-link,
+.id-connrow > .id-link {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.id-method__mark {
+  width: 40px;
+  height: 28px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-method);
+  background: var(--id-raised);
+  border: 1px solid var(--id-line-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+}
+.id-moneyrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  text-decoration: none;
+  color: inherit;
+}
+.id-moneyrow--charge {
+  padding: 11px 0;
+}
+.id-moneyrow + .id-moneyrow {
+  border-top: 1px solid var(--id-line);
+}
+.id-spend__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-spend__top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+.id-amount {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.id-amount__of {
+  color: var(--id-fg-3);
+}
+.id-bar {
+  height: 4px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-track);
+  overflow: hidden;
+}
+.id-bar__fill {
+  width: 0;
+  height: 100%;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
+  opacity: 0.82;
+}
+.id-bar--full .id-bar__fill {
+  background: var(--id-accent);
+  opacity: 1;
+}
+/* One rule per whole percent: the page's security policy allows no inline style. */
+.id-bar__fill[data-p='1'] {
+  width: 1%;
+}
+.id-bar__fill[data-p='2'] {
+  width: 2%;
+}
+.id-bar__fill[data-p='3'] {
+  width: 3%;
+}
+.id-bar__fill[data-p='4'] {
+  width: 4%;
+}
+.id-bar__fill[data-p='5'] {
+  width: 5%;
+}
+.id-bar__fill[data-p='6'] {
+  width: 6%;
+}
+.id-bar__fill[data-p='7'] {
+  width: 7%;
+}
+.id-bar__fill[data-p='8'] {
+  width: 8%;
+}
+.id-bar__fill[data-p='9'] {
+  width: 9%;
+}
+.id-bar__fill[data-p='10'] {
+  width: 10%;
+}
+.id-bar__fill[data-p='11'] {
+  width: 11%;
+}
+.id-bar__fill[data-p='12'] {
+  width: 12%;
+}
+.id-bar__fill[data-p='13'] {
+  width: 13%;
+}
+.id-bar__fill[data-p='14'] {
+  width: 14%;
+}
+.id-bar__fill[data-p='15'] {
+  width: 15%;
+}
+.id-bar__fill[data-p='16'] {
+  width: 16%;
+}
+.id-bar__fill[data-p='17'] {
+  width: 17%;
+}
+.id-bar__fill[data-p='18'] {
+  width: 18%;
+}
+.id-bar__fill[data-p='19'] {
+  width: 19%;
+}
+.id-bar__fill[data-p='20'] {
+  width: 20%;
+}
+.id-bar__fill[data-p='21'] {
+  width: 21%;
+}
+.id-bar__fill[data-p='22'] {
+  width: 22%;
+}
+.id-bar__fill[data-p='23'] {
+  width: 23%;
+}
+.id-bar__fill[data-p='24'] {
+  width: 24%;
+}
+.id-bar__fill[data-p='25'] {
+  width: 25%;
+}
+.id-bar__fill[data-p='26'] {
+  width: 26%;
+}
+.id-bar__fill[data-p='27'] {
+  width: 27%;
+}
+.id-bar__fill[data-p='28'] {
+  width: 28%;
+}
+.id-bar__fill[data-p='29'] {
+  width: 29%;
+}
+.id-bar__fill[data-p='30'] {
+  width: 30%;
+}
+.id-bar__fill[data-p='31'] {
+  width: 31%;
+}
+.id-bar__fill[data-p='32'] {
+  width: 32%;
+}
+.id-bar__fill[data-p='33'] {
+  width: 33%;
+}
+.id-bar__fill[data-p='34'] {
+  width: 34%;
+}
+.id-bar__fill[data-p='35'] {
+  width: 35%;
+}
+.id-bar__fill[data-p='36'] {
+  width: 36%;
+}
+.id-bar__fill[data-p='37'] {
+  width: 37%;
+}
+.id-bar__fill[data-p='38'] {
+  width: 38%;
+}
+.id-bar__fill[data-p='39'] {
+  width: 39%;
+}
+.id-bar__fill[data-p='40'] {
+  width: 40%;
+}
+.id-bar__fill[data-p='41'] {
+  width: 41%;
+}
+.id-bar__fill[data-p='42'] {
+  width: 42%;
+}
+.id-bar__fill[data-p='43'] {
+  width: 43%;
+}
+.id-bar__fill[data-p='44'] {
+  width: 44%;
+}
+.id-bar__fill[data-p='45'] {
+  width: 45%;
+}
+.id-bar__fill[data-p='46'] {
+  width: 46%;
+}
+.id-bar__fill[data-p='47'] {
+  width: 47%;
+}
+.id-bar__fill[data-p='48'] {
+  width: 48%;
+}
+.id-bar__fill[data-p='49'] {
+  width: 49%;
+}
+.id-bar__fill[data-p='50'] {
+  width: 50%;
+}
+.id-bar__fill[data-p='51'] {
+  width: 51%;
+}
+.id-bar__fill[data-p='52'] {
+  width: 52%;
+}
+.id-bar__fill[data-p='53'] {
+  width: 53%;
+}
+.id-bar__fill[data-p='54'] {
+  width: 54%;
+}
+.id-bar__fill[data-p='55'] {
+  width: 55%;
+}
+.id-bar__fill[data-p='56'] {
+  width: 56%;
+}
+.id-bar__fill[data-p='57'] {
+  width: 57%;
+}
+.id-bar__fill[data-p='58'] {
+  width: 58%;
+}
+.id-bar__fill[data-p='59'] {
+  width: 59%;
+}
+.id-bar__fill[data-p='60'] {
+  width: 60%;
+}
+.id-bar__fill[data-p='61'] {
+  width: 61%;
+}
+.id-bar__fill[data-p='62'] {
+  width: 62%;
+}
+.id-bar__fill[data-p='63'] {
+  width: 63%;
+}
+.id-bar__fill[data-p='64'] {
+  width: 64%;
+}
+.id-bar__fill[data-p='65'] {
+  width: 65%;
+}
+.id-bar__fill[data-p='66'] {
+  width: 66%;
+}
+.id-bar__fill[data-p='67'] {
+  width: 67%;
+}
+.id-bar__fill[data-p='68'] {
+  width: 68%;
+}
+.id-bar__fill[data-p='69'] {
+  width: 69%;
+}
+.id-bar__fill[data-p='70'] {
+  width: 70%;
+}
+.id-bar__fill[data-p='71'] {
+  width: 71%;
+}
+.id-bar__fill[data-p='72'] {
+  width: 72%;
+}
+.id-bar__fill[data-p='73'] {
+  width: 73%;
+}
+.id-bar__fill[data-p='74'] {
+  width: 74%;
+}
+.id-bar__fill[data-p='75'] {
+  width: 75%;
+}
+.id-bar__fill[data-p='76'] {
+  width: 76%;
+}
+.id-bar__fill[data-p='77'] {
+  width: 77%;
+}
+.id-bar__fill[data-p='78'] {
+  width: 78%;
+}
+.id-bar__fill[data-p='79'] {
+  width: 79%;
+}
+.id-bar__fill[data-p='80'] {
+  width: 80%;
+}
+.id-bar__fill[data-p='81'] {
+  width: 81%;
+}
+.id-bar__fill[data-p='82'] {
+  width: 82%;
+}
+.id-bar__fill[data-p='83'] {
+  width: 83%;
+}
+.id-bar__fill[data-p='84'] {
+  width: 84%;
+}
+.id-bar__fill[data-p='85'] {
+  width: 85%;
+}
+.id-bar__fill[data-p='86'] {
+  width: 86%;
+}
+.id-bar__fill[data-p='87'] {
+  width: 87%;
+}
+.id-bar__fill[data-p='88'] {
+  width: 88%;
+}
+.id-bar__fill[data-p='89'] {
+  width: 89%;
+}
+.id-bar__fill[data-p='90'] {
+  width: 90%;
+}
+.id-bar__fill[data-p='91'] {
+  width: 91%;
+}
+.id-bar__fill[data-p='92'] {
+  width: 92%;
+}
+.id-bar__fill[data-p='93'] {
+  width: 93%;
+}
+.id-bar__fill[data-p='94'] {
+  width: 94%;
+}
+.id-bar__fill[data-p='95'] {
+  width: 95%;
+}
+.id-bar__fill[data-p='96'] {
+  width: 96%;
+}
+.id-bar__fill[data-p='97'] {
+  width: 97%;
+}
+.id-bar__fill[data-p='98'] {
+  width: 98%;
+}
+.id-bar__fill[data-p='99'] {
+  width: 99%;
+}
+.id-bar__fill[data-p='100'] {
+  width: 100%;
+}
+.id-total {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  text-align: center;
+}
+.id-total__num {
+  font-size: 40px;
+  line-height: 44px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.id-total__note {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+  text-wrap: balance;
+}
+/* The month's limit inside a well (19g): label and amount, the bar, then the lines. */
+.id-limit__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.id-limit__label {
+  font-size: 13px;
+  color: var(--id-fg-2);
+}
+.id-limit__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+/* Money rows (a limit's lines, a plan's rates): the amount never breaks; a long label wraps instead. */
+.id-limit__lines .id-kv__key,
+.id-rates .id-kv__key {
+  flex-shrink: 1;
+}
+.id-limit__lines .id-kv__value,
+.id-rates .id-kv__value {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────── */
+
+@keyframes idpulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+@keyframes idlisten {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .id-sstep__pulse,
+  .id-sdot--busy {
+    animation: none !important;
+  }
+  .id-toggle__track,
+  .id-toggle__knob,
+  .id-chevbtn .id-icon,
+  .id-plan {
+    transition: none;
+  }
+}
+
+/* ── Phones ─────────────────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  /* What a step carries under its description (a well, a field, the plan's limit and alerts)
+     runs the full width of the card instead of sitting inside the rail's 32px indent: on a
+     phone that is a tenth of the width, and this is the part a person reads and taps. The
+     dotted rail pauses behind it and picks up again underneath (owner direction, 2026-11-23). */
+  .id-sstep__evidence {
+    position: relative;
+    margin-left: -32px;
+    padding-bottom: 4px;
+    background: var(--id-card);
+  }
+  /* Field mapping (18a): the column's name sits above its select instead of beside it, so
+     the select gets the full width and a long destination isn't cut off (owner direction,
+     2026-11-23). */
+  .id-fieldmap {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .id-fieldmap + .id-fieldmap {
+    margin-top: 4px;
+  }
+  /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
+     new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
+     picture of Stripe's fields matches the real inputs beside it. */
+  .id-seg__cell {
+    height: 40px;
+  }
+  .id-stripe__box {
+    height: var(--id-control-h-phone);
+  }
+}
+
+/* Field text is 16px on phones and touch screens (ui.css); the pictured fields follow. */
+@media (max-width: 480px), (pointer: coarse) {
+  .id-stripe__box {
+    font-size: 16px;
+  }
+}

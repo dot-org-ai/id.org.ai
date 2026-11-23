@@ -1,0 +1,1 @@
+function o(e){let n=document.getElementById(e.getAttribute("aria-controls")??"");n&&e.addEventListener("click",()=>{let t=e.getAttribute("aria-expanded")!=="true";e.setAttribute("aria-expanded",String(t)),n.hidden=!t})}function r(e,n){for(let t of document.querySelectorAll(`[data-js="${e}"]`))t.dataset.jsReady||(t.dataset.jsReady="1",n(t))}r("disclose",e=>o(e));
