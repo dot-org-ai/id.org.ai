@@ -170,6 +170,34 @@ details[data-x][open] > summary [data-chev-d] {
   padding: 18px 24px;
   min-height: 72px;
   box-sizing: border-box;
+
+  /* Stays at the top while the page scrolls, so the brand and the header's right slot (a
+     countdown, a setup's status) are always in view. Glass, not a slab: the page colour at
+     part opacity over a blur of what scrolls beneath. At rest it sits on the page colour and
+     looks exactly as before (owner direction, 2026-11-23). */
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in oklch, var(--id-bg) 72%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+/* Without backdrop blur, or when the person asks for less transparency, the bar is solid. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .id-header {
+    background: var(--id-bg);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .id-header {
+    background: var(--id-bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+/* A field or heading scrolled to by focus or a link stops below the bar, not under it. */
+html {
+  scroll-padding-top: 72px;
 }
 
 .id-brand {
@@ -1816,6 +1844,14 @@ button.id-link[hidden] {
      viewport, so nobody can approve past what they haven't scrolled through. */
   .id-page {
     min-height: 100dvh;
+  }
+  /* The card takes the whole screen under the header, so the Privacy, Terms and Status links
+     sit just below the fold: there when scrolled to, never taking space from the card (owner
+     direction, 2026-11-23). Branded sign-in keeps "Secured by id.org.ai" in view: it says who
+     is asking for the password. */
+  .id-page:not(:has(.id-footer--secured)) .id-main {
+    min-height: calc(100dvh - 72px);
+    box-sizing: border-box;
   }
   .id-main:not(.id-main--top) {
     padding-top: 0;

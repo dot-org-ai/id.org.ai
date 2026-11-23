@@ -113,4 +113,15 @@ describe('every screen size', () => {
     expect(phone).toMatch(/\.id-actions > :last-child \{\s*order: -1;/)
     expect(phone).toMatch(/\.id-actions > \.id-btn--secondary:last-child \{\s*order: 0;/)
   })
+
+  it('the header is sticky glass: page colour at part opacity over a blur, solid where that is unavailable or unwanted', () => {
+    expect(css).toMatch(/\.id-header \{[^}]*position: sticky;\s*top: 0;[^}]*background: color-mix\(in oklch, var\(--id-bg\) 72%, transparent\);[^}]*backdrop-filter: saturate\(180%\) blur\(20px\);/)
+    expect(css).toMatch(/@media \(prefers-reduced-transparency: reduce\) \{\s*\.id-header \{\s*background: var\(--id-bg\);/)
+    expect(css).toMatch(/html \{\s*scroll-padding-top: 72px;/)
+  })
+
+  it('on phones the footer links sit below the fold, except "Secured by id.org.ai"', () => {
+    const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
+    expect(phone).toMatch(/\.id-page:not\(:has\(\.id-footer--secured\)\) \.id-main \{\s*min-height: calc\(100dvh - 72px\);/)
+  })
 })
