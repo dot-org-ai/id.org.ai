@@ -85,7 +85,8 @@ function Pictured({ label, placeholder, value, chevron }: { label: string; place
  * is the mount point for Stripe's Payment Element, never real card inputs. Stripe's fields sit
  * straight on the card, like every other field here, with no box of their own around them:
  * the picture inside is aria-hidden, holds no form controls, and is replaced
- * when the element mounts.
+ * when the element mounts. It carries no note of its own; the page says whose fields these are
+ * (19a's foot).
  */
 export function StripeFields({ publishableKey, clientSecret, mode, methods = ['Card', 'US bank account'] }: StripeFieldsProps): JSX.Element {
   return (
@@ -114,10 +115,6 @@ export function StripeFields({ publishableKey, clientSecret, mode, methods = ['C
       <span class="id-sr" data-stripe-picture>
         Stripe’s card fields load here.
       </span>
-      <div class="id-stripe__note">
-        <Icon name="lock" size={14} />
-        <span>These fields are Stripe’s. id.org.ai never sees your card number.</span>
-      </div>
     </div>
   )
 }

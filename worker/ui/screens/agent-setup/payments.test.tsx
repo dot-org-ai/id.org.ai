@@ -17,7 +17,12 @@ describe('19a · add a payment method', () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     const box = d.querySelector('[data-js=stripe-fields]')!
     expect(box.querySelectorAll('input, select, textarea')).toHaveLength(0)
-    expect(text(box.querySelector('.id-stripe__note'))).toBe('These fields are Stripe’s. id.org.ai never sees your card number.')
+    // Whose fields they are is said once, in the foot, with a lock; the fields themselves carry no note.
+    expect(box.textContent).not.toContain('id.org.ai never sees')
+    expect(text(d.querySelector('.id-card__foot .id-footnote'))).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
+    // A dotted rule sets the fields apart from the choice under them.
+    expect(box.nextElementSibling!.matches('.id-rule')).toBe(true)
+    expect(box.nextElementSibling!.nextElementSibling!.matches('label.id-check')).toBe(true)
   })
   it('keeps the consent sentence whole', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)

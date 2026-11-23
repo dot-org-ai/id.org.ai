@@ -250,7 +250,7 @@ describe('StripeFields', () => {
     expect(box.querySelectorAll('input, select, textarea')).toHaveLength(0)
     expect(box.querySelector('[data-stripe-mount]')).not.toBeNull()
     expect(box.querySelector('.id-stripe__picture')!.getAttribute('aria-hidden')).toBe('true')
-    expect(box.textContent).toContain('These fields are Stripe’s. id.org.ai never sees your card number.')
+    expect(box.querySelector('.id-stripe__note')).toBeNull() // the page, not the component, says whose fields these are
   })
   it('writes Stripe’s appearance against our tokens only, and only when there is a key to mount with', async () => {
     const { STRIPE_APPEARANCE } = await import('./StripeFields')

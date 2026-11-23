@@ -24,7 +24,7 @@ export interface AgentCardProps {
 
 export function AgentCard(p: AgentCardProps): JSX.Element {
   const head = 'single' in p.tiles ? <SingleTile content={p.tiles.single} /> : <Connector left={p.tiles.left} right={p.tiles.right} state={p.tiles.connector} />
-  const hasFoot = p.foot && (p.foot.primary || p.foot.secondary || p.foot.note || p.foot.terms)
+  const hasFoot = p.foot && (p.foot.primary || p.foot.secondary || p.foot.note || p.foot.terms || p.foot.secure)
   const card = (
     <Card
       foot={

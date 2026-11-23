@@ -2917,15 +2917,6 @@ button.id-link[hidden] {
   color: var(--id-fg-3);
   margin-right: -3px;
 }
-.id-stripe__note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 17px;
-  color: var(--id-fg-3);
-  padding-top: 2px;
-}
 
 /* ── Agents list (10a) and activity (10e) ───────────────────────────────── */
 

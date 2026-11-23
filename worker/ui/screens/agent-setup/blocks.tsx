@@ -292,6 +292,8 @@ export interface FootProps {
   note?: Rich
   /** A 14px icon before the note (13a's "Admins get an email"). */
   noteIcon?: IconName
+  /** A second, smaller line with a lock: whose fields the page holds (19a). */
+  secure?: string
 }
 
 function ActionButton({ a, variant, needsTerms }: { a: ActionSpec; variant: 'primary' | 'secondary'; needsTerms?: boolean }): JSX.Element {
@@ -303,7 +305,7 @@ function ActionButton({ a, variant, needsTerms }: { a: ActionSpec; variant: 'pri
 }
 
 /** The action band's content: the terms line, the two actions (secondary left, primary right), then one note. */
-export function Foot({ terms, secondary, primary, note, noteIcon }: FootProps): JSX.Element {
+export function Foot({ terms, secondary, primary, note, noteIcon, secure }: FootProps): JSX.Element {
   const both = secondary && primary
   return (
     <>
@@ -319,6 +321,7 @@ export function Foot({ terms, secondary, primary, note, noteIcon }: FootProps): 
         <ActionButton a={secondary} variant="secondary" />
       ) : null}
       {note ? noteIcon ? <FootNote icon={noteIcon}>{rich(note)}</FootNote> : <FootText fill>{rich(note)}</FootText> : null}
+      {secure ? <FootNote icon="lock">{secure}</FootNote> : null}
     </>
   )
 }

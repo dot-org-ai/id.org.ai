@@ -33,6 +33,7 @@ const payAdd: AgentCardProps = {
     // Stripe's Payment Element mounts here and draws its own Card, Bank account and Link tabs.
     // No key in the gallery, so it shows the picture.
     { kind: 'stripe' },
+    { kind: 'dotted' },
     { kind: 'checkbox', id: 'pay-agents', name: 'agents_can_charge', label: 'Agents can charge this', detail: 'Only agents you approved, and only inside their limit.', checked: true },
   ],
   foot: {
@@ -40,6 +41,8 @@ const payAdd: AgentCardProps = {
     primary: { label: 'Save payment method', value: 'save', busyLabel: 'Saving…' },
     // The consent for charging later without the person present. Never shortened or removed.
     note: 'By saving, you let agents you approve for Drivly charge this card inside the limits you set. Remove it anytime.',
+    // Whose fields these are, said once, quietly, outside Stripe's part of the page (owner direction, 2026-11-23).
+    secure: 'The card fields are Stripe’s. id.org.ai never sees the number.',
   },
   action: R.paymentMethodNew,
   csrf: 'gallery',
