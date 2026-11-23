@@ -44,7 +44,7 @@ describe('24a · pick a plan', () => {
     const d = await dom(<ConnectPlan {...P.plan} />)
     const [free, paid] = [...d.querySelectorAll('.id-plan')]
     expect(free!.querySelector('.id-plan__note')).toBeNull()
-    expect(text(paid!.querySelector('.id-plan__note'))).toBe('a month + data fees')
+    expect(text(paid!.querySelector('.id-plan__note'))).toBe('/month + data fees')
   })
 })
 
@@ -52,7 +52,7 @@ describe('24b · subscribe and connect', () => {
   it('the summary changes with the plan: with a trial, and without one', () => {
     expect(chargeSummary({ plan: growth, trialEnds: 'Nov 29', feesNote: 'Per call, billed monthly' })).toEqual([
       ['Today', '$1.00 for 7 days'],
-      ['From Nov 29', '$299.00 a month'],
+      ['From Nov 29', '$299.00/month'],
       ['Data fees', 'Per call, billed monthly'],
     ])
     expect(chargeSummary({ plan: { ...growth, trial: undefined }, feesNote: 'Per call, billed monthly' })).toEqual([

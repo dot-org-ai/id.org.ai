@@ -47,7 +47,7 @@ describe('follow', () => {
   })
   it('follows a select, using the option’s short label when it has one', () => {
     document.body.innerHTML = `<form><select name="limit">
-      <option value="750" data-short="$750" selected>$750 a month</option><option value="none">No limit</option></select>
+      <option value="750" data-short="$750" selected>$750/month</option><option value="none">No limit</option></select>
       <button><span data-follow="limit" data-template="Raise to {label}">Raise to $750</span></button></form>`
     const label = document.querySelector<HTMLElement>('[data-follow]')!
     initFollow(label)

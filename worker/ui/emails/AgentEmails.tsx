@@ -64,7 +64,7 @@ export interface NeedsYouEmailProps {
   agent: string
   /** "Auto.dev" */
   product: string
-  /** "Growth · $299 a month" */
+  /** "Growth · $299/month" */
   plan: string
   /** "Nov 22, 2:16 PM EST", in the person's time zone. */
   since: string
@@ -125,10 +125,10 @@ export interface LiveEmailProps {
   agent: string
   product: string
   workspace: string
-  /** "Growth" and "$299 a month". */
+  /** "Growth" and "$299/month". */
   planName: string
   planPrice: string
-  /** "$500 a month" */
+  /** "$500/month" */
   spendLimit: string
   /** The live key's last four characters. Never the key. */
   keyLast4: string
@@ -245,7 +245,7 @@ export interface UsageAlertEmailProps {
   feesSoFar: string
   /** "$1,000", or none when this was the last mark. */
   nextMark?: string
-  /** "None", or "$1,000 a month". */
+  /** "None", or "$1,000/month". */
   spendLimit: string
   /** Where the person sets a limit. */
   limitUrl: string

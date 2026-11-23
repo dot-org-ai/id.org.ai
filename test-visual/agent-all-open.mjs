@@ -26,11 +26,26 @@ const manifest = JSON.parse(readFileSync(join(SPEC, 'manifest.json'), 'utf8'))
 const bin = findChromium()
 const browser = await chromium.launch(bin ? { executablePath: bin } : {})
 
+/** Owner direction (2026-11-23): pages write "/month" and "/call" where the drawings say "a month" and "a call". Apply that to the drawing (--as-drawn skips it). */
+const SLASH_MONTH = () => {
+  const walk = (n) => {
+    if (n.nodeType === 3) {
+      const t = n.textContent.replace(/(?<=[\d\]]) a (month|call)/g, '/$1')
+      if (/^a month \+/.test(t)) {
+        n.textContent = t.replace(/^a month \+/, '/month +')
+        n.parentElement.style.marginLeft = '-6px'
+      } else if (t !== n.textContent) n.textContent = t
+    } else n.childNodes.forEach(walk)
+  }
+  walk(document.body)
+}
+
 async function shoot(url, width, height, open) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 })
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'dark' })
   await page.goto(url, { waitUntil: 'load' })
   await page.evaluate(() => document.fonts.ready)
+  if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(SLASH_MONTH)
   await open(page)
   await page.mouse.move(0, 0)
   await page.evaluate(() => {

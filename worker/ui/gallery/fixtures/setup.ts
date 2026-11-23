@@ -42,7 +42,7 @@ export const firstCallDone = (detail = 'GET /vin returned 200 in 212 ms.'): Setu
 export const liveKeyTodo = (detail = 'Issued once a real call succeeds.'): SetupStep => ({ id: 'live_key', title: 'Live key', detail, state: 'todo' })
 export const productionTodo = (name = 'Auto.dev'): SetupStep => ({ id: 'production', title: 'Ready for production', detail: `${name} checks that it backs off and retries.`, state: 'todo' })
 
-const UP_TO_500 = 'Trusted in Drivly, up to $500 a month.'
+const UP_TO_500 = 'Trusted in Drivly, up to $500/month.'
 const CAPPED = 'Real endpoints, capped at [TEST ALLOWANCE].'
 const VIN = '/vin/1HGCM82633A004352'
 const removeAgent = { href: R.agentRemove(AGENT_ID), label: 'Remove it' }
@@ -76,9 +76,9 @@ const approve: SetupApproveProps = {
     { icon: 'clock', title: 'Stay connected while you’re away', detail: 'Keeps working until it expires or you remove it in Agents.', scope: 'offline_access' },
   ],
   spendLimits: [
-    { value: '50000', label: '$500 a month' },
+    { value: '50000', label: '$500/month' },
     { value: '0', label: '$0 — decide later' },
-    { value: '100000', label: '$1,000 a month' },
+    { value: '100000', label: '$1,000/month' },
     { value: 'none', label: 'No limit' },
   ],
   selectedSpend: '50000',
@@ -143,14 +143,14 @@ const needsYou: SetupPageProps = {
     {
       id: 'spend',
       title: 'Approve spending',
-      detail: 'Growth is $299 a month plus data fees. Claude Code subscribes inside the limit you set.',
+      detail: 'Growth is $299/month plus data fees. Claude Code subscribes inside the limit you set.',
       state: 'you',
       evidence: {
         type: 'field',
         label: 'Spend limit',
         options: [
-          { value: '50000', label: '$500 a month' },
-          { value: '100000', label: '$1,000 a month' },
+          { value: '50000', label: '$500/month' },
+          { value: '100000', label: '$1,000/month' },
           { value: 'none', label: 'No limit' },
         ],
         value: '50000',
@@ -166,7 +166,7 @@ const needsYou: SetupPageProps = {
   payMethod: VISA,
   foot: {
     secondary: { label: 'Not now', value: 'later' },
-    primary: { label: 'Approve $500 a month', value: 'approve_spend', busyLabel: 'Approving…', follows: { control: 'answer_spend', template: 'Approve {label}' } },
+    primary: { label: 'Approve $500/month', value: 'approve_spend', busyLabel: 'Approving…', follows: { control: 'answer_spend', template: 'Approve {label}' } },
     note: 'The test key keeps working until you decide.',
   },
   csrf: 'gallery',
@@ -211,8 +211,8 @@ const live: SetupPageProps = {
       items: [
         { k: 'Account', v: 'bryant@driv.ly' },
         { k: 'Workspace', v: 'Drivly' },
-        { k: 'Plan', v: 'Growth · $299 a month' },
-        { k: 'Spend limit', v: '$500 a month' },
+        { k: 'Plan', v: 'Growth · $299/month' },
+        { k: 'Spend limit', v: '$500/month' },
         { k: 'Live key', v: 'Ends in 4f2a · held by Claude Code' },
       ],
     },
@@ -269,7 +269,7 @@ const declined: SetupPageProps = {
   ]),
   agent: CLAUDE_CODE,
   title: 'Payment was declined',
-  description: 'Auto.dev couldn’t start Growth at $299 a month. The test key still works.',
+  description: 'Auto.dev couldn’t start Growth at $299/month. The test key still works.',
   sinceSeconds: 8,
   foot: {
     secondary: { label: 'Cancel setup', href: R.setupCancel(SETUP_ID) },
@@ -283,7 +283,7 @@ const noCard: SetupPageProps = {
     approved(UP_TO_500),
     testKey(CAPPED),
     firstCallDone(),
-    { id: 'payment_method', title: 'Add a payment method', detail: 'Growth is $299 a month, inside your $500 limit.', state: 'you' },
+    { id: 'payment_method', title: 'Add a payment method', detail: 'Growth is $299/month, inside your $500 limit.', state: 'you' },
     liveKeyTodo('Issued as soon as a card is on file.'),
     productionTodo(),
   ]),
@@ -395,8 +395,8 @@ const limitRaise: AgentCardProps = {
       kind: 'well',
       tight: true,
       items: [
-        { k: 'Now', v: '$500 a month' },
-        { k: 'Asking for', v: '$1,000 a month' },
+        { k: 'Now', v: '$500/month' },
+        { k: 'Asking for', v: '$1,000/month' },
         { k: 'Spent this month', v: '$299' },
       ],
       excerpt: 'To add apis.email next to Auto.dev and leave room for usage.',
@@ -407,8 +407,8 @@ const limitRaise: AgentCardProps = {
       name: 'limit',
       label: 'New limit',
       options: [
-        { value: '100000', label: '$1,000 a month', short: '$1,000' },
-        { value: '75000', label: '$750 a month', short: '$750' },
+        { value: '100000', label: '$1,000/month', short: '$1,000' },
+        { value: '75000', label: '$750/month', short: '$750' },
         { value: 'none', label: 'No limit', short: 'no limit' },
       ],
       selected: '100000',
@@ -432,7 +432,7 @@ const expiring: AgentCardProps = {
       kind: 'well',
       items: [
         { k: 'Connected to', v: 'Auto.dev, apis.email' },
-        { k: 'Spend limit', v: '$500 a month' },
+        { k: 'Spend limit', v: '$500/month' },
         { k: 'Approved', v: 'Nov 22' },
       ],
     },

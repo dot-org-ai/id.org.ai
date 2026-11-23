@@ -15,7 +15,7 @@ const done = (id: string, title: string, minute: string, detail?: string, tag?: 
 const todo = (id: string, title: string, detail?: string, tag?: string): SetupStep => ({ id, title, detail, tag, state: 'todo' })
 const run = (id: string, product: Product, state: Setup['state'], steps: SetupStep[]): Setup => ({ setup_id: id, product, agent_id: AGENT_ID, workspace_id: 'ws_drivly', state, steps, next_for_person: null })
 
-const UP_TO_500 = 'Trusted in Drivly, up to $500 a month.'
+const UP_TO_500 = 'Trusted in Drivly, up to $500/month.'
 const removeIt = { href: R.agentRemove(AGENT_ID), label: 'Remove it' }
 const liveFoot = (dashboard: string): SetupPageProps['foot'] => ({
   secondary: { label: 'Manage agent', href: R.agents },
@@ -121,7 +121,7 @@ const migSwitch: SetupPageProps = {
   foot: {
     secondary: { label: 'Not yet', value: 'later' },
     primary: { label: 'Switch to Auto.dev', value: 'switch', busyLabel: 'Switching…' },
-    note: 'Growth is $299 a month, inside your $500 limit.',
+    note: 'Growth is $299/month, inside your $500 limit.',
   },
   csrf: 'gallery',
 }
@@ -145,7 +145,7 @@ const migDone: SetupPageProps = {
       items: [
         { k: 'Moved', v: '12 calls in 6 files' },
         { k: 'Kept on MarketCheck', v: '2 calls' },
-        { k: 'Plan', v: 'Growth · $299 a month' },
+        { k: 'Plan', v: 'Growth · $299/month' },
         { k: 'Old key', v: 'Still active. Retire it when you’re ready.' },
       ],
     },
@@ -326,7 +326,7 @@ const saasLive: SetupPageProps = {
       items: [
         { k: 'Contacts', v: '1,228' },
         { k: 'Webhook', v: 'Receiving events' },
-        { k: 'Plan', v: '[PRICE] a month' },
+        { k: 'Plan', v: '[PRICE]/month' },
         { k: 'Live key', v: 'Ends in 9d1b · held by Claude Code' },
       ],
     },

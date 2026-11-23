@@ -138,7 +138,7 @@ describe('waiting on the person', () => {
     expect(step.querySelector('.id-payline')).not.toBeNull()
     const follow = d.querySelector('[data-js=follow]')!
     expect(follow.getAttribute('data-follow')).toBe('answer_spend')
-    expect(follow.textContent!.trim()).toBe('Approve $500 a month')
+    expect(follow.textContent!.trim()).toBe('Approve $500/month')
   })
   it('11b and 11c send the person to add a card (19a), not away to billing', async () => {
     for (const props of [P.declined, P.noCard]) {

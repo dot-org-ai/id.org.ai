@@ -37,7 +37,7 @@ describe('19b · a plan plus usage', () => {
   it('shows the plan and its data fees, then the per-API limit (default none) and alerts (on)', async () => {
     const d = await dom(<SetupPage {...P.planUsage} />)
     const step = d.querySelector('.id-sstep--you')!
-    expect(text(step.querySelector('.id-well .id-kv'))).toBe('Growth$299 a month')
+    expect(text(step.querySelector('.id-well .id-kv'))).toBe('Growth$299/month')
     expect(step.querySelectorAll('.id-rates .id-kv')).toHaveLength(3)
     expect(step.querySelector<HTMLSelectElement>('select[name=spend_limit]')!.value).toBe('none')
     expect(step.querySelector<HTMLInputElement>('input[name=spend_alerts]')!.checked).toBe(true)
@@ -163,7 +163,7 @@ describe('21 and 22 · alternate endings and sellers', () => {
 })
 
 describe('money is written plainly', () => {
-  it('"$299 a month", never "/mo"; no screen shows a full key', async () => {
+  it('"$299/month", never "/mo"; no screen shows a full key', async () => {
     for (const [slug, f] of Object.entries(paymentFixtures)) {
       const html = await renderHtml(f.default.render(), { title: 't' })
       expect(html, slug).not.toMatch(/\/mo\b/)

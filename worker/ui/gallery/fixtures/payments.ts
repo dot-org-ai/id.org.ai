@@ -17,7 +17,7 @@ const AD: TileContent = { kind: 'monogram', text: 'Ad' }
 const DRIVLY = { em: 'Drivly' }
 const MARKS = [10000, 50000, 100000, 200000, 500000]
 const CAPPED = 'Real endpoints, capped at [TEST ALLOWANCE].'
-const UP_TO_500 = 'Trusted in Drivly, up to $500 a month.'
+const UP_TO_500 = 'Trusted in Drivly, up to $500/month.'
 const removeThis = { href: R.agentRemove(AGENT_ID), label: 'Remove this agent' }
 const run = (id: string, product: Product, state: Setup['state'], steps: SetupStep[]): Setup => ({ setup_id: id, product, agent_id: AGENT_ID, workspace_id: 'ws_drivly', state, steps, next_for_person: null })
 const at = (hhmm: string) => `2026-11-22T19:${hhmm}:00Z`
@@ -65,16 +65,16 @@ const planUsage: SetupPageProps = {
     {
       id: 'plan',
       title: 'Approve the plan',
-      detail: 'A fixed $299 a month, then a data fee on every call. Auto.dev sets no ceiling.',
+      detail: 'A fixed $299/month, then a data fee on every call. Auto.dev sets no ceiling.',
       state: 'you',
       evidence: {
         type: 'plan',
         plan: 'Growth',
-        price: '$299 a month',
+        price: '$299/month',
         rates: [
-          ['Global VIN Decode', '$0.0025 a call'],
-          ['Vehicle Listings', '$0.0015 a call'],
-          ['OEM Build Data', '$0.10 a call'],
+          ['Global VIN Decode', '$0.0025/call'],
+          ['Vehicle Listings', '$0.0015/call'],
+          ['OEM Build Data', '$0.10/call'],
         ],
         more_url: 'https://www.auto.dev/pricing',
         more_label: 'All 9 data fees',
@@ -134,14 +134,14 @@ const stepUp: AgentCardProps = {
   tiles: { left: ORG, right: { kind: 'icon', icon: 'fingerprint' }, connector: 'idle' },
   secondsLeft: 250,
   title: 'Confirm it’s you',
-  description: 'Raising Claude Code to $1,000 a month needs your passkey.',
+  description: 'Raising Claude Code to $1,000/month needs your passkey.',
   blocks: [
     {
       kind: 'well',
       items: [
         { k: 'Agent', v: 'Claude Code' },
-        { k: 'New limit', v: '$1,000 a month' },
-        { k: 'Was', v: '$500 a month' },
+        { k: 'New limit', v: '$1,000/month' },
+        { k: 'Was', v: '$500/month' },
         { k: 'Pays with', v: VISA },
       ],
     },
@@ -149,7 +149,7 @@ const stepUp: AgentCardProps = {
   foot: {
     secondary: { label: 'Cancel', value: 'cancel' },
     primary: { label: 'Use passkey', value: 'passkey', icon: 'key', busyLabel: 'Checking…' },
-    note: 'Drivly asks for a passkey on any limit over $500 a month.',
+    note: 'Drivly asks for a passkey on any limit over $500/month.',
   },
   action: `${R.agents}/${AGENT_ID}/limit/confirm`,
   csrf: 'gallery',
@@ -228,8 +228,8 @@ const limitReached: AgentCardProps = {
       name: 'limit',
       label: 'New limit',
       options: [
-        { value: '75000', label: '$750 a month', short: '$750' },
-        { value: '100000', label: '$1,000 a month', short: '$1,000' },
+        { value: '75000', label: '$750/month', short: '$750' },
+        { value: '100000', label: '$1,000/month', short: '$1,000' },
         { value: 'none', label: 'No limit', short: 'no limit' },
       ],
       selected: '75000',
@@ -334,7 +334,7 @@ const charge: AgentCardProps = {
       label: 'Allowed by',
       items: [
         { k: 'Your approval', v: 'Nov 22, 2:14 PM' },
-        { k: 'Limit then', v: '$500 a month' },
+        { k: 'Limit then', v: '$500/month' },
         { k: 'Used after this charge', v: '$299 of $500' },
       ],
     },
@@ -361,10 +361,10 @@ const spendRules: AgentCardProps = {
       name: 'new_agent_limit',
       label: 'A new agent starts with',
       options: [
-        { value: '50000', label: '$500 a month' },
+        { value: '50000', label: '$500/month' },
         { value: '0', label: '$0, ask every time' },
-        { value: '10000', label: '$100 a month' },
-        { value: '100000', label: '$1,000 a month' },
+        { value: '10000', label: '$100/month' },
+        { value: '100000', label: '$1,000/month' },
       ],
       selected: '50000',
     },
@@ -387,8 +387,8 @@ const spendRules: AgentCardProps = {
       name: 'passkey_over',
       label: 'Ask for my passkey on any limit over',
       options: [
-        { value: '50000', label: '$500 a month' },
-        { value: '100000', label: '$1,000 a month' },
+        { value: '50000', label: '$500/month' },
+        { value: '100000', label: '$1,000/month' },
         { value: 'always', label: 'Every limit' },
         { value: 'never', label: 'Never' },
       ],
@@ -401,7 +401,7 @@ const spendRules: AgentCardProps = {
       label: 'Who can approve an agent that spends',
       options: [
         { value: 'admins', label: 'Admins only' },
-        { value: 'members_100', label: 'Any member, up to $100 a month' },
+        { value: 'members_100', label: 'Any member, up to $100/month' },
         { value: 'members', label: 'Any member' },
       ],
       selected: 'admins',
@@ -435,9 +435,9 @@ const payPerCall: SetupPageProps = {
     {
       kind: 'well',
       items: [
-        { k: 'Price', v: '[PRICE] a call' },
+        { k: 'Price', v: '[PRICE]/call' },
         { k: 'Pays with', v: 'Visa ending 4417, through Stripe' },
-        { k: 'Spend limit', v: '$500 a month' },
+        { k: 'Spend limit', v: '$500/month' },
         { k: 'Key', v: 'None. Each call carries its own payment.' },
       ],
     },
@@ -485,7 +485,7 @@ const payoutSetup: SetupPageProps = {
   setup: run(SELL, APIS_AX, 'needs_person', [
     { ...sellerDone[0]!, detail: 'Trusted in Drivly. No spending.' },
     { ...sellerDone[1]!, detail: 'At apis.directory/api/[your-api].' },
-    { ...sellerDone[2]!, detail: '[PRICE] a call, as Claude Code set it.' },
+    { ...sellerDone[2]!, detail: '[PRICE]/call, as Claude Code set it.' },
     {
       id: 'payouts',
       title: 'Payouts set up',

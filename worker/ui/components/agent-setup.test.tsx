@@ -42,7 +42,7 @@ async function dom(el: JSX.Element): Promise<Document> {
 const css = readFileSync('worker/ui/css/agent-setup.css', 'utf8')
 const plans: PlanCardProps[] = [
   { id: 'free', name: 'Free', price: '$0', summary: '1,000 calls a month', included: [{ label: 'Global VIN Decode', value: 'Included' }], selected: false, open: false },
-  { id: 'growth', name: 'Growth', price: '$299', priceYearly: '$249', priceNote: 'a month + data fees', summary: 'Unlimited calls', included: [{ label: 'Global VIN Decode', value: '$0.0025 a call' }, { label: 'MCP server, CLI and SDK' }], selected: true, open: true },
+  { id: 'growth', name: 'Growth', price: '$299', priceYearly: '$249', priceNote: '/month + data fees', summary: 'Unlimited calls', included: [{ label: 'Global VIN Decode', value: '$0.0025/call' }, { label: 'MCP server, CLI and SDK' }], selected: true, open: true },
 ]
 
 describe('money wording', () => {
@@ -52,7 +52,7 @@ describe('money wording', () => {
     expect(usd(100000)).toBe('$1,000')
     expect(usdExact(29900)).toBe('$299.00')
     expect(limitLabel(null)).toBe('No limit')
-    expect(limitLabel(10000)).toBe('$100 a month')
+    expect(limitLabel(10000)).toBe('$100/month')
   })
   it('builds the alerts sentence from the marks', () => {
     expect(alertsSentence([10000, 50000, 100000, 200000, 500000])).toBe('Emails at $100, $500, $1,000, $2,000 and $5,000.')
@@ -175,7 +175,7 @@ describe('Spend block', () => {
   it('SpendLimit defaults to No limit and names the plan price', async () => {
     const d = await dom(<Spend id="s" planPrice="$299" limit={{ options: [null, ...marks], value: null }} />)
     const select = d.querySelector<HTMLSelectElement>('select#s-limit')!
-    expect([...select.options].map((o) => o.textContent)).toEqual(['No limit', '$100 a month', '$500 a month', '$1,000 a month', '$2,000 a month', '$5,000 a month'])
+    expect([...select.options].map((o) => o.textContent)).toEqual(['No limit', '$100/month', '$500/month', '$1,000/month', '$2,000/month', '$5,000/month'])
     expect(select.value).toBe('none')
     expect(d.getElementById(select.getAttribute('aria-describedby')!)!.textContent!.trim()).toBe('On top of the $299 plan. Past a limit, calls are refused until next month.')
     expect(d.querySelector('.id-alerts')).toBeNull()

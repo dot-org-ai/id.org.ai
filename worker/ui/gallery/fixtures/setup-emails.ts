@@ -26,7 +26,7 @@ import { SETUP_ID } from './setup'
 const ORIGIN = 'https://id.org.ai'
 const setupUrl = ORIGIN + R.setup(SETUP_ID)
 
-const needsYou: NeedsYouEmailProps = { agent: 'Claude Code', product: 'Auto.dev', plan: 'Growth · $299 a month', since: 'Nov 22, 2:16 PM EST', setupUrl }
+const needsYou: NeedsYouEmailProps = { agent: 'Claude Code', product: 'Auto.dev', plan: 'Growth · $299/month', since: 'Nov 22, 2:16 PM EST', setupUrl }
 
 const stalled: StalledEmailProps = {
   agent: 'Claude Code',
@@ -42,8 +42,8 @@ const live: LiveEmailProps = {
   product: 'Auto.dev',
   workspace: 'Drivly',
   planName: 'Growth',
-  planPrice: '$299 a month',
-  spendLimit: '$500 a month',
+  planPrice: '$299/month',
+  spendLimit: '$500/month',
   keyLast4: '4f2a',
   took: '3 min 12 s',
   when: 'Nov 22, 2:17 PM EST',
@@ -91,6 +91,6 @@ export const setupEmailsFixtures: FixtureGroup = {
   '23b-mail-pay-failed': email(renewalFailedEmail, 640, payFailed),
   '23c-mail-usage': email(usageAlertEmail, 640, usage, {
     // Not drawn: the person has a limit and usage passed a mark below it.
-    'with-limit': { ...usage, spendLimit: '$1,000 a month' },
+    'with-limit': { ...usage, spendLimit: '$1,000/month' },
   }),
 }

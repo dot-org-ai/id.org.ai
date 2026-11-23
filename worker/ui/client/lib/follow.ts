@@ -1,7 +1,7 @@
 /**
  * Labels that follow a choice: [data-follow="<control name>"][data-template].
  * The primary action names what was picked: "Continue with Growth" follows the
- * plan radios (24a), "Approve $500 a month" and "Raise to $750" follow a
+ * plan radios (24a), "Approve $500/month" and "Raise to $750" follow a
  * select (9c, 12b, 19g). `{label}` in the template is the picked option's
  * data-short, or its text. Prices swap between monthly and yearly in CSS;
  * nothing here touches them.

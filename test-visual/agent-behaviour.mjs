@@ -91,7 +91,7 @@ if (!argv.includes('--only') || argv.includes('24a')) {
 if (!argv.includes('--only') || argv.includes('9c')) {
   const { page, errors } = await open('/__design/9c-setup-needs-you')
   await page.locator('select[name=answer_spend]').selectOption('100000')
-  check('9c the primary label follows the spend limit', (await page.locator('[data-js=follow]').innerText()).trim() === 'Approve $1,000 a month', await page.locator('[data-js=follow]').innerText())
+  check('9c the primary label follows the spend limit', (await page.locator('[data-js=follow]').innerText()).trim() === 'Approve $1,000/month', await page.locator('[data-js=follow]').innerText())
   check('9c no script errors', errors.length === 0, errors)
   await page.close()
 }

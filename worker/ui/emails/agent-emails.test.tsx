@@ -18,7 +18,7 @@ describe('agent emails', () => {
     expect(all.map(([, e]) => e.subject)).toEqual([
       'Claude Code needs your OK to go live',
       'Auto.dev setup has stopped',
-      'Auto.dev is live · Growth, $299 a month',
+      'Auto.dev is live · Growth, $299/month',
       'Your bank needs to confirm $299 to Auto.dev',
       'The Auto.dev renewal didn’t go through',
       'Auto.dev data fees passed $500 this month',
@@ -70,11 +70,11 @@ describe('agent emails', () => {
   })
   it('23c: an alert never claims anything was stopped, with or without a limit', () => {
     expect(usageAlertEmail(P.usage).text).toContain('Claude Code has no spend limit on Auto.dev, so nothing was stopped. This is the alert at $500.')
-    const limited = usageAlertEmail({ ...P.usage, spendLimit: '$1,000 a month' })
+    const limited = usageAlertEmail({ ...P.usage, spendLimit: '$1,000/month' })
     expect(limited.text).toContain('Nothing was stopped')
     expect(limited.text).toContain('Change the limit:')
   })
-  it('writes money as "$299 a month", never "/mo"', () => {
+  it('writes money as "$299/month", never "/mo"', () => {
     for (const [id, e] of all) expect(e.text, id).not.toMatch(/\/mo\b/)
   })
 })

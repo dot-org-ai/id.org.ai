@@ -88,7 +88,7 @@ export function Input(p: InputProps): JSX.Element {
 export interface SelectOption {
   value: string
   label: string
-  /** A shorter name for an action label that follows this select ("$750" for "$750 a month"). */
+  /** A shorter name for an action label that follows this select ("$750" for "$750/month"). */
   short?: string
 }
 

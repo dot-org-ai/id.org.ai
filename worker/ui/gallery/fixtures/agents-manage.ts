@@ -64,7 +64,7 @@ const remove: AgentCardProps = {
       ],
     },
     // Open decision 4: whether removing an agent cancels its subscriptions. Drawn as an unchecked choice.
-    { kind: 'checkbox', id: 'remove-cancel-sub', name: 'cancel_subscription', label: 'Also cancel the Auto.dev subscription', detail: 'Left on, Growth keeps billing Drivly at $299 a month.' },
+    { kind: 'checkbox', id: 'remove-cancel-sub', name: 'cancel_subscription', label: 'Also cancel the Auto.dev subscription', detail: 'Left on, Growth keeps billing Drivly at $299/month.' },
   ],
   foot: {
     secondary: { label: 'Cancel', href: R.agents },
@@ -94,7 +94,7 @@ const pause: AgentCardProps = {
       items: [
         { k: 'Auto.dev live key', v: 'Calls are refused' },
         { k: 'apis.email setup', v: 'Held at the first real call' },
-        { k: 'Growth subscription', v: 'Keeps billing at $299 a month' },
+        { k: 'Growth subscription', v: 'Keeps billing at $299/month' },
       ],
     },
     {
@@ -130,7 +130,7 @@ const activity: AgentCardProps = {
       label: 'Today',
       rows: [
         { icon: 'shield_check', text: 'Passed the production check on Auto.dev', when: '2:17 PM' },
-        { icon: 'card', text: 'Subscribed to Growth at $299 a month', more: 'Spent money, inside your $500 limit.', money: true, when: '2:17 PM' },
+        { icon: 'card', text: 'Subscribed to Growth at $299/month', more: 'Spent money, inside your $500 limit.', money: true, when: '2:17 PM' },
         { icon: 'key', text: 'Got a live key for Auto.dev', when: '2:17 PM' },
         { icon: 'zap', text: 'Made its first real call to Auto.dev', more: 'GET /vin/1HGCM82633A004352 · 200', mono: true, when: '2:16 PM' },
         { icon: 'flask', text: 'Got a test key for Auto.dev', when: '2:14 PM' },
@@ -158,7 +158,7 @@ const blocked: AgentCardProps = {
       items: [
         { k: 'Agent', v: 'Claude Code' },
         { k: 'Asked to', v: 'Set up Auto.dev' },
-        { k: 'Spend limit', v: '$500 a month' },
+        { k: 'Spend limit', v: '$500/month' },
       ],
     },
     { kind: 'textarea', id: 'blocked-note', name: 'note', label: 'Note to your admins (optional)', placeholder: 'Why it needs to spend' },
@@ -188,7 +188,7 @@ const adminApprove: AgentCardProps = {
         {
           icon: 'card',
           title: 'Subscribe to Auto.dev and get a live key',
-          detail: 'One subscription on Drivly’s bill. Growth is $299 a month.',
+          detail: 'One subscription on Drivly’s bill. Growth is $299/month.',
           scope: 'autodev:subscribe · resource https://api.auto.dev',
           act: true,
           actNote: 'Spends Drivly’s money, up to the limit.',
@@ -201,9 +201,9 @@ const adminApprove: AgentCardProps = {
       name: 'spend_limit',
       label: 'Spend limit',
       options: [
-        { value: '50000', label: '$500 a month' },
-        { value: '29900', label: '$299 a month' },
-        { value: '100000', label: '$1,000 a month' },
+        { value: '50000', label: '$500/month' },
+        { value: '29900', label: '$299/month' },
+        { value: '100000', label: '$1,000/month' },
       ],
       selected: '50000',
     },

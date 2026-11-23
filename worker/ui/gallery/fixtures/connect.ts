@@ -19,10 +19,10 @@ const growth: PlanOffer = {
   name: 'Growth',
   recommended: true,
   price: { monthly: 29900, yearly_per_month: 24900 },
-  price_note: 'a month + data fees',
+  price_note: '/month + data fees',
   summary: 'Unlimited calls · 10 requests a second',
   included: [
-    { label: 'Global VIN Decode', value: '$0.0025 a call' },
+    { label: 'Global VIN Decode', value: '$0.0025/call' },
     { label: 'Vehicle Listings', value: '$0.0015' },
     { label: 'Vehicle Photos', value: '$0.0009' },
     { label: 'Specifications', value: '$0.0015' },
@@ -52,7 +52,7 @@ export const AUTO_DEV_PRICING: Pricing = {
       id: 'scale',
       name: 'Scale',
       price: { monthly: 59900, yearly_per_month: 49900 },
-      price_note: 'a month + data fees',
+      price_note: '/month + data fees',
       summary: 'Unlimited calls · 50 requests a second',
       // Listed without their fees: two published prices for Plate-to-VIN disagree (HANDOFF.md section 8).
       included: [{ label: 'Everything in Growth, at lower data fees' }, { label: 'Plate-to-VIN' }, { label: 'Open Recalls' }, { label: 'Taxes and Fees' }],
@@ -96,7 +96,7 @@ const done: AgentCardProps = {
     {
       kind: 'well',
       items: [
-        { k: 'Plan', v: 'Growth · $299 a month + data fees' },
+        { k: 'Plan', v: 'Growth · $299/month + data fees' },
         { k: 'Trial', v: '7 days for $1, ends Nov 29' },
         { k: 'Pays with', v: VISA },
         { k: 'Spend limit', v: 'None' },

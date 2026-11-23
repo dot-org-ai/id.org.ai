@@ -2625,6 +2625,10 @@ button.id-link[hidden] {
   font-weight: 400;
   color: var(--id-fg-3);
 }
+/* "$299/month + data fees": a note that starts with a slash sits against the price. */
+.id-plan__note--slash {
+  margin-left: -6px;
+}
 .id-plan__more {
   margin-top: 3px;
 }

@@ -37,6 +37,20 @@ const only = arg('only') ? String(arg('only')).split(',') : null
 const phase = arg('phase') ? Number(arg('phase')) : null
 const scale = AGAINST === 'png' ? 2 : 1
 
+/** Owner direction (2026-11-23): pages write "/month" and "/call" where the drawings say "a month" and "a call". Apply that to the drawing (--as-drawn skips it). */
+const SLASH_MONTH = () => {
+  const walk = (n) => {
+    if (n.nodeType === 3) {
+      const t = n.textContent.replace(/(?<=[\d\]]) a (month|call)/g, '/$1')
+      if (/^a month \+/.test(t)) {
+        n.textContent = t.replace(/^a month \+/, '/month +')
+        n.parentElement.style.marginLeft = '-6px'
+      } else if (t !== n.textContent) n.textContent = t
+    } else n.childNodes.forEach(walk)
+  }
+  walk(document.body)
+}
+
 async function shoot(browser, url, [width, height]) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale })
   await page.emulateMedia({ reducedMotion: 'no-preference', colorScheme: 'dark' })
@@ -46,6 +60,7 @@ async function shoot(browser, url, [width, height]) {
     throw new Error(`HTTP ${res.status()}`)
   }
   await page.evaluate(() => document.fonts.ready)
+  if (url.startsWith('file:') && !argv.includes('--as-drawn')) await page.evaluate(SLASH_MONTH)
   await page.mouse.move(0, 0)
   // The org.ai mark changed after these screens were drawn (main's six-mark ring;
   // the drawings carry the older one). Hide it on both sides unless --with-mark.

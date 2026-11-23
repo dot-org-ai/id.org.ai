@@ -57,7 +57,7 @@ describe('10e · activity', () => {
     const d = await dom(<AgentCard {...P.activity} />)
     const rows = [...d.querySelectorAll('.id-activity')]
     expect(rows).toHaveLength(6)
-    expect(rows.filter((r) => r.classList.contains('id-activity--money')).map((r) => text(r.querySelector('.id-line14')))).toEqual(['Subscribed to Growth at $299 a month'])
+    expect(rows.filter((r) => r.classList.contains('id-activity--money')).map((r) => text(r.querySelector('.id-line14')))).toEqual(['Subscribed to Growth at $299/month'])
   })
   it('both foot actions are quiet', async () => {
     const d = await dom(<AgentCard {...P.activity} />)

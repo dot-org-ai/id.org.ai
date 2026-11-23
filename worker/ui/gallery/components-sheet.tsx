@@ -297,7 +297,7 @@ export function ComponentSheet(): JSX.Element {
           </Section>
           <Section title="Step list: every step state">
             <StepList label="Setup steps">
-              <StepItem state="done" title="Agent approved" when="2:14 PM" detail="Trusted in Drivly, up to $500 a month." />
+              <StepItem state="done" title="Agent approved" when="2:14 PM" detail="Trusted in Drivly, up to $500/month." />
               <StepItem state="done" title="Test key issued" when="2:14 PM" />
               <StepItem state="now" title="First real call" when="Now" detail="Waiting for Claude Code to call Auto.dev with the test key.">
                 <Listening text="Listening on test key …a91c" elapsed="0:42" note="A call copied from the docs example doesn’t count." />
@@ -343,7 +343,7 @@ export function ComponentSheet(): JSX.Element {
               <Toggle id="sheet-toggle-off" name="t2" label="Off" />
             </div>
             <ToggleRow id="sheet-receipt" name="receipts" checked title="Email a receipt for every charge" sub="Sent to bryant@driv.ly." />
-            <Checkbox id="sheet-c3" name="cancel_sub" detail="Left on, Growth keeps billing Drivly at $299 a month.">Also cancel the Auto.dev subscription</Checkbox>
+            <Checkbox id="sheet-c3" name="cancel_sub" detail="Left on, Growth keeps billing Drivly at $299/month.">Also cancel the Auto.dev subscription</Checkbox>
             <Checkbox id="sheet-c4" name="agents_can_charge" checked detail="Only agents you approved, and only inside their limit.">Agents can charge this</Checkbox>
           </Section>
           <Section title="Terms: the primary action waits for the tick">
@@ -376,8 +376,8 @@ export function ComponentSheet(): JSX.Element {
                 name="sheet-plan"
                 plans={[
                   { id: 'free', name: 'Free', price: '$0', summary: '1,000 calls a month · 5 requests a second', included: [{ label: 'Global VIN Decode', value: 'Included' }, { label: 'MCP server, CLI and SDK' }], selected: false, open: false },
-                  { id: 'growth', name: 'Growth', price: '$299', priceYearly: '$249', priceNote: 'a month + data fees', summary: 'Unlimited calls · 10 requests a second', included: [{ label: 'Global VIN Decode', value: '$0.0025 a call' }, { label: 'Vehicle Listings', value: '$0.0015' }, { label: 'Priority email support' }], selected: true, open: true },
-                  { id: 'scale', name: 'Scale', price: '$599', priceYearly: '$499', priceNote: 'a month + data fees', summary: 'Unlimited calls · 50 requests a second', included: [{ label: 'Everything in Growth, at lower data fees' }], selected: false, open: false },
+                  { id: 'growth', name: 'Growth', price: '$299', priceYearly: '$249', priceNote: '/month + data fees', summary: 'Unlimited calls · 10 requests a second', included: [{ label: 'Global VIN Decode', value: '$0.0025/call' }, { label: 'Vehicle Listings', value: '$0.0015' }, { label: 'Priority email support' }], selected: true, open: true },
+                  { id: 'scale', name: 'Scale', price: '$599', priceYearly: '$499', priceNote: '/month + data fees', summary: 'Unlimited calls · 50 requests a second', included: [{ label: 'Everything in Growth, at lower data fees' }], selected: false, open: false },
                 ]}
               />
             </Card>
@@ -408,7 +408,7 @@ export function ComponentSheet(): JSX.Element {
             <AgentRow tile={{ kind: 'monogram', text: 'Cx' }} name="Codex" chip="Setting up" line="Sandboxed · this computer" />
             <div>
               <ActivityRow icon="shield_check" text="Passed the production check on Auto.dev" when="2:17 PM" />
-              <ActivityRow icon="card" text="Subscribed to Growth at $299 a month" more="Spent money, inside your $500 limit." money when="2:17 PM" />
+              <ActivityRow icon="card" text="Subscribed to Growth at $299/month" more="Spent money, inside your $500 limit." money when="2:17 PM" />
               <ActivityRow icon="zap" text="Made its first real call to Auto.dev" more="GET /vin/1HGCM82633A004352 · 200" mono when="2:16 PM" />
             </div>
           </Section>

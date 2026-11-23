@@ -146,7 +146,7 @@ export interface ConnectPayProps {
 /** 24b's charge summary: with a trial, today's trial price and what follows; without, today's price. */
 export function chargeSummary(p: Pick<ConnectPayProps, 'plan' | 'billing' | 'trialEnds' | 'feesNote'>): [string, string][] {
   const yearly = p.billing === 'yearly' && p.plan.price.yearly_per_month !== undefined
-  const price = yearly ? `${usdExact(p.plan.price.yearly_per_month as number)} a month, billed yearly` : `${usdExact(p.plan.price.monthly)} a month`
+  const price = yearly ? `${usdExact(p.plan.price.yearly_per_month as number)}/month, billed yearly` : `${usdExact(p.plan.price.monthly)}/month`
   const fees: [string, string] = ['Data fees', p.feesNote]
   if (p.plan.trial && p.trialEnds) {
     return [['Today', `${usdExact(p.plan.trial.price)} for ${p.plan.trial.days} days`], [`From ${p.trialEnds}`, price], fees]

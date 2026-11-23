@@ -85,7 +85,7 @@ export interface PlanOffer {
   recommended?: boolean
   /** Cents a month. `yearly_per_month` is the monthly price when billed yearly. */
   price: { monthly: number; yearly_per_month?: number }
-  /** "a month + data fees". Omitted on a free plan. */
+  /** "/month + data fees". Omitted on a free plan. */
   price_note?: string
   summary: string
   included: { label: string; value?: string }[]

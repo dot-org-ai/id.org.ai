@@ -1,10 +1,12 @@
 /**
  * Every agent setup screen against its drawing (docs/agent-setup): the fixture
- * exists, the page says exactly what the drawing says, bracketed placeholders
+ * exists, the page says exactly what the drawing says (with "a month" and "a call"
+ * written "/month" and "/call", by owner direction), bracketed placeholders
  * are kept as written, and nothing is red or inline-styled.
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { slashUnits } from '../agent-setup/format'
 import { renderHtml } from '../render'
 import { AGENT_SCREENS, fixtureSlug } from './agent-setup-index'
 import { fixtures } from './fixtures'
@@ -14,6 +16,12 @@ const built = AGENT_SCREENS.filter((s) => s.kind !== 'reference' && fixtures[fix
 /** The words a person reads in the card and the header's right slot, in order. */
 function words(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html')
+  // Owner direction (2026-11-23): "/month" and "/call" where the drawings say "a month" and "a call".
+  const walk = (n: Node): void => {
+    if (n.nodeType === 3) n.textContent = slashUnits(n.textContent ?? '')
+    else n.childNodes.forEach(walk)
+  }
+  walk(doc.body)
   // Spoken-only text and decoration: visually hidden labels, the tiles and avatar, the picture of Stripe's fields.
   for (const el of doc.querySelectorAll('script, style, template, title, option:not([selected]), .id-sr, [hidden], footer, .id-conn, .id-avatar, .id-stripe__picture, [data-price="yearly"], [style*="clip: rect(0 0 0 0)"]')) el.remove()
   // The tiles above the title are decorative (the connector is aria-hidden on the page).

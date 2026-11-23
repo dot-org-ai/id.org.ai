@@ -9,7 +9,7 @@ export interface PlanCardProps {
   price: string
   /** "$249": the price per month when billed yearly. Falls back to `price`. */
   priceYearly?: string
-  /** "a month + data fees". Omitted on Free. */
+  /** "/month + data fees". Omitted on Free. */
   priceNote?: string
   /** "Unlimited calls · 10 requests a second" */
   summary: string
@@ -61,7 +61,7 @@ export function PlanCard({ name: group, plan }: { name: string; plan: PlanCardPr
                 <span data-price="monthly">{plan.price}</span>
                 <span data-price="yearly">{plan.priceYearly ?? plan.price}</span>
               </span>
-              {plan.priceNote ? <span class="id-plan__note">{plan.priceNote}</span> : null}
+              {plan.priceNote ? <span class={plan.priceNote.startsWith('/') ? 'id-plan__note id-plan__note--slash' : 'id-plan__note'}>{plan.priceNote}</span> : null}
             </span>
             <span class="id-help">{plan.summary}</span>
           </span>
