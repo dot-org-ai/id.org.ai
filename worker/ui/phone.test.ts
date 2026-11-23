@@ -124,4 +124,9 @@ describe('every screen size', () => {
     const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
     expect(phone).toMatch(/\.id-page:not\(:has\(\.id-footer--secured\)\) \.id-main \{\s*min-height: calc\(100dvh - 72px\);/)
   })
+
+  it('on phones the card has no outer border', () => {
+    const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
+    expect(phone).toMatch(/\.id-card \{[^}]*border: 0 !important;/)
+  })
 })

@@ -1877,8 +1877,9 @@ button.id-link[hidden] {
     max-width: none !important;
     margin: 0 -20px !important;
     border-radius: 0 !important;
-    border-left: 0 !important;
-    border-right: 0 !important;
+    /* No outer border at all on phones: the card is the screen, and its surface colour is
+       enough against the header (owner direction, 2026-11-23; top and bottom were kept before). */
+    border: 0 !important;
     box-shadow: none !important;
   }
   .id-card__body {
