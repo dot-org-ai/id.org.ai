@@ -2410,7 +2410,7 @@ button.id-link[hidden] {
   cursor: pointer;
 }
 .id-alerts__row .id-toggle {
-  margin-right: 2px;
+  margin: -1px 2px -1px 0;
 }
 .id-alerts__panel {
   padding: 0 0 12px 28px;
@@ -2697,6 +2697,10 @@ button.id-link[hidden] {
 .id-stripe__box--value {
   color: var(--id-fg);
 }
+.id-stripe__box .id-icon {
+  color: var(--id-fg-3);
+  margin-right: -3px;
+}
 .id-stripe__note {
   display: flex;
   align-items: center;
@@ -2893,22 +2897,322 @@ button.id-link[hidden] {
   color: var(--id-fg-3);
 }
 .id-bar {
-  display: block;
-  width: 100%;
   height: 4px;
   border-radius: var(--id-r-pill);
+  background: var(--id-track);
   overflow: hidden;
 }
-.id-bar__track {
-  fill: var(--id-track);
-}
 .id-bar__fill {
-  fill: var(--id-fg);
+  width: 0;
+  height: 100%;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
   opacity: 0.82;
 }
 .id-bar--full .id-bar__fill {
-  fill: var(--id-accent);
+  background: var(--id-accent);
   opacity: 1;
+}
+/* One rule per whole percent: the page's security policy allows no inline style. */
+.id-bar__fill[data-p='1'] {
+  width: 1%;
+}
+.id-bar__fill[data-p='2'] {
+  width: 2%;
+}
+.id-bar__fill[data-p='3'] {
+  width: 3%;
+}
+.id-bar__fill[data-p='4'] {
+  width: 4%;
+}
+.id-bar__fill[data-p='5'] {
+  width: 5%;
+}
+.id-bar__fill[data-p='6'] {
+  width: 6%;
+}
+.id-bar__fill[data-p='7'] {
+  width: 7%;
+}
+.id-bar__fill[data-p='8'] {
+  width: 8%;
+}
+.id-bar__fill[data-p='9'] {
+  width: 9%;
+}
+.id-bar__fill[data-p='10'] {
+  width: 10%;
+}
+.id-bar__fill[data-p='11'] {
+  width: 11%;
+}
+.id-bar__fill[data-p='12'] {
+  width: 12%;
+}
+.id-bar__fill[data-p='13'] {
+  width: 13%;
+}
+.id-bar__fill[data-p='14'] {
+  width: 14%;
+}
+.id-bar__fill[data-p='15'] {
+  width: 15%;
+}
+.id-bar__fill[data-p='16'] {
+  width: 16%;
+}
+.id-bar__fill[data-p='17'] {
+  width: 17%;
+}
+.id-bar__fill[data-p='18'] {
+  width: 18%;
+}
+.id-bar__fill[data-p='19'] {
+  width: 19%;
+}
+.id-bar__fill[data-p='20'] {
+  width: 20%;
+}
+.id-bar__fill[data-p='21'] {
+  width: 21%;
+}
+.id-bar__fill[data-p='22'] {
+  width: 22%;
+}
+.id-bar__fill[data-p='23'] {
+  width: 23%;
+}
+.id-bar__fill[data-p='24'] {
+  width: 24%;
+}
+.id-bar__fill[data-p='25'] {
+  width: 25%;
+}
+.id-bar__fill[data-p='26'] {
+  width: 26%;
+}
+.id-bar__fill[data-p='27'] {
+  width: 27%;
+}
+.id-bar__fill[data-p='28'] {
+  width: 28%;
+}
+.id-bar__fill[data-p='29'] {
+  width: 29%;
+}
+.id-bar__fill[data-p='30'] {
+  width: 30%;
+}
+.id-bar__fill[data-p='31'] {
+  width: 31%;
+}
+.id-bar__fill[data-p='32'] {
+  width: 32%;
+}
+.id-bar__fill[data-p='33'] {
+  width: 33%;
+}
+.id-bar__fill[data-p='34'] {
+  width: 34%;
+}
+.id-bar__fill[data-p='35'] {
+  width: 35%;
+}
+.id-bar__fill[data-p='36'] {
+  width: 36%;
+}
+.id-bar__fill[data-p='37'] {
+  width: 37%;
+}
+.id-bar__fill[data-p='38'] {
+  width: 38%;
+}
+.id-bar__fill[data-p='39'] {
+  width: 39%;
+}
+.id-bar__fill[data-p='40'] {
+  width: 40%;
+}
+.id-bar__fill[data-p='41'] {
+  width: 41%;
+}
+.id-bar__fill[data-p='42'] {
+  width: 42%;
+}
+.id-bar__fill[data-p='43'] {
+  width: 43%;
+}
+.id-bar__fill[data-p='44'] {
+  width: 44%;
+}
+.id-bar__fill[data-p='45'] {
+  width: 45%;
+}
+.id-bar__fill[data-p='46'] {
+  width: 46%;
+}
+.id-bar__fill[data-p='47'] {
+  width: 47%;
+}
+.id-bar__fill[data-p='48'] {
+  width: 48%;
+}
+.id-bar__fill[data-p='49'] {
+  width: 49%;
+}
+.id-bar__fill[data-p='50'] {
+  width: 50%;
+}
+.id-bar__fill[data-p='51'] {
+  width: 51%;
+}
+.id-bar__fill[data-p='52'] {
+  width: 52%;
+}
+.id-bar__fill[data-p='53'] {
+  width: 53%;
+}
+.id-bar__fill[data-p='54'] {
+  width: 54%;
+}
+.id-bar__fill[data-p='55'] {
+  width: 55%;
+}
+.id-bar__fill[data-p='56'] {
+  width: 56%;
+}
+.id-bar__fill[data-p='57'] {
+  width: 57%;
+}
+.id-bar__fill[data-p='58'] {
+  width: 58%;
+}
+.id-bar__fill[data-p='59'] {
+  width: 59%;
+}
+.id-bar__fill[data-p='60'] {
+  width: 60%;
+}
+.id-bar__fill[data-p='61'] {
+  width: 61%;
+}
+.id-bar__fill[data-p='62'] {
+  width: 62%;
+}
+.id-bar__fill[data-p='63'] {
+  width: 63%;
+}
+.id-bar__fill[data-p='64'] {
+  width: 64%;
+}
+.id-bar__fill[data-p='65'] {
+  width: 65%;
+}
+.id-bar__fill[data-p='66'] {
+  width: 66%;
+}
+.id-bar__fill[data-p='67'] {
+  width: 67%;
+}
+.id-bar__fill[data-p='68'] {
+  width: 68%;
+}
+.id-bar__fill[data-p='69'] {
+  width: 69%;
+}
+.id-bar__fill[data-p='70'] {
+  width: 70%;
+}
+.id-bar__fill[data-p='71'] {
+  width: 71%;
+}
+.id-bar__fill[data-p='72'] {
+  width: 72%;
+}
+.id-bar__fill[data-p='73'] {
+  width: 73%;
+}
+.id-bar__fill[data-p='74'] {
+  width: 74%;
+}
+.id-bar__fill[data-p='75'] {
+  width: 75%;
+}
+.id-bar__fill[data-p='76'] {
+  width: 76%;
+}
+.id-bar__fill[data-p='77'] {
+  width: 77%;
+}
+.id-bar__fill[data-p='78'] {
+  width: 78%;
+}
+.id-bar__fill[data-p='79'] {
+  width: 79%;
+}
+.id-bar__fill[data-p='80'] {
+  width: 80%;
+}
+.id-bar__fill[data-p='81'] {
+  width: 81%;
+}
+.id-bar__fill[data-p='82'] {
+  width: 82%;
+}
+.id-bar__fill[data-p='83'] {
+  width: 83%;
+}
+.id-bar__fill[data-p='84'] {
+  width: 84%;
+}
+.id-bar__fill[data-p='85'] {
+  width: 85%;
+}
+.id-bar__fill[data-p='86'] {
+  width: 86%;
+}
+.id-bar__fill[data-p='87'] {
+  width: 87%;
+}
+.id-bar__fill[data-p='88'] {
+  width: 88%;
+}
+.id-bar__fill[data-p='89'] {
+  width: 89%;
+}
+.id-bar__fill[data-p='90'] {
+  width: 90%;
+}
+.id-bar__fill[data-p='91'] {
+  width: 91%;
+}
+.id-bar__fill[data-p='92'] {
+  width: 92%;
+}
+.id-bar__fill[data-p='93'] {
+  width: 93%;
+}
+.id-bar__fill[data-p='94'] {
+  width: 94%;
+}
+.id-bar__fill[data-p='95'] {
+  width: 95%;
+}
+.id-bar__fill[data-p='96'] {
+  width: 96%;
+}
+.id-bar__fill[data-p='97'] {
+  width: 97%;
+}
+.id-bar__fill[data-p='98'] {
+  width: 98%;
+}
+.id-bar__fill[data-p='99'] {
+  width: 99%;
+}
+.id-bar__fill[data-p='100'] {
+  width: 100%;
 }
 .id-total {
   display: flex;

@@ -11,6 +11,7 @@ import { deviceFixtures } from './devices'
 import { directoryFixtures } from './directory'
 import { emailsFixtures } from './emails'
 import { errorsFixtures } from './errors'
+import { paymentFixtures } from './payments'
 import { securityFixtures } from './security'
 import { setupFixtures } from './setup'
 import { setupEmailsFixtures } from './setup-emails'
@@ -32,4 +33,5 @@ export const fixtures: FixtureGroup = {
   ...setupEmailsFixtures,
   ...directoryFixtures,
   ...workflowFixtures,
+  ...paymentFixtures,
 }

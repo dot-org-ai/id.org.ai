@@ -20,6 +20,8 @@ function words(html: string): string {
   doc.querySelector('h1')?.parentElement?.previousElementSibling?.remove()
   // So are the avatar's initials (aria-hidden on the page; a bare 32px circle in the drawing).
   for (const el of doc.querySelectorAll('[style*="width: 32px; height: 32px; border-radius: 99px"]')) el.remove()
+  // What a closed row hides isn't read until it is opened (drawings use <details>; pages use it or a hidden panel).
+  for (const el of doc.querySelectorAll('details:not([open]) > :not(summary)')) el.remove()
   // Drawings put the first option first; a select reads as its selected option either way.
   for (const sel of doc.querySelectorAll('select')) sel.textContent = sel.querySelector('option[selected]')?.textContent ?? sel.querySelector('option')?.textContent ?? ''
   const root = doc.querySelector('[data-card]')?.parentElement?.parentElement?.parentElement ?? doc.body

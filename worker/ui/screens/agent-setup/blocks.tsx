@@ -13,6 +13,7 @@ import {
   Amount,
   Bar,
   Button,
+  ChargeRow,
   Checkbox,
   Dotted,
   Excerpt,
@@ -21,26 +22,35 @@ import {
   FootText,
   KeyValue,
   Link,
+  MethodRow,
   PayLine,
   PermissionList,
   PromptWell,
   QuoteWell,
   RadioCard,
   RadioGroup,
+  SegTabs,
   Select,
   Spend,
+  SpendRow,
+  StripeFields,
   TermsAgree,
   Textarea,
   ToggleRow,
+  Total,
   Well,
   Who,
   type ActivityRowProps,
+  type ChargeRowProps,
   type ConnectionRowProps,
   type KV,
+  type MethodRowProps,
   type MiniTileContent,
   type PermissionItem,
   type SelectOption,
   type SpendProps,
+  type SpendRowProps,
+  type StripeFieldsProps,
   type TermsAgreeProps,
 } from '../../components'
 import type { IconName } from '../../icons'
@@ -67,6 +77,14 @@ export type Block =
   | { kind: 'agents'; agents: AgentItem[] }
   /** What an agent did (10e), under a day label. */
   | { kind: 'activity'; label: string; rows: ActivityRowProps[] }
+  /** Card, Bank account or Link (19a), then Stripe's own fields for it. */
+  | { kind: 'segtabs'; legend: string; name: string; options: { value: string; label: string }[]; selected: string }
+  | { kind: 'stripe'; stripe?: StripeFieldsProps }
+  /** The month's total across every agent (20a). */
+  | { kind: 'total'; amount: string; note: string }
+  | { kind: 'spendrows'; label: string; rows: SpendRowProps[] }
+  | { kind: 'charges'; label: string; rows: ChargeRowProps[] }
+  | { kind: 'methods'; methods: MethodRowProps[] }
   /** The month against a limit (19g): label and amount, the bar, then what made it up. */
   | { kind: 'limit'; label: string; amount: string; of: string; percent: number; lines: KV[] }
 
@@ -185,6 +203,42 @@ export function BlockView({ block: b }: { block: Block }): JSX.Element {
               <ActivityRow {...r} />
             ))}
           </div>
+        </div>
+      )
+    case 'segtabs':
+      return <SegTabs legend={b.legend} name={b.name} options={b.options} selected={b.selected} />
+    case 'stripe':
+      return <StripeFields {...(b.stripe ?? {})} />
+    case 'total':
+      return <Total amount={b.amount} note={b.note} />
+    case 'spendrows':
+      return (
+        <div class="id-stack id-stack--4">
+          <div class="id-group-label">{b.label}</div>
+          <div>
+            {b.rows.map((r) => (
+              <SpendRow {...r} />
+            ))}
+          </div>
+        </div>
+      )
+    case 'charges':
+      return (
+        <div class="id-stack id-stack--4">
+          <div class="id-group-label">{b.label}</div>
+          <div>
+            {b.rows.map((r) => (
+              <ChargeRow {...r} />
+            ))}
+          </div>
+        </div>
+      )
+    case 'methods':
+      return (
+        <div class="id-stack id-stack--10">
+          {b.methods.map((m) => (
+            <MethodRow {...m} />
+          ))}
         </div>
       )
     case 'limit':

@@ -5,16 +5,16 @@ import { Link } from './Link'
 import { Chip } from './Pill'
 
 /**
- * A 4px bar: how much of a limit is used. Decorative: the amounts next to it
- * say the same thing. Drawn as SVG so the width needs no inline style.
+ * A 4px bar: how much of a limit is used, to the whole percent. Decorative:
+ * the amounts next to it say the same thing. The width comes from `data-p`
+ * (one CSS rule per percent), because pages allow no inline style.
  */
 export function Bar({ percent, full }: { percent: number; full?: boolean }): JSX.Element {
-  const p = Math.max(0, Math.min(100, percent))
+  const p = Math.round(Math.max(0, Math.min(100, percent)))
   return (
-    <svg class={full ? 'id-bar id-bar--full' : 'id-bar'} height="4" aria-hidden="true">
-      <rect class="id-bar__track" width="100%" height="4" />
-      <rect class="id-bar__fill" width={`${p}%`} height="4" rx="2" />
-    </svg>
+    <div class={full ? 'id-bar id-bar--full' : 'id-bar'} aria-hidden="true">
+      <div class="id-bar__fill" data-p={String(p)}></div>
+    </div>
   )
 }
 

@@ -273,12 +273,14 @@ describe('agents and money', () => {
   it('SpendRow is one link; the bar is decorative, clamped, and amber at the limit', async () => {
     const d = await dom(<SpendRow tile={{ kind: 'icon', icon: 'bot' }} name="Claude Code" amount="$600.00" limit="$500" percent={120} line="Auto.dev" href="/agents" />)
     expect(d.querySelectorAll('a')).toHaveLength(1)
-    const bar = d.querySelector('svg.id-bar')!
+    const bar = d.querySelector('.id-bar')!
     expect(bar.getAttribute('aria-hidden')).toBe('true')
-    expect(bar.getAttribute('class')).toContain('id-bar--full')
-    expect(bar.querySelector('.id-bar__fill')!.getAttribute('width')).toBe('100%')
-    const half = await dom(<Bar percent={40} />)
-    expect(half.querySelector('.id-bar__fill')!.getAttribute('width')).toBe('40%')
+    expect(bar.className).toContain('id-bar--full')
+    expect(bar.querySelector('.id-bar__fill')!.getAttribute('data-p')).toBe('100')
+    const half = await dom(<Bar percent={40.4} />)
+    expect(half.querySelector('.id-bar__fill')!.getAttribute('data-p')).toBe('40')
+    // Every whole percent has a width rule, since no inline style is allowed.
+    for (const pct of [1, 40, 68, 100]) expect(css).toContain(`.id-bar__fill[data-p='${pct}'] {\n  width: ${pct}%;`)
   })
 })
 
