@@ -8,6 +8,7 @@ import { agentsFixtures } from './agents'
 import { agentsManageFixtures } from './agents-manage'
 import { authorizeFixtures } from './authorize'
 import { deviceFixtures } from './devices'
+import { directoryFixtures } from './directory'
 import { emailsFixtures } from './emails'
 import { errorsFixtures } from './errors'
 import { securityFixtures } from './security'
@@ -28,4 +29,5 @@ export const fixtures: FixtureGroup = {
   ...setupFixtures,
   ...agentsManageFixtures,
   ...setupEmailsFixtures,
+  ...directoryFixtures,
 }

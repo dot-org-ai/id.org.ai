@@ -46,7 +46,7 @@ export interface Product {
 
 export type Evidence =
   | { type: 'listening'; text?: string; key_last4?: string; since?: string; elapsed?: string; note?: string }
-  | { type: 'call'; method: string; path: string; status: number; ms?: number; code?: string; rows?: ([string, string] | [string, string, 'mono'])[]; more_url?: string; more_label?: string }
+  | { type: 'call'; method: string; path: string; status: number; /** Latency in ms, or a placeholder until the product supplies it. */ ms?: number | string; code?: string; rows?: ([string, string] | [string, string, 'mono'])[]; more_url?: string; more_label?: string }
   | { type: 'prompt'; label: string; text: string }
   | { type: 'rows'; rows: [string, string][] }
   | { type: 'compare'; rows: { name: string; matched: number; of: number; state: 'ok' | 'running' }[]; note?: string }
