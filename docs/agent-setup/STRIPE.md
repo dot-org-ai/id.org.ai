@@ -17,7 +17,7 @@ id.org.ai holds the permission, never the money. Stripe moves the money. Card fi
 | Screen | Stripe side (proposed) |
 | --- | --- |
 | Workspace | One Stripe Customer on the platform account |
-| 19a Add a payment method | A SetupIntent for off-session use, with the Payment Element themed to match. The consent sentence in the footer is what allows charging later without the person present |
+| 19a Add a payment method | A SetupIntent for off-session use, with the Payment Element themed to match. Stripe's own mandate under the card fields is what allows charging later without the person present (see section 6) |
 | 19b, 24b Subscribe | One subscription: a flat price for the plan plus metered prices for data fees. Monthly or yearly per 24a. Trial per the product (Auto.dev: 7 days for $1) |
 | 24a Pick a plan | Plans and included items come from the product, not from Stripe. Prices must match the Stripe prices the product will subscribe to |
 | Spend limit (19b, 24b) | Not a Stripe feature. The product refuses paid calls once the month's usage passes the limit |
@@ -107,7 +107,7 @@ What follows for these screens:
   - On a phone Stripe stacks Country and ZIP code.
   - The window for connecting a bank account, and Link's sign-in, are **light**. They are Stripe's own overlay, not part of the element; the `night` theme does not reach them and none of the docs read describes a dark option. Worth asking Stripe support.
 - **No box around the fields.** The drawing sets them in a sunk well; with the real element that made a box inside a box, so they sit straight on the card like every other field (owner question, 2026-11-23).
-- **Stripe's own mandate.** Under the card fields Stripe prints "By providing your card information, you allow {account name} to charge your card for future payments…", with the Stripe account's name, next to our consent sentence. `terms: { card: 'never' }` on the element hides it for cards; Stripe's reference says to consult legal advisors before changing mandate text. Open decision. Bank accounts keep Stripe's.
+- **Stripe's mandate is the consent.** Under the card fields Stripe prints "By providing your card information, you allow {account name} to charge your card for future payments…", with the Stripe account's name. 19a no longer carries the drawing's own sentence ("By saving, you let agents you approve…"), so each thing is said once (owner direction, 2026-11-23): the description says who charges and inside what limits; the checkbox is the choice, and says it can be changed or the method removed; the foot says whose fields these are. HANDOFF.md section 6 says not to remove that sentence, so this departs from it knowingly, and it means the element's `terms` option must never be set to `never` for cards (a test guards it). Worth a check with legal advisors, as Stripe's reference asks for any change around mandate text.
 - The deferred mode is limited to `card`, `us_bank_account` and `link`; without that Stripe also offered Cash App Pay, Klarna and Amazon Pay.
 - The fetched pages do not say whether Appearance works with a SetupIntent or a deferred intent; Stripe now recommends the Checkout Sessions API for the Payment Element. Confirm which one 19a uses before building it.
 

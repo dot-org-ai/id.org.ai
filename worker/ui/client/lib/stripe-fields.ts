@@ -52,6 +52,8 @@ export function initStripeFields(box: HTMLElement, make = (window as unknown as 
     fonts: [{ family: 'Geist', src: 'url(https://id.org.ai/fonts/geist/Geist-Variable.woff2)', weight: '100 900' }],
     appearance,
   })
+  // No `terms` option: Stripe's mandate under the card fields is the consent for charging later
+  // (19a carries no sentence of its own for it), so it must always show.
   elements.create('payment', { layout: 'tabs' }).mount(mount)
   mount.hidden = false
   for (const p of box.querySelectorAll<HTMLElement>('[data-stripe-picture]')) p.hidden = true

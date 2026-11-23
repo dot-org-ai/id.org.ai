@@ -17,18 +17,32 @@ describe('19a · add a payment method', () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
     const box = d.querySelector('[data-js=stripe-fields]')!
     expect(box.querySelectorAll('input, select, textarea')).toHaveLength(0)
-    // Whose fields they are is said once, on the page under the card, outside it.
-    expect(d.querySelector('.id-card')!.textContent).not.toContain('id.org.ai never sees')
-    const under = d.querySelector('.id-undercard')!
-    expect(under.closest('.id-card')).toBeNull()
-    expect(text(under)).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
+    // Whose fields they are is said once, with a lock, under the buttons.
+    expect(box.textContent).not.toContain('id.org.ai never sees')
+    expect(text(d.querySelector('.id-card__foot .id-footnote'))).toBe('The card fields are Stripe’s. id.org.ai never sees the number.')
     // Inside the card, a dotted rule sets the fields apart from the choice under them.
     expect(box.nextElementSibling!.matches('.id-rule')).toBe(true)
     expect(box.nextElementSibling!.nextElementSibling!.matches('label.id-check')).toBe(true)
   })
-  it('keeps the consent sentence whole', async () => {
+  it('says each thing once: who charges (description), the choice and that it can change (checkbox), whose fields (foot)', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)
-    expect(text(d.querySelector('.id-foottext'))).toBe('By saving, you let agents you approve for Drivly charge this card inside the limits you set. Remove it anytime.')
+    const card = text(d.querySelector('.id-card'))!
+    const count = (phrase: RegExp) => (card.match(phrase) ?? []).length
+    expect(text(d.querySelector('.id-desc'))).toBe('For Drivly. Agents you approve charge it, inside the limits you set.')
+    expect(count(/inside (the|their) limit/g)).toBe(1)
+    expect(count(/agents you approve/gi)).toBe(1)
+    expect(text(d.querySelector('.id-check__sub'))).toBe('Change this or remove the method anytime in Payment methods.')
+    expect(count(/anytime/g)).toBe(1)
+    expect(count(/never sees/g)).toBe(1)
+    expect(card).not.toContain('By saving')
+  })
+  it('leaves the consent for charging later to Stripe’s own mandate, which the element must keep showing', async () => {
+    const { STRIPE_APPEARANCE } = await import('../../components/StripeFields')
+    expect(JSON.stringify(STRIPE_APPEARANCE)).not.toContain('"terms"')
+    const { readFileSync } = await import('node:fs')
+    const script = readFileSync('worker/ui/client/lib/stripe-fields.ts', 'utf8')
+    expect(script).toContain("elements.create('payment', { layout: 'tabs' })")
+    expect(script).not.toMatch(/terms\s*:/)
   })
   it('leaves the method tabs to Stripe: none of our own, and the picture shows where Stripe draws them', async () => {
     const d = await dom(<AgentCard {...P.payAdd} />)

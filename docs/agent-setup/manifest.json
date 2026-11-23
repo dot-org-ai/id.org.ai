@@ -548,7 +548,7 @@
       ],
       "kind": "screen",
       "phase": 7,
-      "departs": "Stripe's Payment Element draws its own method tabs (icon over label) and its own field labels, and its fields sit straight on the card with no box around them; the picture shows what Stripe really draws (measured against the real element, 2026-11-23)."
+      "departs": "Stripe's Payment Element draws its own method tabs and field labels and its fields sit straight on the card; and each thing is said once, so the drawing's consent sentence is gone (Stripe's own mandate covers it) and the foot says only whose fields these are (owner direction, 2026-11-23)."
     },
     {
       "id": "19b",

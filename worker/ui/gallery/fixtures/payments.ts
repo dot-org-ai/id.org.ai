@@ -34,16 +34,21 @@ const payAdd: AgentCardProps = {
     // No key in the gallery, so it shows the picture.
     { kind: 'stripe' },
     { kind: 'dotted' },
-    { kind: 'checkbox', id: 'pay-agents', name: 'agents_can_charge', label: 'Agents can charge this', detail: 'Only agents you approved, and only inside their limit.', checked: true },
+    // The choice, and the one thing said nowhere else: it can be changed or removed later. (Who may
+    // charge, and inside what limits, is the description's to say, once.)
+    { kind: 'checkbox', id: 'pay-agents', name: 'agents_can_charge', label: 'Agents can charge this', detail: 'Change this or remove the method anytime in Payment methods.', checked: true },
   ],
   foot: {
     secondary: { label: 'Cancel', href: R.paymentMethods },
     primary: { label: 'Save payment method', value: 'save', busyLabel: 'Saving…' },
-    // The consent for charging later without the person present. Never shortened or removed.
-    note: 'By saving, you let agents you approve for Drivly charge this card inside the limits you set. Remove it anytime.',
+    // One line under the buttons: whose fields these are (owner direction, 2026-11-23). The drawing's
+    // consent sentence ("By saving, you let agents you approve…") is gone, so nothing is said twice:
+    // the description says who charges and inside what limits, and Stripe prints its own mandate
+    // under the card fields. That mandate is the consent for charging later, so the element must
+    // keep showing it (`terms` stays on).
+    note: 'The card fields are Stripe’s. id.org.ai never sees the number.',
+    noteIcon: 'lock',
   },
-  // Whose fields these are: said once, on the page under the card, not inside it (owner direction, 2026-11-23).
-  under: { icon: 'lock', text: 'The card fields are Stripe’s. id.org.ai never sees the number.' },
   action: R.paymentMethodNew,
   csrf: 'gallery',
 }
