@@ -1441,6 +1441,16 @@
     padding-bottom: 4px;
     background: var(--id-card);
   }
+  /* Field mapping (18a): the column's name sits above its select instead of beside it, so
+     the select gets the full width and a long destination isn't cut off (owner direction,
+     2026-11-23). */
+  .id-fieldmap {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .id-fieldmap + .id-fieldmap {
+    margin-top: 4px;
+  }
   /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
      new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
      picture of Stripe's fields matches the real inputs beside it. */

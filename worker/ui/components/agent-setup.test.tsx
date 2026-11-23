@@ -301,6 +301,9 @@ describe('phones (the repo’s phone rules, applied to the new components)', () 
     expect(phone).toMatch(/\.id-stripe__box \{\s*height: var\(--id-control-h-phone\);/)
     expect(css).toMatch(/@media \(max-width: 480px\), \(pointer: coarse\) \{\s*\.id-stripe__box \{\s*font-size: 16px;/)
   })
+  it('field mapping stacks: the column name above a full-width select', () => {
+    expect(phone).toMatch(/\.id-fieldmap \{\s*grid-template-columns: minmax\(0, 1fr\);/)
+  })
   it('an amount never breaks, a plan’s price drops under its name, and a row link never wraps', () => {
     expect(css).toMatch(/\.id-limit__lines \.id-kv__value,\s*\.id-rates \.id-kv__value \{\s*flex-shrink: 0;\s*white-space: nowrap;/)
     expect(css).toMatch(/\.id-plan__title \{[^}]*flex-wrap: wrap;/)
