@@ -12,6 +12,7 @@ import type { JSX } from 'hono/jsx/jsx-runtime'
 import { clock } from '../../agent-setup/format'
 import { rich, type Rich } from '../../agent-setup/rich'
 import { AGENT_ROUTES } from '../../agent-setup/routes'
+import { productTile } from '../../agent-setup/tiles'
 import type { Evidence, Setup, SetupState, SetupStep } from '../../agent-setup/types'
 import {
   CallResult,
@@ -213,7 +214,7 @@ function EvidenceView({ step, p }: { step: SetupStep; p: SetupPageProps }): JSX.
 export function SetupPage(p: SetupPageProps): JSX.Element {
   const { setup } = p
   const status = setupStatus(setup.state)
-  const product: TileContent = p.rightTile ?? { kind: 'monogram', text: setup.product.tile }
+  const product: TileContent = p.rightTile ?? productTile(setup.product)
   const card = (
     <Card
       foot={

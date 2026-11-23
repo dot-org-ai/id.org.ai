@@ -15,6 +15,7 @@ import type { JSX } from 'hono/jsx/jsx-runtime'
 import { listAnd, usd, usdExact } from '../../agent-setup/format'
 import { rich, type Rich } from '../../agent-setup/rich'
 import { AGENT_ROUTES } from '../../agent-setup/routes'
+import { productTile } from '../../agent-setup/tiles'
 import type { PlanOffer, Pricing, Product, SpendOffer } from '../../agent-setup/types'
 import {
   Card,
@@ -43,9 +44,11 @@ export interface ConnectClient {
   id: string
   name: string
   tile: string
+  /** The app's own mark, when it has one (its registered logo). The letters stand in otherwise. */
+  logoUrl?: string
 }
 
-const tiles = (client: ConnectClient, product: Product): { left: TileContent; right: TileContent } => ({ left: { kind: 'monogram', text: client.tile }, right: { kind: 'monogram', text: product.tile } })
+const tiles = (client: ConnectClient, product: Product): { left: TileContent; right: TileContent } => ({ left: productTile({ tile: client.tile, logo_url: client.logoUrl }), right: productTile(product) })
 
 /** "Growth and Scale start with 7 days for $1." Only when the product has a trial; null otherwise. */
 export function trialLine(plans: PlanOffer[]): string | null {

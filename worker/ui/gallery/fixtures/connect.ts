@@ -8,7 +8,7 @@ import type { PlanOffer, Pricing } from '../../agent-setup/types'
 import { AgentCard, type AgentCardProps } from '../../screens/agent-setup/AgentCard'
 import { ConnectPay, ConnectPlan, type ConnectClient, type ConnectPayProps, type ConnectPlanProps } from '../../screens/agent-setup/Connect'
 import { defineFixture, type FixtureGroup } from '../types'
-import { AUTO_DEV, PERSON, VISA } from './setup'
+import { AUTO_DEV, AUTO_DEV_BRANDED, AUTO_DEV_LOGO, PERSON, VISA } from './setup'
 
 const CLAUDE: ConnectClient = { id: 'claude', name: 'Claude', tile: 'Cl' }
 const MARKS = [10000, 50000, 100000, 200000, 500000]
@@ -120,11 +120,13 @@ export const connectFixtures: FixtureGroup = {
   '24a-connect-plan': defineFixture({
     screen: ConnectPlan,
     title: (p) => `Pick an ${p.product.name} plan · id.org.ai`,
-    scripts: ['disclose.js', 'follow.js'],
+    scripts: ['disclose.js', 'follow.js', 'logo.js'],
     default: plan,
     derived: {
       // Not drawn (HANDOFF.md section 10): the yearly prices from section 8.
       yearly: { ...plan, billing: 'yearly' },
+      // Not drawn: the product sends its logo, so its tile carries it.
+      branded: { ...plan, product: AUTO_DEV_BRANDED },
       // Not drawn: a product with no trial has no footer line, and one with no yearly price has no billing toggle.
       'no-trial': { ...plan, pricing: { ...AUTO_DEV_PRICING, plans: AUTO_DEV_PRICING.plans.map(({ trial: _trial, ...p }) => ({ ...p, price: { monthly: p.price.monthly } })) } },
     },
@@ -132,16 +134,23 @@ export const connectFixtures: FixtureGroup = {
   '24b-connect-pay': defineFixture({
     screen: ConnectPay,
     title: (p) => `Subscribe and connect ${p.client.name} · id.org.ai`,
-    scripts: ['disclose.js', 'terms.js'],
+    scripts: ['disclose.js', 'terms.js', 'logo.js'],
     default: pay,
     derived: {
       // Not drawn: how the page loads. The terms line is unticked and the primary action is disabled.
       unticked: { ...pay, termsChecked: false },
+      branded: { ...pay, product: AUTO_DEV_BRANDED },
       // HANDOFF.md section 6: without a trial the summary is "Today $299.00 / Data fees".
       'no-trial': { ...pay, plan: { ...growth, trial: undefined }, trialEnds: undefined },
       // Not drawn: the seller charges tax, so the summary says what it comes to before the person agrees.
       'with-tax': { ...pay, tax: '$24.67/month, Florida sales tax' },
     },
   }),
-  '24c-connect-done': defineFixture({ screen: AgentCard, title: (p) => `${p.title} · id.org.ai`, default: done }),
+  '24c-connect-done': defineFixture({
+    screen: AgentCard,
+    title: (p) => `${p.title} · id.org.ai`,
+    scripts: ['logo.js'],
+    default: done,
+    derived: { branded: { ...done, tiles: { left: { kind: 'monogram', text: 'Cl' }, right: { kind: 'logo', src: AUTO_DEV_LOGO, monogram: 'Ad' }, connector: 'ok' } } },
+  }),
 }

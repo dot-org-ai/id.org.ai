@@ -27,6 +27,12 @@ export const AUTO_DEV: Product = {
   terms_url: 'https://www.auto.dev/terms',
   privacy_url: 'https://www.auto.dev/privacy',
 }
+/** Auto.dev with its own mark (worker/ui/static/brand/auto-dev.svg), for the `branded` gallery states. */
+export const AUTO_DEV_LOGO = '/brand/auto-dev.svg'
+export const AUTO_DEV_BRANDED: Product = { ...AUTO_DEV, logo_url: AUTO_DEV_LOGO }
+/** The same screen with the product's own logo in its tile instead of its letters. */
+export const branded = (p: SetupPageProps): SetupPageProps => ({ ...p, setup: { ...p.setup, product: { ...p.setup.product, logo_url: AUTO_DEV_LOGO } } })
+
 const APIS_EMAIL: Product = { id: 'apis.ax', api: 'apis.email', name: 'apis.email', tile: '@', dashboard_url: 'https://apis.email/dashboard' }
 
 /** A setup on Auto.dev for Drivly, in the given state with the given steps. */
@@ -480,8 +486,8 @@ const paused: SetupPageProps = {
 /** The default props per screen, shared with the screens' unit tests. */
 export const setupProps = { approve, running, needsYou, stalled, live, callFailed, declined, noCard, liveWarn, rejected, cancelled, second, limitRaise, expiring, paused }
 
-const page = (props: SetupPageProps, scripts: ('ago.js' | 'copy.js' | 'follow.js' | 'disclose.js' | 'terms.js')[] = ['ago.js']) =>
-  defineFixture({ screen: SetupPage, title: (p) => `${p.title} · id.org.ai`, scripts, default: props })
+const page = (props: SetupPageProps, scripts: ('ago.js' | 'copy.js' | 'follow.js' | 'disclose.js' | 'terms.js' | 'logo.js')[] = ['ago.js'], derived?: Record<string, SetupPageProps>) =>
+  defineFixture({ screen: SetupPage, title: (p) => `${p.title} · id.org.ai`, scripts, default: props, derived })
 const card = (props: AgentCardProps, scripts: ('countdown.js' | 'follow.js')[] = []) => defineFixture({ screen: AgentCard, title: (p) => `${p.title} · id.org.ai`, scripts, default: props })
 
 export const setupFixtures: FixtureGroup = {
@@ -496,10 +502,11 @@ export const setupFixtures: FixtureGroup = {
       'no-card': { ...approve, payMethod: undefined },
     },
   }),
-  '9b-setup-running': page(running),
+  // `branded`: the product sends its logo, so its tile carries it (not drawn; the drawings use letters).
+  '9b-setup-running': page(running, ['ago.js', 'logo.js'], { branded: branded(running) }),
   '9c-setup-needs-you': page(needsYou, ['ago.js', 'follow.js']),
   '9d-setup-stalled': page(stalled, ['ago.js', 'copy.js']),
-  '9e-setup-live': page(live, []),
+  '9e-setup-live': page(live, ['logo.js'], { branded: branded(live) }),
   '11a-setup-call-failed': page(callFailed),
   '11b-setup-declined': page(declined),
   '11c-setup-no-card': page(noCard),

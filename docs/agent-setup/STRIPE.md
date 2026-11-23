@@ -116,3 +116,7 @@ What follows for these screens:
 - **Stablecoin and x402.** Stripe accepts x402 natively and settles it to the seller's balance, so adding it later changes nothing on the seller side. It is left out now (owner direction): nothing here charges per call, the payer would need a funded wallet, and id.org.ai does not hold money. `PaymentMethodKind` in the contract lists card, bank and Link only.
 - **Seller notices.** Stripe requires product warnings at checkout when a seller supplies them (safety, Prop 65). They are for physical goods.
 - **Agent checkout for physical goods** (catalog feeds, fulfilment, orders). Private preview, and not what these APIs sell.
+
+### Product logos
+
+The drawings use letter tiles only ("No real product logos"). By owner direction (2026-11-23) a product may send `logo_url` with its `tile` letters, and every screen about that product then carries its logo in the tile. The letters remain required: they show when there is no logo, when the URL is refused (not https and not a first-party `/brand/` file), or when the image fails to load. The gallery shows this as `?state=branded` on 9b, 9e, 19b, 19e, 20c, 24a, 24b and 24c, with the Auto.dev mark that ships in `worker/ui/static/brand/`. A connecting app (24) can carry its registered logo the same way.

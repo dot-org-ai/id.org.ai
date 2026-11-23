@@ -37,8 +37,14 @@ export interface Product {
   api?: string
   /** "Auto.dev" */
   name: string
-  /** The letter tile: "Ad", "@", "Di". No real product logos. */
+  /** The letter tile: "Ad", "@", "Di". Always sent: it is what shows when there is no logo, or the logo fails to load. */
   tile: string
+  /**
+   * The product's own mark, for its tile: an https URL, or a first-party file under /brand/.
+   * Optional. With it, every screen about this product carries its logo (owner direction,
+   * 2026-11-23; the drawings use letter tiles only).
+   */
+  logo_url?: string
   dashboard_url?: string
   terms_url?: string
   privacy_url?: string
