@@ -29,8 +29,8 @@ export interface ButtonProps {
   done?: string
   /** Disabled until the terms line is ticked (TermsAgree; terms.ts). */
   needsTerms?: boolean
-  /** The label follows the selected plan: "Continue with {name}" (PlanPicker; plans.ts). */
-  planLabel?: string
+  /** The label follows a choice: the control's name and a template, "Continue with {label}" (follow.ts). */
+  follows?: { control: string; template: string }
   /** Links only: open in a new tab, so this page can still finish (24c's dashboard button). */
   newTab?: boolean
   class?: string
@@ -57,8 +57,8 @@ export function Button(p: ButtonProps): JSX.Element {
   const inner = (
     <>
       {p.icon ? <Icon name={p.icon} size={16} /> : null}
-      {p.planLabel ? (
-        <span data-plan-label data-template={p.planLabel}>
+      {p.follows ? (
+        <span data-js="follow" data-follow={p.follows.control} data-template={p.follows.template}>
           {label}
         </span>
       ) : (

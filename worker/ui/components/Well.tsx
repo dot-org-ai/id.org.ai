@@ -2,7 +2,8 @@ import type { Child } from 'hono/jsx'
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { Icon, type IconName } from '../icons'
 
-export type WellVariant = 'default' | 'tight' | 'stats' | 'quote' | 'code'
+/** `ten`: a 10px gap (call results, field mapping). */
+export type WellVariant = 'default' | 'tight' | 'stats' | 'quote' | 'code' | 'ten'
 
 /** A sunk box for read-only facts (components.md#well). */
 export function Well({ variant = 'default', children }: { variant?: WellVariant; children: Child }): JSX.Element {

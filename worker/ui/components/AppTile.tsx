@@ -10,8 +10,9 @@ export type TileContent =
   | { kind: 'icon'; icon: IconName }
   | { kind: 'logo'; src: string; monogram: string }
 
-/** Monogram size: 22px for one letter, 19px for two, 20px for a dotted pair (".d"). */
+/** Monogram size: 22px for one letter, 19px for two or for a symbol ("@"), 20px for a dotted pair (".d"). */
 function monogramClass(text: string): string {
+  if (!/[a-z0-9]/i.test(text)) return 'id-tile id-tile--m2'
   if (text.length <= 1) return 'id-tile id-tile--m1'
   if (text.includes('.')) return 'id-tile'
   return 'id-tile id-tile--m2'

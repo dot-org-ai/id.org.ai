@@ -160,9 +160,13 @@ describe('PlanPicker', () => {
     expect(growth.querySelector('[data-price=yearly]')!.textContent).toBe('$249')
     expect(css).toMatch(/\.id-plans \[data-price='yearly'\]/)
   })
-  it('the primary label carries the template plans.ts fills', async () => {
-    const d = await dom(<Button variant="primary" planLabel="Continue with {name}">Continue with Growth</Button>)
-    expect(d.querySelector('[data-plan-label]')!.getAttribute('data-template')).toBe('Continue with {name}')
+  it('the primary label carries the template follow.ts fills', async () => {
+    const d = await dom(<Button variant="primary" follows={{ control: 'plan', template: 'Continue with {label}' }}>Continue with Growth</Button>)
+    const label = d.querySelector('[data-js=follow]')!
+    expect(label.getAttribute('data-follow')).toBe('plan')
+    expect(label.getAttribute('data-template')).toBe('Continue with {label}')
+    const picker = await dom(<PlanPicker name="plan" plans={plans} />)
+    expect(picker.querySelector('input[name=plan]:checked')!.getAttribute('data-short')).toBe('Growth')
   })
 })
 

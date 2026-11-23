@@ -29,8 +29,8 @@ export interface CallResultProps {
   status: number
   /** "212 ms", or an error code such as "INVALID_VIN_FORMAT". */
   result?: string
-  /** Up to three key-value rows from the answer. */
-  rows?: [string, string][]
+  /** Up to three key-value rows from the answer; a third member `'mono'` sets a code in mono. */
+  rows?: ([string, string] | [string, string, 'mono'])[]
   link?: { href: string; label: string }
 }
 
@@ -51,8 +51,8 @@ export function CallResult({ method, path, status, result, rows = [], link }: Ca
       </div>
       {rows.length ? (
         <div class="id-call__rows">
-          {rows.slice(0, 3).map(([k, v]) => (
-            <KeyValue k={k} v={v} />
+          {rows.slice(0, 3).map(([k, v, mono]) => (
+            <KeyValue k={k} v={v} mono={mono === 'mono'} />
           ))}
         </div>
       ) : null}

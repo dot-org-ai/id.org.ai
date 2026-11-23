@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { formatAgo, initAgo } from './ago'
 import { initDisclose } from './disclose'
-import { initPlans } from './plans'
+import { initFollow } from './follow'
 import { initStripeFields } from './stripe-fields'
 import { initTerms } from './terms'
 
@@ -26,18 +26,17 @@ describe('disclose', () => {
   })
 })
 
-describe('plans', () => {
+describe('follow', () => {
   it('the primary label follows the selected plan; opening a plan does not select it', () => {
-    document.body.innerHTML = `<form><div id="r">
-      <input type="radio" name="plan" value="free" data-plan-name="Free">
-      <input type="radio" name="plan" value="growth" data-plan-name="Growth" checked>
+    document.body.innerHTML = `<form>
+      <input type="radio" name="plan" value="free" data-short="Free">
+      <input type="radio" name="plan" value="growth" data-short="Growth" checked>
       <button type="button" id="more" aria-expanded="false" aria-controls="x"></button><div id="x" hidden></div>
-    </div><button><span data-plan-label data-template="Continue with {name}">Continue with Growth</span></button></form>`
-    const root = document.getElementById('r')!
-    initPlans(root)
-    const label = document.querySelector('[data-plan-label]')!
+      <button><span data-follow="plan" data-template="Continue with {label}">Continue with Growth</span></button></form>`
+    const label = document.querySelector<HTMLElement>('[data-follow]')!
+    initFollow(label)
     expect(label.textContent).toBe('Continue with Growth')
-    const free = root.querySelector<HTMLInputElement>('[value=free]')!
+    const free = document.querySelector<HTMLInputElement>('[value=free]')!
     free.checked = true
     free.dispatchEvent(new Event('change', { bubbles: true }))
     expect(label.textContent).toBe('Continue with Free')
@@ -45,6 +44,18 @@ describe('plans', () => {
     document.querySelector<HTMLButtonElement>('#more')!.click()
     expect(free.checked).toBe(true)
     expect(label.textContent).toBe('Continue with Free')
+  })
+  it('follows a select, using the option’s short label when it has one', () => {
+    document.body.innerHTML = `<form><select name="limit">
+      <option value="750" data-short="$750" selected>$750 a month</option><option value="none">No limit</option></select>
+      <button><span data-follow="limit" data-template="Raise to {label}">Raise to $750</span></button></form>`
+    const label = document.querySelector<HTMLElement>('[data-follow]')!
+    initFollow(label)
+    expect(label.textContent).toBe('Raise to $750')
+    const select = document.querySelector('select')!
+    select.value = 'none'
+    select.dispatchEvent(new Event('change'))
+    expect(label.textContent).toBe('Raise to No limit')
   })
 })
 

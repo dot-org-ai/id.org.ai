@@ -219,6 +219,7 @@
 /* ── Evidence ───────────────────────────────────────────────────────────── */
 
 /* A well with a 10px gap (call result, field mapping) or 12px (Stripe's fields). */
+.id-well--ten,
 .id-well--10 {
   gap: 10px;
 }

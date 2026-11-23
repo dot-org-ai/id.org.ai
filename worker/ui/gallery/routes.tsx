@@ -68,7 +68,7 @@ galleryRoutes.get('/__design', async (c, next) => {
 
 galleryRoutes.get('/__design/components', async (c, next) => {
   if (!enabled(c.env)) return next()
-  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js', 'logo.js', 'countdown.js', 'disclose.js', 'plans.js', 'terms.js', 'ago.js', 'stripe-fields.js'], frozen: true })
+  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js', 'logo.js', 'countdown.js', 'disclose.js', 'follow.js', 'terms.js', 'ago.js', 'stripe-fields.js'], frozen: true })
 })
 
 galleryRoutes.get('/__design/agent-setup', async (c, next) => {

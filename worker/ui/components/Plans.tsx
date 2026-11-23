@@ -50,7 +50,7 @@ export function PlanCard({ name: group, plan }: { name: string; plan: PlanCardPr
     <div class="id-plan">
       <div class="id-plan__head">
         <label class="id-plan__pick" for={inputId}>
-          <input class="id-hidden-input" type="radio" id={inputId} name={group} value={plan.id} checked={plan.selected ? true : undefined} data-plan-name={plan.name} />
+          <input class="id-hidden-input" type="radio" id={inputId} name={group} value={plan.id} checked={plan.selected ? true : undefined} data-short={plan.name} />
           <span class="id-radio__ring" aria-hidden="true">
             <span class="id-radio__dot"></span>
           </span>
@@ -87,12 +87,12 @@ export function PlanCard({ name: group, plan }: { name: string; plan: PlanCardPr
 
 /**
  * The plan picker (24a): the "Plan" label with the billing toggle, then one
- * card per plan as a radio group. plans.ts keeps the primary action's label
- * ("Continue with {name}") in step with the selection.
+ * card per plan as a radio group. follow.ts keeps the primary action's label
+ * ("Continue with {label}") in step with the selection.
  */
 export function PlanPicker({ name, plans, billing = 'monthly', yearly = true }: { name: string; plans: PlanCardProps[]; billing?: 'monthly' | 'yearly'; yearly?: boolean }): JSX.Element {
   return (
-    <div class="id-plans" data-js="plans">
+    <div class="id-plans">
       <div class="id-plans__head">
         <div class="id-group-label" aria-hidden="true">
           Plan

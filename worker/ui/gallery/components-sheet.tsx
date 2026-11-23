@@ -367,7 +367,7 @@ export function ComponentSheet(): JSX.Element {
                 <CardFoot>
                   <Actions>
                     <Button variant="secondary" block type="button">Cancel</Button>
-                    <Button variant="primary" block type="button" planLabel="Continue with {name}">Continue with Growth</Button>
+                    <Button variant="primary" block type="button" follows={{ control: 'sheet-plan', template: 'Continue with {label}' }}>Continue with Growth</Button>
                   </Actions>
                 </CardFoot>
               }

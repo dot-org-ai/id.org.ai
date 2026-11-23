@@ -11,6 +11,8 @@
  *                       or reads screens/png/<file>.png at 2x  (--against png)
  *   the implementation  <base>/__design/<slug>
  * at the size HANDOFF.md section 2 lists, animations disabled, and compares them.
+ * The org.ai mark is hidden on both sides (it changed on main after the drawings;
+ * pass --with-mark to include it).
  * It prints the differing pixel count and where the first difference is, and
  * writes mock, impl and diff images for anything over the bar.
  */
@@ -45,6 +47,15 @@ async function shoot(browser, url, [width, height]) {
   }
   await page.evaluate(() => document.fonts.ready)
   await page.mouse.move(0, 0)
+  // The org.ai mark changed after these screens were drawn (main's six-mark ring;
+  // the drawings carry the older one). Hide it on both sides unless --with-mark.
+  if (!argv.includes('--with-mark')) {
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll('.id-mark, svg')) {
+        if (el.matches('.id-mark') || el.querySelector('path[d^="M90.1943"]')) el.style.visibility = 'hidden'
+      }
+    })
+  }
   const buf = await page.screenshot({ animations: 'disabled', caret: 'hide' })
   const tall = await page.evaluate(() => document.documentElement.scrollHeight)
   await page.close()

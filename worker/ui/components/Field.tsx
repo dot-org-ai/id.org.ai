@@ -88,6 +88,8 @@ export function Input(p: InputProps): JSX.Element {
 export interface SelectOption {
   value: string
   label: string
+  /** A shorter name for an action label that follows this select ("$750" for "$750 a month"). */
+  short?: string
 }
 
 /** Select: the input box, no native arrow, a chevrons-up-down icon at the right. */
@@ -96,7 +98,7 @@ export function Select({ id, name, options, selected, describedBy, invalid }: { 
     <div class="id-select-wrap">
       <select class="id-input id-select" id={id} name={name} aria-describedby={describedBy} aria-invalid={invalid ? 'true' : undefined}>
         {options.map((o) => (
-          <option value={o.value} selected={o.value === selected ? true : undefined}>
+          <option value={o.value} selected={o.value === selected ? true : undefined} data-short={o.short}>
             {o.label}
           </option>
         ))}
