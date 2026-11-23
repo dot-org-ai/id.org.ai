@@ -704,8 +704,16 @@ html {
    (Chrome 135+), its list matches the card instead of the OS menu. It stays a
    real <select>: keyboard, screen readers, autofill and form posts work with
    no script. Safari and Firefox keep their native list. Our chevron replaces
-   the built-in picker icon. */
-@supports (appearance: base-select) {
+   the built-in picker icon.
+
+   Safari is kept out on purpose (owner direction, 2026-11-23). It now accepts
+   the styleable select but drew this list invisible, so on an iPhone a
+   dropdown looked dead. `font: -apple-system-body` is a value only Safari's
+   engine supports, which makes it the test for "this is Safari" (every iOS
+   browser included): there the select stays native, the one list that always
+   works. Take the exclusion out only after checking the styled list on a
+   real iPhone. */
+@supports (appearance: base-select) and (not (font: -apple-system-body)) {
   .id-select,
   .id-select::picker(select) {
     appearance: base-select;
@@ -731,20 +739,15 @@ html {
     background: var(--id-card);
     box-shadow: var(--id-sh-card);
     color: var(--id-fg);
-    opacity: 0;
-    translate: 0 -4px;
+    /* Visible is the resting state. The fade-in below is the only thing layered on it, so a
+       browser that misreads any of this loses the animation, never the list. (It used to rest
+       hidden and rely on the popover's open state to show it, which Safari never matched.) */
     transition:
       opacity 140ms var(--id-ease-out),
-      translate 140ms var(--id-ease-out),
-      display 140ms allow-discrete,
-      overlay 140ms allow-discrete;
-  }
-  .id-select::picker(select):popover-open {
-    opacity: 1;
-    translate: 0 0;
+      translate 140ms var(--id-ease-out);
   }
   @starting-style {
-    .id-select::picker(select):popover-open {
+    .id-select::picker(select) {
       opacity: 0;
       translate: 0 -4px;
     }
@@ -3482,6 +3485,16 @@ button.id-link[hidden] {
 /* ── Phones ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 480px) {
+  /* What a step carries under its description (a well, a field, the plan's limit and alerts)
+     runs the full width of the card instead of sitting inside the rail's 32px indent: on a
+     phone that is a tenth of the width, and this is the part a person reads and taps. The
+     dotted rail pauses behind it and picks up again underneath (owner direction, 2026-11-23). */
+  .id-sstep__evidence {
+    position: relative;
+    margin-left: -32px;
+    padding-bottom: 4px;
+    background: var(--id-card);
+  }
   /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
      new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
      picture of Stripe's fields matches the real inputs beside it. */

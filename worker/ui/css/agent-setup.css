@@ -1431,6 +1431,16 @@
 /* ── Phones ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 480px) {
+  /* What a step carries under its description (a well, a field, the plan's limit and alerts)
+     runs the full width of the card instead of sitting inside the rail's 32px indent: on a
+     phone that is a tenth of the width, and this is the part a person reads and taps. The
+     dotted rail pauses behind it and picks up again underneath (owner direction, 2026-11-23). */
+  .id-sstep__evidence {
+    position: relative;
+    margin-left: -32px;
+    padding-bottom: 4px;
+    background: var(--id-card);
+  }
   /* The repo's phone rules for controls (ui.css, owner direction 2026-10-06), applied to the
      new ones: every md control is 48px, so the method tabs' well is 48px (40px cells) and the
      picture of Stripe's fields matches the real inputs beside it. */

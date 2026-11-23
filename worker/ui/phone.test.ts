@@ -129,4 +129,16 @@ describe('every screen size', () => {
     const phone = css.slice(css.indexOf('@media (max-width: 480px) {'))
     expect(phone).toMatch(/\.id-card \{[^}]*border: 0 !important;/)
   })
+
+  it('the styled dropdown list is never hidden at rest, and Safari keeps its native picker', () => {
+    // Safari's engine is the only one with font: -apple-system-body; it stays out of the styled list.
+    expect(css).toContain('@supports (appearance: base-select) and (not (font: -apple-system-body)) {')
+    const at = css.indexOf('@supports (appearance: base-select)')
+    const block = css.slice(at, css.indexOf('.id-textarea {', at))
+    const picker = block.slice(block.lastIndexOf('.id-select::picker(select) {', block.indexOf('@starting-style')))
+    // Hidden only inside @starting-style (the fade-in), never as the resting state.
+    expect(block.split('@starting-style')[0]).not.toMatch(/opacity: 0/)
+    expect(block).not.toMatch(/popover-open/)
+    expect(picker).toMatch(/@starting-style \{\s*\.id-select::picker\(select\) \{\s*opacity: 0;/)
+  })
 })

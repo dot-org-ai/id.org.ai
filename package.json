@@ -91,7 +91,8 @@
     "test:agent-check": "node test-visual/agent-check.mjs",
     "test:agent-behaviour": "node test-visual/agent-behaviour.mjs",
     "test:phone": "node test-visual/phone-check.mjs",
-    "test:phone-shell": "node test-visual/phone-shell-audit.mjs"
+    "test:phone-shell": "node test-visual/phone-shell-audit.mjs",
+    "test:selects": "node test-visual/select-open-check.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",
