@@ -27,6 +27,12 @@ export interface ButtonProps {
   deny?: boolean
   /** data-fetch forms: the template that swaps in when this action succeeds. */
   done?: string
+  /** Disabled until the terms line is ticked (TermsAgree; terms.ts). */
+  needsTerms?: boolean
+  /** The label follows the selected plan: "Continue with {name}" (PlanPicker; plans.ts). */
+  planLabel?: string
+  /** Links only: open in a new tab, so this page can still finish (24c's dashboard button). */
+  newTab?: boolean
   class?: string
   children: Child
 }
@@ -51,12 +57,18 @@ export function Button(p: ButtonProps): JSX.Element {
   const inner = (
     <>
       {p.icon ? <Icon name={p.icon} size={16} /> : null}
-      <span>{label}</span>
+      {p.planLabel ? (
+        <span data-plan-label data-template={p.planLabel}>
+          {label}
+        </span>
+      ) : (
+        <span>{label}</span>
+      )}
     </>
   )
   if (p.href !== undefined) {
     return (
-      <a class={cls} href={p.disabled ? undefined : p.href} data-on={p.on} aria-disabled={p.disabled ? 'true' : undefined} tabindex={p.disabled ? -1 : undefined}>
+      <a class={cls} href={p.disabled ? undefined : p.href} data-on={p.on} aria-disabled={p.disabled ? 'true' : undefined} tabindex={p.disabled ? -1 : undefined} target={p.newTab ? '_blank' : undefined} rel={p.newTab ? 'noopener noreferrer' : undefined}>
         {inner}
       </a>
     )
@@ -73,6 +85,7 @@ export function Button(p: ButtonProps): JSX.Element {
       data-on={p.on}
       data-deny={p.deny ? '' : undefined}
       data-done={p.done}
+      data-needs-terms={p.needsTerms ? '' : undefined}
     >
       {inner}
     </button>

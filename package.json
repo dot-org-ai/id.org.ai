@@ -86,7 +86,9 @@
     "test:visual": "node scripts/test-visual.mjs",
     "gate": "node scripts/gate.mjs",
     "test:stub-smoke": "node test-visual/stub-smoke.mjs",
-    "test:motion": "node test-visual/motion-check.mjs"
+    "test:motion": "node test-visual/motion-check.mjs",
+    "test:agent-visual": "node test-visual/agent-diff.mjs",
+    "test:agent-check": "node test-visual/agent-check.mjs"
   },
   "dependencies": {
     "@workos-inc/node": "^7.0.0",

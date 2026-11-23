@@ -1,5 +1,6 @@
 /**
- * Design gallery: GET /__design (index) and GET /__design/:slug?state=<name>.
+ * Design gallery: GET /__design (index), GET /__design/:slug?state=<name>, and
+ * GET /__design/agent-setup (the 66 agent setup screens by ID).
  *
  * Dev only. It answers only when env.DESIGN_GALLERY === '1' (worker/.dev.vars);
  * that is never set in wrangler.jsonc, so in production every /__design path
@@ -12,6 +13,7 @@ import type { JSX } from 'hono/jsx/jsx-runtime'
 import manifest from '../../../docs/product-update/mocks/manifest.json'
 import { Card, Page } from '../components'
 import { EMAIL_PREVIEW_CSP, renderPage, securityHeaders } from '../render'
+import { AGENT_SCREENS, AgentSetupIndex, fixtureSlug } from './agent-setup-index'
 import { ComponentSheet } from './components-sheet'
 import type { Env, Variables } from '../../types'
 import { fixtures } from './fixtures'
@@ -45,6 +47,7 @@ function Index(): JSX.Element {
       <Card>
         <h1 class="id-gallery__title">Design gallery</h1>
         <a href="/__design/components">Component sheet</a>
+        <a href="/__design/agent-setup">Agent setup, payments and connect: 66 screens by ID</a>
         <ul class="id-gallery">
           {SCREENS.map((s) => {
             const f = fixtures[s.slug]
@@ -65,12 +68,21 @@ galleryRoutes.get('/__design', async (c, next) => {
 
 galleryRoutes.get('/__design/components', async (c, next) => {
   if (!enabled(c.env)) return next()
-  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js', 'logo.js', 'countdown.js'], frozen: true })
+  return renderPage(c, <ComponentSheet />, { title: 'Components · id.org.ai', styles: ['gallery.css'], scripts: ['copy.js', 'code-input.js', 'logo.js', 'countdown.js', 'disclose.js', 'plans.js', 'terms.js', 'ago.js', 'stripe-fields.js'], frozen: true })
 })
+
+galleryRoutes.get('/__design/agent-setup', async (c, next) => {
+  if (!enabled(c.env)) return next()
+  return renderPage(c, <AgentSetupIndex fixtures={fixtures} />, { title: 'Agent setup screens · id.org.ai', styles: ['gallery.css'] })
+})
+
+/** A phone drawing (9f, 9g, 9h) is the same fixture as its desktop screen, at phone width. */
+const SHARED = Object.fromEntries(AGENT_SCREENS.filter((s) => s.renders).map((s) => [s.slug, fixtureSlug(s)]))
 
 galleryRoutes.get('/__design/:slug', async (c, next) => {
   if (!enabled(c.env)) return next()
-  const f = fixtures[c.req.param('slug')]
+  const slug = c.req.param('slug')
+  const f = fixtures[SHARED[slug] ?? slug]
   if (!f) return c.notFound()
   const state = c.req.query('state')
   const variant: Variant | undefined = state ? (f.states[state] ?? f.derived[state]) : f.default

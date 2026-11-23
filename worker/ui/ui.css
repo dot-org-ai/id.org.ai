@@ -288,6 +288,9 @@ details[data-x][open] > summary [data-chev-d] {
   display: flex;
   flex-direction: column;
 }
+.id-stack--2 {
+  gap: 2px;
+}
 .id-stack--4 {
   gap: 4px;
 }

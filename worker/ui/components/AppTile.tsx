@@ -30,7 +30,7 @@ export function AppTile({ content }: { content: TileContent }): JSX.Element {
     case 'icon':
       return (
         <div class="id-tile">
-          <Icon name={content.icon} size={content.icon === 'bot' ? 26 : 24} />
+          <Icon name={content.icon} size={content.icon === 'bot' || content.icon === 'fingerprint' ? 26 : 24} />
         </div>
       )
     case 'logo': {
@@ -49,4 +49,12 @@ export function AppTile({ content }: { content: TileContent }): JSX.Element {
 /** The 36px icon tile used inside wells (the SSO organisation). */
 export function IconTile({ icon, text }: { icon?: IconName; text?: string }): JSX.Element {
   return <div class="id-icontile">{icon ? <Icon name={icon} size={16} /> : text}</div>
+}
+
+/** What a 36px mini tile shows: an agent's letters, or an icon. */
+export type MiniTileContent = { kind: 'monogram'; text: string } | { kind: 'icon'; icon: IconName }
+
+/** The 36px version of the 56px tile, radius 11 (10a, 20a). */
+export function MiniTile({ content }: { content: MiniTileContent }): JSX.Element {
+  return <span class="id-minitile">{content.kind === 'icon' ? <Icon name={content.icon} size={18} /> : content.text}</span>
 }

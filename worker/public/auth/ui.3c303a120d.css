@@ -38,6 +38,9 @@
   --id-ring: 0 0 0 3px oklch(1 0 0 / 0.07); /* focus/selected halo (box-shadow) */
   --id-dot: oklch(1 0 0 / 0.22);            /* dotted rule dots */
   --id-ring-line: oklch(1 0 0 / 0.42);      /* connector destination ring */
+  --id-rail: oklch(1 0 0 / 0.11);           /* step list rail, at rest */
+  --id-rail-done: oklch(1 0 0 / 0.26);      /* step list rail under a done step */
+  --id-track: oklch(1 0 0 / 0.1);           /* spend bar track */
 
   /* ── Text ─────────────────────────────────────────────── */
   --id-fg: oklch(0.965 0.002 286);          /* primary text, primary button fill */
@@ -57,11 +60,13 @@
   --id-sh-primary: inset 0 -1px 0 0 oklch(0 0 0 / 0.16), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 4px 12px -4px oklch(0 0 0 / 0.5);
   --id-sh-input: inset 0 1px 2px 0 oklch(0 0 0 / 0.28);
   --id-sh-card: inset 0 1px 0 0 oklch(1 0 0 / 0.05), 0 2px 4px 0 oklch(0 0 0 / 0.35), 0 32px 64px -24px oklch(0 0 0 / 0.75);
+  --id-sh-knob: 0 1px 2px 0 oklch(0 0 0 / 0.4); /* toggle knob, selected billing cell */
 
   /* ── App tile (bezel) ─────────────────────────────────── */
   --id-bezel-bg: linear-gradient(180deg, oklch(0.28 0.006 286) 0%, oklch(0.2 0.005 286) 100%);
   --id-bezel-border: oklch(0 0 0 / 0.55);
   --id-bezel-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.14), inset 0 0 0 1px oklch(1 0 0 / 0.05), 0 1px 2px 0 oklch(0 0 0 / 0.5), 0 8px 20px -8px oklch(0 0 0 / 0.7);
+  --id-bezel-shadow-sm: inset 0 1px 0 0 oklch(1 0 0 / 0.14), 0 1px 2px 0 oklch(0 0 0 / 0.5); /* 36px mini tile */
 
   /* ── Hover ────────────────────────────────────────────── */
   --id-hover-ghost: oklch(1 0 0 / 0.05);    /* ghost button hover fill */
@@ -382,6 +387,9 @@ details[data-x][open] > summary [data-chev-d] {
 .id-stack {
   display: flex;
   flex-direction: column;
+}
+.id-stack--2 {
+  gap: 2px;
 }
 .id-stack--4 {
   gap: 4px;
@@ -1907,6 +1915,1063 @@ button.id-link[hidden] {
   }
   .id-radios--row > .id-radio {
     flex-basis: auto;
+  }
+}
+
+/* ── Agent setup, payments and connect (screens 9 to 24, docs/agent-setup) ── */
+
+/* Radii these screens use that tokens.css doesn't name. */
+:root {
+  --id-r-minitile: 11px; /* 36px mini tile */
+  --id-r-tag: 6px; /* step tag */
+  --id-r-method: 7px; /* 40×28 payment method mark */
+}
+
+/* ── Header status (setup pages, header right slot) ─────────────────────── */
+
+.id-hstatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--id-fg-2);
+}
+.id-sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-green);
+  flex-shrink: 0;
+}
+.id-sdot--warn {
+  background: var(--id-accent);
+}
+/* Still working: the listening dot and a comparison that is still running. */
+.id-sdot--busy {
+  background: var(--id-fg);
+  animation: idlisten 1.6s ease-in-out infinite;
+}
+
+/* ── Connector: hold (not moving, needs someone) ────────────────────────── */
+
+.id-conn[data-state='hold'] .id-conn__dot--2 {
+  background: var(--id-accent);
+  opacity: 1;
+}
+
+/* ── Mini tile and chip ─────────────────────────────────────────────────── */
+
+.id-minitile {
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-minitile);
+  background: var(--id-bezel-bg);
+  border: 1px solid var(--id-bezel-border);
+  box-shadow: var(--id-bezel-shadow-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--id-fg);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.id-chip {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-raised);
+  color: var(--id-fg-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ── Step list ──────────────────────────────────────────────────────────── */
+
+.id-steps {
+  display: flex;
+  flex-direction: column;
+}
+.id-sstep {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 14px;
+}
+.id-sstep__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.id-sstep__glyph {
+  width: 18px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.id-sstep--done .id-sstep__glyph {
+  color: var(--id-green);
+}
+.id-sstep--fail .id-sstep__glyph {
+  color: var(--id-accent);
+}
+.id-sstep--held .id-sstep__glyph {
+  color: var(--id-fg-2);
+}
+.id-sstep--done .id-sstep__glyph .id-icon,
+.id-sstep--fail .id-sstep__glyph .id-icon {
+  stroke-width: 2.25;
+}
+.id-sstep__dot {
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
+  display: block;
+  position: relative;
+}
+.id-sstep--you .id-sstep__dot {
+  background: var(--id-accent);
+}
+.id-sstep--todo .id-sstep__dot {
+  width: 5.6px;
+  height: 5.6px;
+  opacity: 0.3;
+}
+.id-sstep__pulse {
+  position: absolute;
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg);
+  animation: idpulse 2s var(--id-ease-out) infinite;
+}
+.id-sstep__line {
+  flex-grow: 1;
+  width: 2px;
+  margin: 5px 0 5px;
+  background-image: radial-gradient(circle at 1px 1px, var(--id-rail) 1px, transparent 1.3px);
+  background-size: 2px 7px;
+  background-repeat: repeat-y;
+}
+.id-sstep--done .id-sstep__line {
+  background-image: radial-gradient(circle at 1px 1px, var(--id-rail-done) 1px, transparent 1.3px);
+}
+.id-sstep__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 18px;
+  min-width: 0;
+}
+.id-sstep:last-child .id-sstep__body {
+  padding-bottom: 0;
+}
+/* No rail after the last step. */
+.id-sstep:last-child .id-sstep__line {
+  display: none;
+}
+.id-sstep__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-sstep__title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+.id-sstep--todo .id-sstep__title {
+  color: var(--id-fg-3);
+}
+.id-sstep__when {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.id-sstep--done .id-sstep__when {
+  font-family: var(--id-mono);
+  color: var(--id-fg-3);
+}
+.id-sstep--you .id-sstep__when,
+.id-sstep--fail .id-sstep__when {
+  font-weight: 500;
+  color: var(--id-accent);
+}
+.id-sstep__detail {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-2);
+  text-wrap: pretty;
+}
+.id-sstep--done .id-sstep__detail,
+.id-sstep--todo .id-sstep__detail {
+  color: var(--id-fg-3);
+}
+.id-sstep__evidence {
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.id-steptag {
+  display: inline-block;
+  font-family: var(--id-mono);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--id-fg-2);
+  border: 1px solid var(--id-line-2);
+  border-radius: var(--id-r-tag);
+  padding: 0 6px;
+  margin-right: 7px;
+  white-space: nowrap;
+}
+
+/* ── Evidence ───────────────────────────────────────────────────────────── */
+
+/* A well with a 10px gap (call result, field mapping) or 12px (Stripe's fields). */
+.id-well--10 {
+  gap: 10px;
+}
+.id-well--12 {
+  gap: 12px;
+}
+.id-well--prompt {
+  gap: 6px;
+  padding-top: 10px;
+}
+.id-well--quoted {
+  padding: 14px 16px;
+}
+.id-evrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-evrow--wrap {
+  flex-wrap: wrap;
+}
+.id-listen {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.id-listen__text {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-listen__time {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-3);
+  flex-shrink: 0;
+}
+/* 13/19 helper text: evidence notes, the spend helper line, sub lines. */
+.id-help {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+}
+.id-help--top {
+  padding-top: 2px;
+}
+.id-call__req {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.id-call__method {
+  color: var(--id-fg-3);
+}
+.id-call__status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+}
+.id-call__rows {
+  border-top: 1px solid var(--id-line);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.id-prompt__text {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+}
+.id-compare__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.id-compare__row + .id-compare__row {
+  border-top: 1px solid var(--id-line);
+  padding-top: 8px;
+}
+.id-compare__name {
+  color: var(--id-fg);
+}
+.id-compare__state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--id-mono);
+  font-size: 12px;
+  color: var(--id-fg-2);
+  white-space: nowrap;
+}
+.id-fieldmap {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: center;
+}
+.id-fieldmap__col {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  color: var(--id-fg);
+  overflow-wrap: anywhere;
+}
+/* Rates under a plan's price, inside the plan evidence well. */
+.id-rates {
+  border-top: 1px solid var(--id-line);
+  margin-top: 2px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Pays-with line ─────────────────────────────────────────────────────── */
+
+.id-payline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 0 2px;
+}
+.id-payline__method {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--id-fg-2);
+  min-width: 0;
+}
+.id-fg {
+  color: var(--id-fg);
+}
+
+/* ── Two-line checkbox, terms line ──────────────────────────────────────── */
+
+.id-check--top {
+  align-items: flex-start;
+  line-height: 20px;
+}
+.id-check--top .id-check__box {
+  margin-top: 2px;
+}
+.id-check--top .id-check__tick .id-icon {
+  stroke-width: 3.25;
+}
+.id-check--terms {
+  padding: 0 2px;
+}
+.id-check__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.id-check__sub {
+  color: var(--id-fg-3);
+}
+/* The primary action waits for the terms line: dimmed here, and terms.js sets
+   `disabled` too. The checkbox is `required`, so the form can't post without it. */
+.id-card:has([data-terms]:not(:checked)) [data-needs-terms] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ── Toggle (role="switch") ─────────────────────────────────────────────── */
+
+.id-toggle {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+/* Small by design (36×22): the hit area is 44px. */
+.id-toggle::before {
+  content: '';
+  position: absolute;
+  inset: -11px -4px;
+}
+.id-toggle__track {
+  width: 36px;
+  height: 22px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-pill);
+  background: var(--id-line-2);
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s;
+}
+.id-toggle__knob {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-fg-2);
+  margin-left: 2px;
+  box-shadow: var(--id-sh-knob);
+  transition: margin-left 0.15s var(--id-ease-out), background-color 0.15s;
+}
+.id-toggle:has(.id-hidden-input:checked) .id-toggle__track {
+  background: var(--id-fg);
+}
+.id-toggle:has(.id-hidden-input:checked) .id-toggle__knob {
+  background: var(--id-bg);
+  margin-left: 16px;
+}
+.id-toggle:has(.id-hidden-input:focus-visible) .id-toggle__track {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+/* A labelled toggle row (20d): text on the left, the switch on the right. */
+.id-togglerow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+  min-height: 44px;
+}
+.id-line14 {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--id-fg);
+}
+
+/* ── Spend alerts row ───────────────────────────────────────────────────── */
+
+.id-alerts__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.id-alerts__title {
+  flex-grow: 1;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--id-fg);
+  cursor: pointer;
+}
+.id-alerts__row .id-toggle {
+  margin-right: 2px;
+}
+.id-alerts__panel {
+  padding: 0 0 12px 28px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-2);
+}
+.id-alerts__panel[hidden] {
+  display: none;
+}
+/* A bare chevron button that shows or hides a panel (aria-expanded). */
+.id-chevbtn {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--id-fg-3);
+  cursor: pointer;
+  border-radius: var(--id-r-sm);
+}
+.id-chevbtn::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+}
+.id-chevbtn .id-icon {
+  transition: transform 0.2s;
+}
+.id-chevbtn--r[aria-expanded='true'] .id-icon {
+  transform: rotate(90deg);
+}
+.id-chevbtn--d[aria-expanded='true'] .id-icon {
+  transform: rotate(180deg);
+}
+
+/* ── Segmented tabs (19a) and the billing toggle (24a) ──────────────────── */
+
+.id-seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--id-r-option);
+  background: var(--id-sunk);
+  border: 1px solid var(--id-line);
+}
+.id-seg__cell {
+  flex: 1 1 0;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--id-fg-2);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+/* 36px cells: the hit area is 44px. */
+.id-seg__cell::before {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+.id-seg__cell:has(.id-hidden-input:checked) {
+  background: var(--id-raised);
+  color: var(--id-fg);
+  border-color: var(--id-line-2);
+  box-shadow: var(--id-sh-ctrl);
+}
+.id-seg__cell:has(.id-hidden-input:focus-visible),
+.id-billing__cell:has(.id-hidden-input:focus-visible) {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+.id-billing {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--id-r-pill);
+  background: var(--id-sunk);
+  border: 1px solid var(--id-line);
+}
+.id-billing__cell {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--id-r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--id-fg-3);
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+/* 26px cells, small by design: the hit area is 44px. */
+.id-billing__cell::before {
+  content: '';
+  position: absolute;
+  inset: -9px 0;
+}
+.id-billing__cell:has(.id-hidden-input:checked) {
+  background: var(--id-raised);
+  color: var(--id-fg);
+  box-shadow: var(--id-sh-knob);
+}
+
+/* ── Plan cards (24a) ───────────────────────────────────────────────────── */
+
+.id-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.id-plans__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.id-plans__list {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Monthly is the default; the yearly price shows when the Yearly cell is picked. */
+.id-plans [data-price='yearly'],
+.id-plans:has([data-billing='yearly']:checked) [data-price='monthly'] {
+  display: none;
+}
+.id-plans:has([data-billing='yearly']:checked) [data-price='yearly'] {
+  display: inline;
+}
+.id-plan {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+  transition: border-color 0.15s, background 0.15s;
+}
+.id-plan:has(.id-hidden-input:checked) {
+  border-color: var(--id-select);
+  background: var(--id-raised);
+  box-shadow: var(--id-sh-ctrl), var(--id-ring);
+}
+.id-plan:has(.id-hidden-input:focus-visible) {
+  outline: 2px solid var(--id-select);
+  outline-offset: 2px;
+}
+.id-plan__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+}
+.id-plan__pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-grow: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.id-plan:has(.id-hidden-input:checked) .id-radio__ring {
+  border-color: var(--id-fg);
+}
+.id-plan:has(.id-hidden-input:checked) .id-radio__dot {
+  display: block;
+}
+.id-plan__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-plan__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+.id-plan__price {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.id-plan__note {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--id-fg-3);
+}
+.id-plan__more {
+  margin-top: 3px;
+}
+.id-plan__panel {
+  margin: 0 14px 14px 42px;
+  padding-top: 12px;
+  border-top: 1px solid var(--id-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.id-plan__panel[hidden] {
+  display: none;
+}
+.id-plan__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.id-plan__label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--id-fg-2);
+  min-width: 0;
+}
+.id-plan__label .id-icon {
+  color: var(--id-fg-3);
+  stroke-width: 2;
+}
+.id-plan__value {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  color: var(--id-fg-2);
+  white-space: nowrap;
+}
+
+/* ── Stripe's fields (19a) ──────────────────────────────────────────────── */
+
+/* Stripe's Payment Element mounts here. Until it does, the box holds a picture
+   of it (aria-hidden, never real inputs), which the element replaces. */
+.id-stripe__picture {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.id-stripe__pair {
+  display: flex;
+  gap: 12px;
+}
+.id-stripe__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.id-stripe__box {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: var(--id-r-control);
+  background: var(--id-panel);
+  border: 1px solid var(--id-line-2);
+  box-shadow: var(--id-sh-input);
+  color: var(--id-fg-3);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.id-stripe__box--value {
+  color: var(--id-fg);
+}
+.id-stripe__note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--id-fg-3);
+  padding-top: 2px;
+}
+
+/* ── Agents list (10a) and activity (10e) ───────────────────────────────── */
+
+.id-agentrow {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+}
+.id-agentrow__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  min-height: 60px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+}
+.id-rowtext {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-rowtext--fit {
+  flex-grow: 0;
+}
+.id-rowtext__name {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--id-fg);
+}
+.id-rowtext__name--plain {
+  line-height: 20px;
+  font-weight: 400;
+}
+.id-rowtext__sub {
+  font-size: 13px;
+  color: var(--id-fg-3);
+}
+.id-rowtext__sub--clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-agentrow__panel {
+  padding: 2px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.id-agentrow__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--id-line);
+}
+.id-connrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+.id-connrow + .id-connrow {
+  border-top: 1px solid var(--id-line);
+}
+.id-linkrow {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+.id-activity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0;
+}
+.id-activity + .id-activity {
+  border-top: 1px solid var(--id-line);
+}
+.id-activity__icon {
+  display: flex;
+  color: var(--id-fg-2);
+  padding-top: 2px;
+}
+.id-activity--money .id-activity__icon {
+  color: var(--id-accent);
+}
+.id-activity__text {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.id-activity__more {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+  overflow-wrap: anywhere;
+}
+.id-activity--money .id-activity__more {
+  color: var(--id-accent);
+}
+.id-when {
+  font-family: var(--id-mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--id-fg-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Money: methods, spend, charges, bar, total (19g, 20a to 20c) ───────── */
+
+.id-method {
+  box-sizing: border-box;
+  border-radius: var(--id-r-option);
+  border: 1px solid var(--id-line-2);
+  background: var(--id-panel);
+  box-shadow: var(--id-sh-ctrl);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 60px;
+}
+.id-method__mark {
+  width: 40px;
+  height: 28px;
+  box-sizing: border-box;
+  border-radius: var(--id-r-method);
+  background: var(--id-raised);
+  border: 1px solid var(--id-line-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--id-fg-2);
+  flex-shrink: 0;
+}
+.id-moneyrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  text-decoration: none;
+  color: inherit;
+}
+.id-moneyrow--charge {
+  padding: 11px 0;
+}
+.id-moneyrow + .id-moneyrow {
+  border-top: 1px solid var(--id-line);
+}
+.id-spend__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-grow: 1;
+  min-width: 0;
+}
+.id-spend__top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+.id-amount {
+  font-family: var(--id-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--id-fg);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.id-amount__of {
+  color: var(--id-fg-3);
+}
+.id-bar {
+  display: block;
+  width: 100%;
+  height: 4px;
+  border-radius: var(--id-r-pill);
+  overflow: hidden;
+}
+.id-bar__track {
+  fill: var(--id-track);
+}
+.id-bar__fill {
+  fill: var(--id-fg);
+  opacity: 0.82;
+}
+.id-bar--full .id-bar__fill {
+  fill: var(--id-accent);
+  opacity: 1;
+}
+.id-total {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  text-align: center;
+}
+.id-total__num {
+  font-size: 40px;
+  line-height: 44px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.id-total__note {
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--id-fg-3);
+  text-wrap: balance;
+}
+/* The month's limit inside a well (19g): label and amount, the bar, then the lines. */
+.id-limit__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.id-limit__label {
+  font-size: 13px;
+  color: var(--id-fg-2);
+}
+.id-limit__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────── */
+
+@keyframes idpulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+@keyframes idlisten {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .id-sstep__pulse,
+  .id-sdot--busy {
+    animation: none !important;
+  }
+  .id-toggle__track,
+  .id-toggle__knob,
+  .id-chevbtn .id-icon,
+  .id-plan {
+    transition: none;
   }
 }
 

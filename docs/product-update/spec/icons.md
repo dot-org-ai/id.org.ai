@@ -31,3 +31,22 @@ The verdict glyphs are not in this table: the check (`M5 12.5 9.5 17 19 7`, stro
 | `building` | building | 1c | `<rect width="16" height="20" x="4" y="2" rx="2"></rect><path d="M9 22v-4h6v4"></path><path d="M8 6h.01"></path><path d="M16 6h.01"></path><path d="M12 6h.01"></path><path d="M12 10h.01"></path><path d="M12 14h.01"></path><path d="M16 10h.01"></path><path d="M16 14h.01"></path><path d="M8 10h.01"></path><path d="M8 14h.01"></path>` |
 | `bot` | bot | 5a, 5c | `<path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path>` |
 | `external` | external-link | 1c | `<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>` |
+
+## Agent setup, payments and connect (docs/agent-setup)
+
+Added for screens 9 to 24. Paths are copied from those screens and live in `worker/ui/icons.tsx`.
+
+| Name | Lucide | Used on |
+|---|---|---|
+| `pause` | pause | 10a, 10d, 12d |
+| `play` | play | 12d |
+| `trash` | trash-2 | 10a |
+| `shield_check` | shield-check | 10e, 20d |
+| `card` | credit-card | 9a, 19a, 20a, 20b |
+| `bank` | landmark | 20b |
+| `zap` | zap | 10e, 24b |
+| `flask` | flask-conical | 9a, 10e |
+| `arrow_ur` | arrow-up-right | 9e, 20b, 24c |
+| `layers` | layers | 17b, 17c |
+| `bell` | bell | 19b, 24b |
+| `fingerprint` | fingerprint | 19d |

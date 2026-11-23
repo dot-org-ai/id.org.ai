@@ -1,7 +1,8 @@
 import type { JSX } from 'hono/jsx/jsx-runtime'
 import { AppTile, type TileContent } from './AppTile'
 
-export type ConnectorState = 'idle' | 'connecting' | 'done' | 'broken' | 'ok' | 'fail'
+/** `hold`: still dots, the middle one solid amber. Not moving, needs someone (docs/agent-setup/HANDOFF.md section 4). */
+export type ConnectorState = 'idle' | 'connecting' | 'done' | 'broken' | 'ok' | 'fail' | 'hold'
 
 /** The verdict check: drawn with pathLength=1 so idcheck can draw it (motion.md#geometry-card-scale). */
 function Check(): JSX.Element {
