@@ -12,6 +12,7 @@ import { emailsFixtures } from './emails'
 import { errorsFixtures } from './errors'
 import { securityFixtures } from './security'
 import { setupFixtures } from './setup'
+import { setupEmailsFixtures } from './setup-emails'
 import { signinFixtures } from './signin'
 
 export const fixtures: FixtureGroup = {
@@ -26,4 +27,5 @@ export const fixtures: FixtureGroup = {
   // Agent setup, payments and connect (docs/agent-setup)
   ...setupFixtures,
   ...agentsManageFixtures,
+  ...setupEmailsFixtures,
 }

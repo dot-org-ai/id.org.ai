@@ -30,9 +30,16 @@ export const EMAIL_MONO = "'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consola
 
 export const NO_REPLY = 'no-reply@id.org.ai'
 export const SECURITY_SENDER = 'security@id.org.ai'
+/** Agent setup and payment emails (docs/agent-setup, 14 and 23). The address the mocks draw; not yet confirmed. */
+export const AGENTS_SENDER = 'agents@id.org.ai'
 
 /** The footer line under every card, in HTML and text. */
 export const EMAIL_FOOTER = 'id.org.ai · Identity for people and agents · You’re getting this because of activity on your account.'
+
+/** The same line with its own reason: "You’re getting this because {reason}." (the agent emails say which). */
+export function emailFooter(reason: string): string {
+  return `id.org.ai · Identity for people and agents · You’re getting this because ${reason}.`
+}
 
 export interface EmailSender {
   /** Display name, for example "id.org.ai" or "Nathan Clevenger via id.org.ai". */
@@ -84,8 +91,8 @@ export function httpUrl(url: string): string {
 }
 
 /** The plain-text part: blocks separated by a blank line, then the signature delimiter and footer. */
-export function emailText(blocks: string[]): string {
-  return [...blocks, `-- \n${EMAIL_FOOTER}`].join('\n\n') + '\n'
+export function emailText(blocks: string[], footer: string = EMAIL_FOOTER): string {
+  return [...blocks, `-- \n${footer}`].join('\n\n') + '\n'
 }
 
 /** `@font-face` for Geist and Geist Mono, from the origin `base` (absolute in mail; '' = same origin, the gallery). */
@@ -101,7 +108,7 @@ const TABLE = { role: 'presentation', cellpadding: '0', cellspacing: '0', border
  * The template: the white card (org.ai mark + "id.org.ai", then `blocks` 22px apart)
  * and the footer line 16px below it. Fills its container up to 584px.
  */
-export function EmailContent({ blocks }: { blocks: JSX.Element[] }): JSX.Element {
+export function EmailContent({ blocks, footer = EMAIL_FOOTER }: { blocks: JSX.Element[]; footer?: string }): JSX.Element {
   return (
     <table {...TABLE} align="center" width="100%" style={{ width: '100%', maxWidth: '584px', borderCollapse: 'separate', fontFamily: EMAIL_FONT, color: C.text, WebkitFontSmoothing: 'antialiased' }}>
       <tr>
@@ -124,7 +131,7 @@ export function EmailContent({ blocks }: { blocks: JSX.Element[] }): JSX.Element
         </td>
       </tr>
       <tr>
-        <td style={{ padding: '16px 4px 0', fontSize: '12px', lineHeight: '18px', color: C.tertiary }}>{EMAIL_FOOTER}</td>
+        <td style={{ padding: '16px 4px 0', fontSize: '12px', lineHeight: '18px', color: C.tertiary }}>{footer}</td>
       </tr>
     </table>
   )
@@ -226,6 +233,20 @@ export function EmailKeyValues({ rows }: { rows: [string, string][] }): JSX.Elem
               )
             })}
           </table>
+        </td>
+      </tr>
+    </table>
+  )
+}
+
+/** A line to paste to an agent (14b): the key/value box, with a 13px label over 13px/21px mono text. */
+export function EmailPrompt({ label, text }: { label: string; text: string }): JSX.Element {
+  return (
+    <table {...TABLE} width="100%" style={{ width: '100%', borderCollapse: 'separate', border: `1px solid ${C.line}`, borderRadius: '10px' }}>
+      <tr>
+        <td style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: '13px', lineHeight: '17px', color: C.tertiary }}>{label}</div>
+          <div style={{ paddingTop: '6px', fontFamily: EMAIL_MONO, fontSize: '13px', lineHeight: '21px', color: C.text, overflowWrap: 'anywhere' }}>{text}</div>
         </td>
       </tr>
     </table>
