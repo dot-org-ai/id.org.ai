@@ -587,6 +587,9 @@ app.get('/auth-config.json', (c) => {
     apiHostname: 'https://id.org.ai',
     redirectUri: 'https://id.org.ai/dash/profile',
     basePath: '/dash',
+    // id.org.ai's own look for the dashboard (Geist, the auth UI's tokens, dark only). Remove this
+    // line to go back to the package's default look; nothing else changes.
+    theme: 'id',
     appName: c.env.APP_NAME || 'id.org.ai',
     tagline: c.env.APP_TAGLINE || 'Humans. Agents. Identity.',
     onUnauthenticated: 'redirect',
