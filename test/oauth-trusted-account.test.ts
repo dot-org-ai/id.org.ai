@@ -248,6 +248,25 @@ describe('OAuthProvider - trusted-account mode (ADR-0007)', () => {
       expect(res.status).toBe(400)
     })
 
+    it('on an allowlisted loopback host, accepts http and no other scheme', async () => {
+      const provider = createTrustedProvider(['localhost'])
+      const codeChallenge = await computeS256Challenge('verifier-1234567890abcdef')
+      const status = async (redirect_uri: string) => {
+        const url = buildAuthorizeUrl({
+          client_id: TRUSTED_CLIENT_ID,
+          redirect_uri,
+          response_type: 'code',
+          scope: 'openid',
+          code_challenge: codeChallenge,
+          code_challenge_method: 'S256',
+        })
+        return (await provider.handleAuthorize(new Request(url, { method: 'GET', redirect: 'manual' }), 'user-1')).status
+      }
+      expect(await status('http://localhost:3000/cb')).toBe(302)
+      expect(await status('evil://localhost/cb')).toBe(400)
+      expect(await status('javascript://localhost/%0aalert(1)')).toBe(400)
+    })
+
     it('still requires PKCE for the trusted-account public client', async () => {
       const provider = createTrustedProvider(['startup.games'])
       const url = buildAuthorizeUrl({
