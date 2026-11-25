@@ -84,8 +84,10 @@
     // CIMD client hosts shown as verified on consent (D3), comma-separated.
     // Nathan approved the deployed Studio pitch app on 2026-10-05. Chris Risner approved
     // claude.ai (Claude's connector, which signs people in to mcp.auto.dev) on 2026-11-16.
+    // chatgpt.com (ChatGPT's connector, same job) added 2026-11-25 for its icon on consent: it
+    // registers itself (DCR), so it still shows as unverified.
     // Exact production hosts only.
-    "VERIFIED_CLIENT_HOSTS": "pitch.startups.studio,claude.ai",
+    "VERIFIED_CLIENT_HOSTS": "pitch.startups.studio,claude.ai,chatgpt.com",
     // "1": step up before granting act permissions (sb:do) on a sign-in older
     // than 10 minutes. /step-up arrives in phase 9; keep "0" until then.
     "FEATURE_STEP_UP": "0",
