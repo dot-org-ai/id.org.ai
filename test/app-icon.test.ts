@@ -62,6 +62,12 @@ describe('siteIcon', () => {
     expect(await siteIcon(env, 'startup.games')).toBe('https://startup.games/logo.svg')
   })
 
+  it('a listed host whose site turns the worker away has a known icon: no fetch, and only while it is listed', async () => {
+    // net connect is off and nothing is mocked: a fetch would throw
+    expect(await siteIcon({ ...env, VERIFIED_CLIENT_HOSTS: 'chatgpt.com' }, 'chatgpt.com')).toBe('https://persistent.oaistatic.com/sonic/misc/openai-logo.png')
+    expect(await siteIcon({ ...env, VERIFIED_CLIENT_HOSTS: '' }, 'chatgpt.com')).toBeUndefined()
+  })
+
   it('reads a verified client host’s icon too, and only while the host is on that list', async () => {
     const listed = { ...env, VERIFIED_CLIENT_HOSTS: 'pitch.startups.studio, Client.Example ' }
     fetchMock
