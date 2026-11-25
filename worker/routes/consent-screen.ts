@@ -16,6 +16,7 @@ import { buildCSRFCookie, encodeStateWithCSRF, generateCSRFToken } from '../../s
 import { personAccount, personWorkspaces } from '../utils/person'
 import { getStubForIdentity, readSessionOrgId } from '../middleware/tenant'
 import { siteIcon } from '../utils/app-icon'
+import { parseTrustedAccountDomains } from './oauth'
 import { withRelayOrigins } from '../utils/redirect-relays'
 import { renderPage } from '../ui/render'
 import { consentProps } from '../ui/consent-props'
@@ -56,8 +57,12 @@ export async function renderConsentScreen(c: C, vm: ConsentViewModel, opts: Cons
   // so the tile shows the app's mark, not a letter. siteIcon only fetches hosts on the operators' lists.
   // Consent never waits long on it: after ICON_WAIT_MS the page renders with the letter tile, and the lookup
   // finishes in the background so the next render finds the answer cached.
+  // A registered (DCR) client has no document to verify (chatgpt.com's connector registers itself), but its code
+  // can only go back to its redirect host: when that host is on the verified list, the tile shows that site's icon
+  // too. Only the icon: the client stays unverified and keeps its warning.
+  const listedHost = !vm.client.cimdUrl && parseTrustedAccountDomains(c.env.VERIFIED_CLIENT_HOSTS).has(vm.client.host.toLowerCase())
   let icon: string | undefined
-  if (vm.client.verified && vm.client.cimdUrl && !vm.client.logoUrl) {
+  if (!vm.client.logoUrl && ((vm.client.verified && vm.client.cimdUrl) || listedHost)) {
     const lookup = siteIcon(c.env, vm.client.host).catch(() => undefined)
     try {
       c.executionCtx.waitUntil(lookup)
