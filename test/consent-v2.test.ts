@@ -184,6 +184,16 @@ describe('consent v2: /oauth/authorize renders the new screens', () => {
     expect(page.headers.get('content-security-policy')).toContain("form-action 'self' cursor:;")
   })
 
+  it('a DCR client whose redirect host is on the verified list is verified as that host: never its registered name or logo', () => {
+    const client = { id: 'cid_listed', name: 'Your Bank', logo: 'https://evil.example/bank.png', redirectUris: ['https://chatgpt.com/cb'], grantTypes: ['authorization_code'], responseTypes: ['code'], scopes: [], trusted: false, tokenEndpointAuthMethod: 'none', createdAt: 0 }
+    const input = { client, redirectUri: 'https://chatgpt.com/cb', scopes: ['openid'], identityId: 'unused' } as unknown as Parameters<typeof buildConsentViewModel>[0]
+    const listed = buildConsentViewModel({ ...input, verifiedHosts: new Set(['chatgpt.com']) })
+    expect(listed.client).toMatchObject({ verified: true, host: 'chatgpt.com', displayName: 'chatgpt.com' })
+    expect(listed.client.logoUrl).toBeUndefined()
+    const unlisted = buildConsentViewModel({ ...input, verifiedHosts: new Set(['claude.ai']) })
+    expect(unlisted.client).toMatchObject({ verified: false, displayName: 'Your Bank' })
+  })
+
   it('the route renders exactly what the screen renders from the same props', async () => {
     const cookies = await signIn('user_01CONSENT_B')
     const clientId = await register('Same props')

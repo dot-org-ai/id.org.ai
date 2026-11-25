@@ -28,7 +28,7 @@ export interface ConsentViewModel {
     host: string
     /** https only. */
     logoUrl?: string
-    /** A first-party seeded client, or a CIMD host on the verified list (D3). Every DCR client is unverified. */
+    /** A first-party seeded client, or a client whose host is on the verified list (D3): a CIMD client's own host, or a DCR client's redirect host. Every other DCR client is unverified. */
     verified: boolean
     /** The client metadata document URL (CIMD clients). */
     cimdUrl?: string
@@ -89,7 +89,12 @@ const https = (u: unknown) => (typeof u === 'string' && u.startsWith('https://')
 export function buildConsentViewModel(i: ConsentViewInput): ConsentViewModel {
   const cimd = looksLikeCimdClientId(i.client.id)
   const host = cimd ? hostOf(i.client.id) : hostOf(i.redirectUri)
-  const verified = i.client.trusted || (cimd && i.verifiedHosts.has(host.toLowerCase()))
+  const listed = i.verifiedHosts.has(host.toLowerCase())
+  // A registered (DCR) client has no document to check, but its code can only go back to its redirect host. When the
+  // operators list that host (chatgpt.com), it is verified as that host: the host is its name, and the name and logo
+  // it registered with, which anyone could have typed, are not shown.
+  const byHost = !cimd && !i.client.trusted && listed
+  const verified = i.client.trusted || listed
   let origin = ''
   try {
     // A native-app callback (cursor://…) has no origin; form-action must allow its scheme.
@@ -103,13 +108,13 @@ export function buildConsentViewModel(i: ConsentViewInput): ConsentViewModel {
   if (i.codeChallengeMethod) fields.code_challenge_method = i.codeChallengeMethod
   if (i.nonce) fields.nonce = i.nonce
   if (i.resource) fields.resource = i.resource
-  const logoUrl = https(i.client.logo)
+  const logoUrl = byHost ? undefined : https(i.client.logo)
   const privacyUrl = https(i.client.policyUri)
   const termsUrl = https(i.client.tosUri)
   return {
     client: {
       id: i.client.id,
-      displayName: i.client.name,
+      displayName: byHost ? host : i.client.name,
       host,
       verified,
       ...(logoUrl && { logoUrl }),
