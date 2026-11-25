@@ -19,7 +19,16 @@ const HEAD_BYTES = 256 * 1024
 /** A data: icon longer than this isn't an icon. */
 const DATA_URI_MAX = 32 * 1024
 
-const IMAGE_DATA_URI = /^data:image\/(svg\+xml|png|x-icon|vnd\.microsoft\.icon|jpeg|webp|gif)[;,]/i
+/**
+ * Listed hosts whose site won't answer this worker's fetch, so their icon can't be read from it: the icon to show
+ * instead. chatgpt.com turns the worker away (production cached "no icon" for it, 2026-11-25); this is the logo_uri
+ * OpenAI publishes in its own client document (https://chatgpt.com/oauth/codex/client.json).
+ */
+const KNOWN_ICONS: Record<string, string> = {
+  'chatgpt.com': 'https://persistent.oaistatic.com/sonic/misc/openai-logo.png',
+}
+
+const IMAGE_DATA_URI =/^data:image\/(svg\+xml|png|x-icon|vnd\.microsoft\.icon|jpeg|webp|gif)[;,]/i
 
 function attr(tag: string, name: string): string | undefined {
   const m = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'))
@@ -80,6 +89,7 @@ async function headOf(res: Response): Promise<string> {
  */
 export async function siteIcon(env: Env, host: string): Promise<string | undefined> {
   if (!parseTrustedAccountDomains(env.TRUSTED_ACCOUNT_DOMAINS).has(host) && !parseTrustedAccountDomains(env.VERIFIED_CLIENT_HOSTS).has(host)) return undefined
+  if (Object.hasOwn(KNOWN_ICONS, host)) return KNOWN_ICONS[host]
   const key = `app-icon:${host}`
   // Everything from here is inside the try: an icon is decoration, so a cache or network fault is "no icon".
   try {
